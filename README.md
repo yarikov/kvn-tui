@@ -165,6 +165,10 @@ Logs are written to:
 
 ---
 
+## Author
+
+Created and maintained by [Dmitry Yarikov](https://github.com/yarikov) — <dmitry@yarikov.com>.
+
 ## License
 
 MIT
