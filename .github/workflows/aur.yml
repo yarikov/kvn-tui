@@ -32,6 +32,9 @@ jobs:
           git config --global user.name "GitHub Actions"
           git config --global user.email "github-actions@github.com"
 
+      - name: Add AUR to known hosts
+        run: mkdir -p ~/.ssh && ssh-keyscan -H aur.archlinux.org >> ~/.ssh/known_hosts
+
       - name: Clone AUR repo
         run: git clone ssh://aur@aur.archlinux.org/kvn-tui-bin.git /tmp/aur
 
