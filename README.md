@@ -44,7 +44,7 @@ Under the hood, `kvn-tui` is built entirely in **Rust** and leverages the follow
 | VPN backend | [sing-box](https://sing-box.sagernet.org/) (external binary) | Actual VPN engine (TUN, routing, protocols) |
 | Serialization | [serde](https://serde.rs/) + `serde_json` | Configuration and profile storage |
 | HTTP client | [reqwest](https://github.com/seanmonstar/reqwest) | Health checks, geo database downloads |
-| D-Bus integration | [zbus](https://dbus2.github.io/zbus/) + `futures-util` | Suspend/resume detection via `systemd-logind` |
+| D-Bus integration | [zbus](https://docs.rs/zbus/latest/zbus/) + `futures-util` | Suspend/resume detection via `systemd-logind` |
 | Logging | [tracing](https://github.com/tokio-rs/tracing) | Structured application logs |
 | Error handling | [anyhow](https://github.com/dtolnay/anyhow) + [thiserror](https://github.com/dtolnay/thiserror) | Ergonomic error propagation |
 | Utilities | `uuid`, `chrono`, `url`, `urlencoding`, `dirs` | IDs, timestamps, URI parsing, XDG directories |
