@@ -81,6 +81,14 @@ You will also need `sing-box` to establish actual VPN connections:
 sudo pacman -S sing-box
 ```
 
+### Install from AUR (recommended)
+
+```bash
+yay -S kvn-tui-bin
+```
+
+This installs the pre-built release binary. No compilation required.
+
 ### Build & Install from Source
 
 1. Clone the repository:
