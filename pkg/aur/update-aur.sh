@@ -14,6 +14,8 @@ trap 'rm -rf "$TMPDIR"' EXIT
 curl -sL "https://github.com/yarikov/kvn-tui/releases/download/v${VERSION}/kvn-tui-${VERSION}-x86_64-linux.tar.gz" -o "$TMPDIR/pkg.tar.gz"
 SHA256=$(sha256sum "$TMPDIR/pkg.tar.gz" | awk '{print $1}')
 
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+
 # Clone AUR repo
 git clone ssh://aur@aur.archlinux.org/kvn-tui-bin.git "$TMPDIR/aur"
 cd "$TMPDIR/aur"
@@ -21,7 +23,7 @@ cd "$TMPDIR/aur"
 # Generate PKGBUILD from template
 sed -e "s/{{VERSION}}/${VERSION}/g" \
     -e "s/{{SHA256SUM}}/${SHA256}/g" \
-    "$(git rev-parse --show-toplevel)/pkg/aur/PKGBUILD.bin" > PKGBUILD
+    "${SCRIPT_DIR}/PKGBUILD.bin" > PKGBUILD
 
 # Generate .SRCINFO
 makepkg --printsrcinfo > .SRCINFO
