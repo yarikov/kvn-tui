@@ -28,19 +28,22 @@ fn handle_key(app: &mut App, key: KeyEvent) -> bool {
             handle_input_mode(app, key)
         }
         AppMode::Connecting | AppMode::Connected => {
-            if key.code == KeyCode::Char('q') || key.code == KeyCode::Esc {
-                if app.singbox_process.is_some() {
-                    app.mode = AppMode::ConfirmQuit;
-                } else {
-                    return true;
+            match key.code {
+                KeyCode::Char('q') | KeyCode::Esc => {
+                    if app.singbox_process.is_some() {
+                        app.mode = AppMode::ConfirmQuit;
+                    } else {
+                        return true;
+                    }
                 }
-            }
-            if key.code == KeyCode::Char('r') {
-                app.set_status("Reconnect requested");
-            }
-            if key.code == KeyCode::Char('s') {
-                crate::singbox::disconnect(app);
-                app.set_status("Disconnected");
+                KeyCode::Char('r') => {
+                    app.mode = AppMode::Connecting;
+                }
+                KeyCode::Char('s') => {
+                    crate::singbox::disconnect(app);
+                    app.set_status("Disconnected");
+                }
+                _ => return handle_normal(app, key),
             }
             false
         }
@@ -650,5 +653,74 @@ mod tests {
         let quit = handle_key(&mut app, key('s'));
         assert!(!quit);
         assert!(app.status.text().contains("Disconnected"));
+    }
+
+    #[test]
+    fn connected_mode_navigates() {
+        let mut app = app_with_profiles(vec![
+            Profile::new(
+                "A".to_string(),
+                Protocol::Vless,
+                "1.1.1.1".to_string(),
+                443,
+                "u1".to_string(),
+            ),
+            Profile::new(
+                "B".to_string(),
+                Protocol::Vless,
+                "2.2.2.2".to_string(),
+                443,
+                "u2".to_string(),
+            ),
+        ]);
+        app.mode = AppMode::Connected;
+        assert_eq!(app.selected, 0);
+        handle_key(&mut app, key('j'));
+        assert_eq!(app.selected, 1);
+        handle_key(&mut app, key('k'));
+        assert_eq!(app.selected, 0);
+        handle_key(&mut app, key('G'));
+        assert_eq!(app.selected, 1);
+        handle_key(&mut app, key('g'));
+        assert_eq!(app.selected, 0);
+    }
+
+    #[test]
+    fn connected_mode_enter_connects() {
+        let mut app = app_with_profiles(vec![Profile::new(
+            "A".to_string(),
+            Protocol::Vless,
+            "1.1.1.1".to_string(),
+            443,
+            "u1".to_string(),
+        )]);
+        app.mode = AppMode::Connected;
+        let quit = handle_key(&mut app, KeyEvent::from(KeyCode::Enter));
+        assert!(!quit);
+        assert_eq!(app.mode, AppMode::Connecting);
+    }
+
+    #[test]
+    fn connected_mode_r_reconnects() {
+        let mut app = app_with_profiles(vec![Profile::new(
+            "A".to_string(),
+            Protocol::Vless,
+            "1.1.1.1".to_string(),
+            443,
+            "u1".to_string(),
+        )]);
+        app.mode = AppMode::Connected;
+        let quit = handle_key(&mut app, key('r'));
+        assert!(!quit);
+        assert_eq!(app.mode, AppMode::Connecting);
+    }
+
+    #[test]
+    fn connected_mode_help() {
+        let mut app = app_with_profiles(vec![]);
+        app.mode = AppMode::Connected;
+        let quit = handle_key(&mut app, key('?'));
+        assert!(!quit);
+        assert_eq!(app.mode, AppMode::Help);
     }
 }
