@@ -12,6 +12,7 @@ pub fn connect(app: &mut App, profile: &Profile) -> Result<()> {
 
     let child = runner::start(profile, &app.config.settings)?;
     app.singbox_process = Some(child);
+    app.active_profile_id = Some(profile.id);
     app.status = crate::app::AppStatus::Info(format!("Connected to {}", profile.name));
     app.mode = AppMode::Connected;
     app.push_log(format!("sing-box started for profile: {}", profile.name));
@@ -31,5 +32,6 @@ pub fn disconnect(app: &mut App) {
         app.push_log("sing-box stopped".to_string());
     }
     app.mode = AppMode::Normal;
+    app.active_profile_id = None;
     app.connecting = false;
 }

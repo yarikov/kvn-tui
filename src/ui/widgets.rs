@@ -38,7 +38,7 @@ impl<'a> Widget for ProfileList<'a> {
                 };
 
                 let connected_marker =
-                    if self.app.singbox_process.is_some() && self.app.selected == i {
+                    if self.app.active_profile_id == Some(p.id) {
                         " ●"
                     } else {
                         ""
@@ -180,13 +180,58 @@ mod tests {
             "u1".to_string(),
         )]);
         app.selected = 0;
-        // We can't easily mock Child, so we test the disconnected case (no marker)
+
+        // No active profile — marker should not appear
         let mut buf = Buffer::empty(Rect::new(0, 0, 80, 10));
         ProfileList::new(&app).render(Rect::new(0, 0, 80, 10), &mut buf);
         let content: String = buf.content.iter().map(|c| c.symbol()).collect();
         assert!(content.contains("Alpha"));
-        // Without a real child process the "●" marker should not appear
         assert!(!content.contains('●'));
+
+        // Set active profile — marker should appear
+        let id = app.config.profiles[0].id;
+        app.active_profile_id = Some(id);
+        let mut buf = Buffer::empty(Rect::new(0, 0, 80, 10));
+        ProfileList::new(&app).render(Rect::new(0, 0, 80, 10), &mut buf);
+        let content: String = buf.content.iter().map(|c| c.symbol()).collect();
+        assert!(content.contains('●'));
+    }
+
+    #[test]
+    fn profile_list_connected_marker_stays_on_active_profile() {
+        let mut app = app_with_profiles(vec![
+            Profile::new(
+                "Alpha".to_string(),
+                Protocol::Vless,
+                "1.1.1.1".to_string(),
+                443,
+                "u1".to_string(),
+            ),
+            Profile::new(
+                "Beta".to_string(),
+                Protocol::Vless,
+                "2.2.2.2".to_string(),
+                80,
+                "u2".to_string(),
+            ),
+        ]);
+        // Active profile is Alpha, but selection is on Beta
+        app.active_profile_id = Some(app.config.profiles[0].id);
+        app.selected = 1;
+
+        let mut buf = Buffer::empty(Rect::new(0, 0, 80, 10));
+        ProfileList::new(&app).render(Rect::new(0, 0, 80, 10), &mut buf);
+        let content: String = buf.content.iter().map(|c| c.symbol()).collect();
+
+        // "●" should appear next to Alpha, not Beta
+        let alpha_pos = content.find("Alpha").unwrap();
+        let beta_pos = content.find("Beta").unwrap();
+        let bullet_pos = content.find('●').unwrap();
+
+        assert!(
+            bullet_pos > alpha_pos && bullet_pos < beta_pos,
+            "bullet should be on Alpha, not Beta"
+        );
     }
 
     #[test]
