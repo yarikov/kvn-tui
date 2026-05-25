@@ -53,9 +53,10 @@ jobs:
       - name: Generate .SRCINFO
         run: |
           docker run --rm -v /tmp/aur:/aur archlinux/archlinux bash -c "
-            pacman -Sy --noconfirm pacman
-            cd /aur
-            makepkg --printsrcinfo > .SRCINFO
+            pacman -Sy --noconfirm pacman fakeroot
+            useradd -m builder
+            chown -R builder:builder /aur
+            su builder -c 'cd /aur && makepkg --printsrcinfo > .SRCINFO'
           "
 
       - name: Commit and push to AUR
