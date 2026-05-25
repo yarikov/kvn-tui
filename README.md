@@ -67,27 +67,19 @@ The application relies on Wayland-specific clipboard integration (`wl-paste`) an
 
 ## Installation (Arch Linux)
 
-### Prerequisites
-
-Make sure the following packages are installed:
-
-```bash
-sudo pacman -S base-devel rust dbus
-```
-
-You will also need `sing-box` to establish actual VPN connections:
-
-```bash
-sudo pacman -S sing-box
-```
-
 ### Install from AUR (recommended)
+
+`sing-box` installs automatically as a dependency.
 
 ```bash
 yay -S kvn-tui-bin
 ```
 
-This installs the pre-built release binary. No compilation required.
+### Prerequisites (for source build)
+
+```bash
+sudo pacman -S base-devel rust dbus
+```
 
 ### Build & Install from Source
 
