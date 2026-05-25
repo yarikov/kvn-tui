@@ -1,0 +1,59 @@
+[package]
+name = "kvn-tui"
+version = "0.1.1"
+edition = "2021"
+authors = ["kvn-tui contributors"]
+description = "Terminal VPN client for Arch Linux + Wayland with vim navigation"
+license = "MIT"
+repository = "https://github.com/username/kvn-tui"
+rust-version = "1.87"
+
+[dependencies]
+# Async runtime
+tokio = { version = "1.38", features = ["full"] }
+
+# TUI framework
+ratatui = "0.30"
+crossterm = { version = "0.29", features = ["event-stream"] }
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# UUID generation
+uuid = { version = "1.9", features = ["v4", "serde"] }
+
+# HTTP client for healthcheck
+reqwest = { version = "0.13", features = ["rustls", "blocking"], default-features = false }
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Error handling
+anyhow = "1.0"
+thiserror = "2.0"
+
+# Directories
+dirs = "6.0"
+
+# URL parsing
+url = "2.5"
+
+# Chrono for timestamps
+chrono = { version = "0.4", features = ["serde"] }
+
+# URL encoding / decoding
+urlencoding = "2.1"
+
+# D-Bus integration for suspend/resume detection (systemd-logind)
+zbus = { version = "5.15", default-features = false, features = ["tokio"] }
+futures-util = "0.3"
+
+[dev-dependencies]
+tempfile = "3"
+
+[profile.release]
+opt-level = 3
+lto = true
+strip = true

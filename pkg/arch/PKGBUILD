@@ -1,0 +1,25 @@
+# Maintainer: kvn-tui contributors
+pkgname=kvn-tui
+pkgver=0.1.1
+pkgrel=1
+pkgdesc="Terminal VPN client for Arch Linux + Wayland with vim navigation"
+arch=('x86_64')
+url="https://github.com/username/kvn-tui"
+license=('MIT')
+depends=('gcc-libs' 'dbus')
+makedepends=('cargo' 'rust')
+optdepends=('sing-box: VPN backend for connections')
+source=()
+options=('!lto')
+sha256sums=()
+
+build() {
+    cd "$startdir/../../"
+    cargo build --release --locked
+}
+
+package() {
+    cd "$startdir/../../"
+    install -Dm755 "target/release/$pkgname" "$pkgdir/usr/bin/$pkgname"
+    install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+}

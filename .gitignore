@@ -1,0 +1,28 @@
+# Rust
+/target
+
+# IDE / editors
+.vscode/
+.idea/
+*.iml
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Project cache
+cache.db
+
+# Arch package build artifacts
+pkg/arch/pkg/
+pkg/arch/src/
+*.pkg.tar.zst
+*.pkg.tar.zst.sig
+*.pkg.tar.xz
+*.pkg.tar.xz.sig

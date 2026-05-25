@@ -1,0 +1,43 @@
+use crossterm::event::{KeyCode, KeyEvent};
+
+use crate::app::App;
+use crate::config::profile::{Config, Profile, Protocol};
+
+/// Generate a small set of sample profiles for unit tests.
+pub fn sample_profiles() -> Vec<Profile> {
+    vec![
+        Profile::new(
+            "A".to_string(),
+            Protocol::Vless,
+            "1.1.1.1".to_string(),
+            443,
+            "u1".to_string(),
+        ),
+        Profile::new(
+            "B".to_string(),
+            Protocol::Vless,
+            "2.2.2.2".to_string(),
+            443,
+            "u2".to_string(),
+        ),
+        Profile::new(
+            "C".to_string(),
+            Protocol::Vless,
+            "3.3.3.3".to_string(),
+            443,
+            "u3".to_string(),
+        ),
+    ]
+}
+
+/// Build an `App` pre-filled with the given profiles for testing.
+pub fn app_with_profiles(profiles: Vec<Profile>) -> App {
+    let mut config = Config::default();
+    config.profiles = profiles;
+    App::test_new(config)
+}
+
+/// Create a simple `KeyEvent` from a character for testing input handlers.
+pub fn key(c: char) -> KeyEvent {
+    KeyEvent::from(KeyCode::Char(c))
+}

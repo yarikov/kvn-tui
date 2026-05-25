@@ -1,0 +1,168 @@
+# kvn-tui
+
+> Terminal VPN client for Arch Linux + Wayland with vim navigation.
+
+`kvn-tui` is a keyboard-driven TUI application for managing VPN connections. It provides a fast, minimal interface for configuring profiles, connecting via the [sing-box](https://sing-box.sagernet.org/) backend, and routing traffic — all without leaving the terminal.
+
+---
+
+## Features
+
+- **Vim-style navigation** — `j`/`k` to move, `g`/`G` to jump, `?` for help
+- **Profile management** — create, edit, delete, and organize server profiles
+- **One-click paste** — import `vless://` share links directly from the Wayland clipboard
+- **Routing modes** — Global, Bypass RU, or Only RU (powered by geoip/geosite rule-sets)
+- **Geo database updates** — download and update rule-sets from within the app
+- **External editor support** — open `profiles.json` in `$EDITOR` without leaving the TUI
+- **Suspend/resume awareness** — automatically detects system resume via D-Bus and reconnects
+- **Live logs** — tail sing-box output in a split-pane view
+
+---
+
+## Supported Protocols
+
+| Protocol | Status | Notes |
+|----------|--------|-------|
+| **VLESS** | ✅ Supported | REALITY / XTLS Vision, gRPC, WebSocket, HTTPUpgrade |
+
+VLESS share links (`vless://`) can be pasted directly from the clipboard. The parser automatically extracts UUID, server address, port, flow, security settings, transport type, and REALITY parameters (public key, short ID, SNI, fingerprint).
+
+> **Note:** Only VLESS is supported in the current release. Additional protocols may be added in future versions.
+
+---
+
+## Technology Stack
+
+Under the hood, `kvn-tui` is built entirely in **Rust** and leverages the following ecosystem:
+
+| Component | Library / Tool | Purpose |
+|-----------|--------------|---------|
+| Async runtime | [Tokio](https://tokio.rs/) | Non-blocking I/O and background services |
+| TUI framework | [ratatui](https://ratatui.rs/) + [crossterm](https://github.com/crossterm-rs/crossterm) | Terminal UI rendering and input handling |
+| VPN backend | [sing-box](https://sing-box.sagernet.org/) (external binary) | Actual VPN engine (TUN, routing, protocols) |
+| Serialization | [serde](https://serde.rs/) + `serde_json` | Configuration and profile storage |
+| HTTP client | [reqwest](https://github.com/seanmonstar/reqwest) | Health checks, geo database downloads |
+| D-Bus integration | [zbus](https://dbus2.github.io/zbus/) + `futures-util` | Suspend/resume detection via `systemd-logind` |
+| Logging | [tracing](https://github.com/tokio-rs/tracing) | Structured application logs |
+| Error handling | [anyhow](https://github.com/dtolnay/anyhow) + [thiserror](https://github.com/dtolnay/thiserror) | Ergonomic error propagation |
+| Utilities | `uuid`, `chrono`, `url`, `urlencoding`, `dirs` | IDs, timestamps, URI parsing, XDG directories |
+
+### Architecture Highlights
+
+- **sing-box runner** — dynamically generates valid sing-box 1.12+ JSON configurations from profile data, validates them with `sing-box check`, and spawns the process with automatic crash detection.
+- **Background services** — log tailer, health checker, geo updater, and suspend watcher all run concurrently on the Tokio runtime.
+- **Atomic config writes** — `profiles.json` is written to a temporary file and renamed to prevent corruption.
+
+---
+
+## Platform Support
+
+> ⚠️ **Current version supports Arch Linux on Wayland only.**
+
+The application relies on Wayland-specific clipboard integration (`wl-paste`) and D-Bus/systemd-logind for power events. X11 support is not available at this time.
+
+---
+
+## Installation (Arch Linux)
+
+### Prerequisites
+
+Make sure the following packages are installed:
+
+```bash
+sudo pacman -S base-devel rust dbus
+```
+
+You will also need `sing-box` to establish actual VPN connections:
+
+```bash
+sudo pacman -S sing-box
+```
+
+### Build & Install from Source
+
+1. Clone the repository:
+
+```bash
+git clone https://github.com/username/kvn-tui.git
+cd kvn-tui
+```
+
+2. Build and install using the local PKGBUILD:
+
+```bash
+cd pkg/arch
+makepkg -si
+```
+
+This compiles the release binary and installs it to `/usr/bin/kvn-tui`.
+
+### Manual Build (without package manager)
+
+```bash
+cargo build --release
+sudo install -Dm755 target/release/kvn-tui /usr/local/bin/kvn-tui
+```
+
+---
+
+## Quick Start
+
+Launch the application:
+
+```bash
+sudo kvn-tui
+```
+
+> `kvn-tui` must be run as root so that sing-box can create and manage the TUN interface and system routes.
+
+### Default Key Bindings
+
+| Key | Action |
+|-----|--------|
+| `j` / `↓` | Move down |
+| `k` / `↑` | Move up |
+| `g` | Go to first profile |
+| `G` | Go to last profile |
+| `Enter` | Connect to selected profile |
+| `p` | Paste `vless://` link from clipboard |
+| `n` | New profile |
+| `e` | Edit selected profile |
+| `d` | Delete selected profile |
+| `m` | Change routing mode |
+| `u` | Update geoip/geosite databases |
+| `c` | Open `profiles.json` in `$EDITOR` |
+| `r` | Reconnect |
+| `s` | Stop / disconnect |
+| `q` / `Esc` | Quit (confirms if connected) |
+| `?` | Show help |
+
+---
+
+## Configuration
+
+Configuration is stored in:
+
+```
+~/.config/kvn-tui/profiles.json
+```
+
+The file contains your profile list and application settings (default profile, TUN interface name, DNS strategy, routing mode). You can edit it manually with the `c` keybinding or any text editor.
+
+Geo rule-set databases are cached in:
+
+```
+~/.config/kvn-tui/geo/
+```
+
+Logs are written to:
+
+```
+~/.config/kvn-tui/logs/sing-box.log
+```
+
+---
+
+## License
+
+MIT
