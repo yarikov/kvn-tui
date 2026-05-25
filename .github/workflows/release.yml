@@ -1,0 +1,61 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build release
+        run: cargo build --release
+
+      - name: Prepare package
+        run: |
+          VERSION=${GITHUB_REF_NAME#v}
+          mkdir -p "kvn-tui-${VERSION}-x86_64-linux"
+          cp target/release/kvn-tui "kvn-tui-${VERSION}-x86_64-linux/"
+          cp LICENSE "kvn-tui-${VERSION}-x86_64-linux/"
+          tar czf "kvn-tui-${VERSION}-x86_64-linux.tar.gz" "kvn-tui-${VERSION}-x86_64-linux"
+
+      - name: Generate checksums
+        run: |
+          VERSION=${GITHUB_REF_NAME#v}
+          sha256sum "kvn-tui-${VERSION}-x86_64-linux.tar.gz" > checksums.txt
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-assets
+          path: |
+            kvn-tui-*-x86_64-linux.tar.gz
+            checksums.txt
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: release-assets
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            kvn-tui-*-x86_64-linux.tar.gz
+            checksums.txt
+          generate_release_notes: true

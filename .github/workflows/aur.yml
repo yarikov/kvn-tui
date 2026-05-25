@@ -1,0 +1,55 @@
+name: AUR Deploy
+
+on:
+  release:
+    types: [published]
+
+jobs:
+  aur:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup SSH
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+          log-public-key: false
+
+      - name: Configure Git
+        run: |
+          git config --global user.name "GitHub Actions"
+          git config --global user.email "github-actions@github.com"
+
+      - name: Clone AUR repo
+        run: git clone ssh://aur@aur.archlinux.org/kvn-tui-bin.git /tmp/aur
+
+      - name: Extract version and checksum
+        run: |
+          VERSION=${GITHUB_REF_NAME#v}
+          echo "VERSION=$VERSION" >> $GITHUB_ENV
+          curl -sL "https://github.com/yarikov/kvn-tui/releases/download/v${VERSION}/kvn-tui-${VERSION}-x86_64-linux.tar.gz" -o /tmp/pkg.tar.gz
+          SHA256=$(sha256sum /tmp/pkg.tar.gz | awk '{print $1}')
+          echo "SHA256=$SHA256" >> $GITHUB_ENV
+
+      - name: Generate PKGBUILD
+        run: |
+          sed -e "s/{{VERSION}}/${VERSION}/g" \
+              -e "s/{{SHA256SUM}}/${SHA256}/g" \
+              pkg/aur/PKGBUILD.bin > /tmp/aur/PKGBUILD
+
+      - name: Generate .SRCINFO
+        run: |
+          cd /tmp/aur
+          makepkg --printsrcinfo > .SRCINFO
+
+      - name: Commit and push to AUR
+        run: |
+          cd /tmp/aur
+          git add PKGBUILD .SRCINFO
+          if git diff --cached --quiet; then
+            echo "No changes to commit"
+            exit 0
+          fi
+          git commit -m "chore(release): update to v${VERSION}"
+          git push
