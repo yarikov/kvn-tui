@@ -17,7 +17,6 @@ pub enum AppMode {
     Help,
     ConfirmDelete,
     ConfirmQuit,
-    EditProfile,
     CreateProfile,
     PasteUri,
     Connecting,
@@ -60,7 +59,6 @@ pub struct App {
     pub log_scroll: usize,
     pub input_buffer: String,
     pub input_field: InputField,
-    pub edit_profile_id: Option<Uuid>,
     pub draft_profile: Option<Profile>,
     pub active_profile_id: Option<Uuid>,
     pub routing_selected: usize,
@@ -169,7 +167,6 @@ impl App {
             log_scroll: 0,
             input_buffer: String::new(),
             input_field: InputField::None,
-            edit_profile_id: None,
             draft_profile: None,
             active_profile_id: None,
             routing_selected: 0,
@@ -235,16 +232,6 @@ impl App {
             tracing::warn!("Failed to save config after add: {}", e);
         }
         self.selected = self.config.profiles.len().saturating_sub(1);
-    }
-
-    /// Update an existing profile by id.
-    pub fn update_profile(&mut self, id: Uuid, profile: Profile) {
-        if let Some(idx) = self.config.profiles.iter().position(|p| p.id == id) {
-            self.config.profiles[idx] = profile;
-            if let Err(e) = self.save() {
-                tracing::warn!("Failed to save config after add: {}", e);
-            }
-        }
     }
 
     /// Set status message and switch to normal mode.
@@ -360,7 +347,6 @@ impl App {
             log_scroll: 0,
             input_buffer: String::new(),
             input_field: InputField::None,
-            edit_profile_id: None,
             draft_profile: None,
             active_profile_id: None,
             routing_selected: 0,
@@ -480,36 +466,6 @@ mod tests {
         app.add_profile(p);
         assert_eq!(app.config.profiles.len(), 4);
         assert_eq!(app.selected, 3);
-    }
-
-    #[test]
-    fn update_profile_existing() {
-        let mut app = app_with_profiles(sample_profiles());
-        let id = app.config.profiles[1].id;
-        let updated = Profile::new(
-            "Updated".to_string(),
-            Protocol::Vless,
-            "9.9.9.9".to_string(),
-            443,
-            "u9".to_string(),
-        );
-        app.update_profile(id, updated.clone());
-        assert_eq!(app.config.profiles[1].name, "Updated");
-    }
-
-    #[test]
-    fn update_profile_missing_id_noop() {
-        let mut app = app_with_profiles(sample_profiles());
-        let missing_id = Uuid::new_v4();
-        let updated = Profile::new(
-            "Updated".to_string(),
-            Protocol::Vless,
-            "9.9.9.9".to_string(),
-            443,
-            "u9".to_string(),
-        );
-        app.update_profile(missing_id, updated);
-        assert_eq!(app.config.profiles[1].name, "B");
     }
 
     #[test]

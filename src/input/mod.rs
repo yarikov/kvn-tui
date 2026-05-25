@@ -24,7 +24,7 @@ fn handle_key(app: &mut App, key: KeyEvent) -> bool {
         AppMode::ConfirmDelete => handle_confirm_delete(app, key),
         AppMode::ConfirmQuit => handle_confirm_quit(app, key),
         AppMode::RoutingMode => handle_routing_mode(app, key),
-        AppMode::EditProfile | AppMode::CreateProfile | AppMode::PasteUri => {
+        AppMode::CreateProfile | AppMode::PasteUri => {
             handle_input_mode(app, key)
         }
         AppMode::Connecting | AppMode::Connected => {
@@ -81,7 +81,6 @@ fn handle_normal(app: &mut App, key: KeyEvent) -> bool {
             app.mode = AppMode::CreateProfile;
             app.input_field = InputField::Name;
             app.input_buffer.clear();
-            app.edit_profile_id = None;
             app.draft_profile = Some(Profile::new(
                 String::new(),
                 Protocol::Vless,
@@ -90,15 +89,7 @@ fn handle_normal(app: &mut App, key: KeyEvent) -> bool {
                 String::new(),
             ));
         }
-        KeyCode::Char('e') => {
-            if let Some(profile) = app.selected_profile().cloned() {
-                app.mode = AppMode::EditProfile;
-                app.input_field = InputField::Name;
-                app.input_buffer = profile.name.clone();
-                app.edit_profile_id = Some(profile.id);
-                app.draft_profile = Some(profile);
-            }
-        }
+
         KeyCode::Char('d') if app.selected_profile().is_some() => {
             app.mode = AppMode::ConfirmDelete;
         }
@@ -109,7 +100,7 @@ fn handle_normal(app: &mut App, key: KeyEvent) -> bool {
         KeyCode::Char('u') => {
             app.trigger_geo_update();
         }
-        KeyCode::Char('c') => handle_editor_result(app, crate::editor::open_profiles_editor()),
+        KeyCode::Char('e') => handle_editor_result(app, crate::editor::open_profiles_editor()),
         KeyCode::Char('r') if app.singbox_process.is_some() => {
             app.mode = AppMode::Connecting;
         }
@@ -279,10 +270,6 @@ fn commit_profile(app: &mut App) {
         let profile = app.draft_profile.take().unwrap();
         app.add_profile(profile);
         app.set_status("Profile created");
-    } else if let Some(id) = app.edit_profile_id {
-        let profile = app.draft_profile.take().unwrap();
-        app.update_profile(id, profile);
-        app.set_status("Profile updated");
     }
 
     app.mode = AppMode::Normal;
@@ -359,32 +346,6 @@ mod tests {
         assert_eq!(app.mode, AppMode::CreateProfile);
         assert_eq!(app.input_field, InputField::Name);
         assert!(app.draft_profile.is_some());
-        assert!(app.edit_profile_id.is_none());
-    }
-
-    #[test]
-    fn normal_mode_e_edits_selected() {
-        let p = Profile::new(
-            "A".to_string(),
-            Protocol::Vless,
-            "1.1.1.1".to_string(),
-            443,
-            "u1".to_string(),
-        );
-        let id = p.id;
-        let mut app = app_with_profiles(vec![p]);
-        handle_normal(&mut app, key('e'));
-        assert_eq!(app.mode, AppMode::EditProfile);
-        assert_eq!(app.input_field, InputField::Name);
-        assert_eq!(app.edit_profile_id, Some(id));
-        assert!(app.draft_profile.is_some());
-    }
-
-    #[test]
-    fn normal_mode_e_no_profile() {
-        let mut app = app_with_profiles(vec![]);
-        handle_normal(&mut app, key('e'));
-        assert_eq!(app.mode, AppMode::Normal);
     }
 
     #[test]
