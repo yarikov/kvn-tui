@@ -86,7 +86,7 @@ sudo pacman -S sing-box
 1. Clone the repository:
 
 ```bash
-git clone https://github.com/username/kvn-tui.git
+git clone https://github.com/yarikov/kvn-tui.git
 cd kvn-tui
 ```
 

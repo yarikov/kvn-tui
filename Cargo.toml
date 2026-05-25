@@ -5,7 +5,7 @@ edition = "2021"
 authors = ["kvn-tui contributors"]
 description = "Terminal VPN client for Arch Linux + Wayland with vim navigation"
 license = "MIT"
-repository = "https://github.com/username/kvn-tui"
+repository = "https://github.com/yarikov/kvn-tui"
 rust-version = "1.87"
 
 [dependencies]
