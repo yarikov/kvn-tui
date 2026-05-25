@@ -75,13 +75,23 @@ The application relies on Wayland-specific clipboard integration (`wl-paste`) an
 yay -S kvn-tui-bin
 ```
 
-### Prerequisites (for source build)
+### Build & Install from Source
+
+#### Prerequisites
+
+- **Rust** >= 1.87
+- **sing-box** >= 1.12 (external VPN backend, must be available on `$PATH`)
+- `base-devel`, `dbus`
+
+Install the dependencies:
 
 ```bash
-sudo pacman -S base-devel rust dbus
+yay -S base-devel rust dbus sing-box
 ```
 
-### Build & Install from Source
+> `makepkg -si` will pull these automatically from the PKGBUILD `depends`/`makedepends`, but installing them beforehand avoids surprises.
+
+#### Steps
 
 1. Clone the repository:
 
@@ -97,7 +107,15 @@ cd pkg/arch
 makepkg -si
 ```
 
-This compiles the release binary and installs it to `/usr/bin/kvn-tui`.
+This compiles the release binary with `--release --locked` and installs it to `/usr/bin/kvn-tui`.
+
+3. Verify that sing-box is reachable:
+
+```bash
+sing-box version
+```
+
+> You must run `kvn-tui` as root so that sing-box can create the TUN interface. See [Quick Start](#quick-start) below.
 
 ### Manual Build (without package manager)
 
