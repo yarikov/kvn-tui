@@ -156,11 +156,7 @@ impl App {
         if let Err(e) = geo_manager.ensure_databases() {
             tracing::warn!("Failed to ensure geo databases: {}", e);
         }
-        let selected = config
-            .settings
-            .default_profile
-            .and_then(|id| config.profiles.iter().position(|p| p.id == id))
-            .unwrap_or(0);
+        let selected = config.resolve_selected();
 
         Ok(Self {
             mode: AppMode::Normal,
@@ -351,11 +347,7 @@ impl App {
             eprintln!("Warning: failed to initialize geo manager in test: {}", e);
             GeoManager::new().unwrap()
         });
-        let selected = config
-            .settings
-            .default_profile
-            .and_then(|id| config.profiles.iter().position(|p| p.id == id))
-            .unwrap_or(0);
+        let selected = config.resolve_selected();
 
         Self {
             mode: AppMode::Normal,

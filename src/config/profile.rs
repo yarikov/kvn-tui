@@ -61,6 +61,7 @@ impl RoutingMode {
 
 /// REALITY security settings for XTLS Vision.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct RealitySettings {
     #[serde(rename = "public_key")]
     pub public_key: String,
@@ -74,6 +75,7 @@ pub struct RealitySettings {
 
 /// Single VPN profile.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct Profile {
     #[serde(default = "Uuid::new_v4")]
     pub id: Uuid,
@@ -121,6 +123,7 @@ impl Profile {
 
 /// Application settings stored alongside profiles.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct Settings {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub default_profile: Option<Uuid>,
@@ -153,11 +156,53 @@ impl Default for Settings {
 
 /// Root configuration file structure.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(deny_unknown_fields)]
 pub struct Config {
     #[serde(default)]
     pub profiles: Vec<Profile>,
     #[serde(default)]
     pub settings: Settings,
+}
+
+impl Config {
+    /// Resolve the selected profile index from `settings.default_profile`.
+    /// Returns the index of the default profile if it exists, otherwise `0`.
+    pub fn resolve_selected(&self) -> usize {
+        self.settings
+            .default_profile
+            .and_then(|id| self.profiles.iter().position(|p| p.id == id))
+            .unwrap_or(0)
+    }
+
+    /// Validate semantic constraints that serde cannot enforce.
+    ///
+    /// Checks:
+    /// - Each profile has non-empty `name`, `address`, and `uuid`.
+    /// - `settings.default_profile` references an existing profile if set.
+    pub fn validate(&self) -> anyhow::Result<()> {
+        for (idx, profile) in self.profiles.iter().enumerate() {
+            let num = idx + 1;
+            if profile.name.trim().is_empty() {
+                anyhow::bail!("Profile {num}: name must not be empty");
+            }
+            if profile.address.trim().is_empty() {
+                anyhow::bail!("Profile {num}: address must not be empty");
+            }
+            if profile.uuid.trim().is_empty() {
+                anyhow::bail!("Profile {num}: uuid must not be empty");
+            }
+        }
+
+        if let Some(id) = self.settings.default_profile {
+            if !self.profiles.iter().any(|p| p.id == id) {
+                anyhow::bail!(
+                    "settings.default_profile ({id}) references a non-existent profile"
+                );
+            }
+        }
+
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -275,5 +320,95 @@ mod tests {
         let c: Config = serde_json::from_str(json).unwrap();
         assert!(c.profiles.is_empty());
         assert_eq!(c.settings.tun_interface, "tun0");
+    }
+
+    #[test]
+    fn config_rejects_unknown_top_level_field() {
+        let json = r#"{"unknown_field": 42}"#;
+        let result: Result<Config, _> = serde_json::from_str(json);
+        assert!(result.is_err(), "Should reject unknown top-level field");
+    }
+
+    #[test]
+    fn profile_rejects_unknown_field() {
+        let json = r#"{
+            "id": "550e8400-e29b-41d4-a716-446655440000",
+            "name": "Test",
+            "protocol": "vless",
+            "address": "1.1.1.1",
+            "port": 443,
+            "uuid": "uuid",
+            "unknown_field": true
+        }"#;
+        let result: Result<Profile, _> = serde_json::from_str(json);
+        assert!(result.is_err(), "Should reject unknown profile field");
+    }
+
+    #[test]
+    fn config_validate_accepts_valid_config() {
+        let mut config = Config::default();
+        config.profiles.push(Profile::new(
+            "Valid".to_string(),
+            Protocol::Vless,
+            "1.2.3.4".to_string(),
+            443,
+            "uuid".to_string(),
+        ));
+        config.settings.default_profile = Some(config.profiles[0].id);
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn config_validate_rejects_empty_profile_name() {
+        let mut config = Config::default();
+        config.profiles.push(Profile::new(
+            "   ".to_string(),
+            Protocol::Vless,
+            "1.2.3.4".to_string(),
+            443,
+            "uuid".to_string(),
+        ));
+        let err = config.validate().unwrap_err().to_string();
+        assert!(err.contains("name must not be empty"), "Error was: {}", err);
+    }
+
+    #[test]
+    fn config_validate_rejects_empty_profile_address() {
+        let mut config = Config::default();
+        config.profiles.push(Profile::new(
+            "Name".to_string(),
+            Protocol::Vless,
+            "".to_string(),
+            443,
+            "uuid".to_string(),
+        ));
+        let err = config.validate().unwrap_err().to_string();
+        assert!(err.contains("address must not be empty"), "Error was: {}", err);
+    }
+
+    #[test]
+    fn config_validate_rejects_empty_profile_uuid() {
+        let mut config = Config::default();
+        config.profiles.push(Profile::new(
+            "Name".to_string(),
+            Protocol::Vless,
+            "1.2.3.4".to_string(),
+            443,
+            "  ".to_string(),
+        ));
+        let err = config.validate().unwrap_err().to_string();
+        assert!(err.contains("uuid must not be empty"), "Error was: {}", err);
+    }
+
+    #[test]
+    fn config_validate_rejects_dangling_default_profile() {
+        let mut config = Config::default();
+        config.settings.default_profile = Some(Uuid::new_v4());
+        let err = config.validate().unwrap_err().to_string();
+        assert!(
+            err.contains("references a non-existent profile"),
+            "Error was: {}",
+            err
+        );
     }
 }

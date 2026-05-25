@@ -109,13 +109,7 @@ fn handle_normal(app: &mut App, key: KeyEvent) -> bool {
         KeyCode::Char('u') => {
             app.trigger_geo_update();
         }
-        KeyCode::Char('c') => {
-            if let Err(e) = crate::editor::open_profiles_editor() {
-                app.set_error(format!("Editor failed: {}", e));
-            } else {
-                app.needs_redraw = true;
-            }
-        }
+        KeyCode::Char('c') => handle_editor_result(app, crate::editor::open_profiles_editor()),
         KeyCode::Char('r') if app.singbox_process.is_some() => {
             app.mode = AppMode::Connecting;
         }
@@ -137,6 +131,20 @@ fn handle_normal(app: &mut App, key: KeyEvent) -> bool {
         _ => {}
     }
     false
+}
+
+/// Apply the result of an external editor session to application state.
+fn handle_editor_result(app: &mut App, result: anyhow::Result<crate::config::profile::Config>) {
+    // Terminal left and re-entered alternate screen; ratatui's buffer cache is stale.
+    app.needs_redraw = true;
+    match result {
+        Ok(config) => {
+            app.config = config;
+            app.selected = app.config.resolve_selected();
+            app.set_status("Profiles updated from editor");
+        }
+        Err(e) => app.set_error(format!("Editor failed: {}", e)),
+    }
 }
 
 /// Confirm or cancel profile deletion.
