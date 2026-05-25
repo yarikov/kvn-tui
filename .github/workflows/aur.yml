@@ -52,11 +52,12 @@ jobs:
 
       - name: Generate .SRCINFO
         run: |
-          docker run --rm -v /tmp/aur:/aur archlinux/archlinux bash -c "
+          docker run --rm -v /tmp/aur:/aur -e RUNNER_UID=$(id -u) archlinux/archlinux bash -c "
             pacman -Sy --noconfirm pacman fakeroot
             useradd -m builder
             chown -R builder:builder /aur
             su builder -c 'cd /aur && makepkg --printsrcinfo > .SRCINFO'
+            chown -R \$RUNNER_UID:\$RUNNER_UID /aur
           "
 
       - name: Commit and push to AUR
