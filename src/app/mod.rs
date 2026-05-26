@@ -54,6 +54,7 @@ pub struct AppState {
     pub connected: bool,
     pub profile_name: Option<String>,
     pub active_profile_id: Option<String>,
+    pub singbox_pid: Option<u32>,
 }
 
 /// Application state shared across the UI and background tasks.
@@ -335,6 +336,7 @@ impl App {
                 self.config.profiles.iter().find(|p| p.id == id).map(|p| p.name.clone())
             }),
             active_profile_id: self.active_profile_id.map(|id| id.to_string()),
+            singbox_pid: self.singbox_process.as_ref().map(|c| c.id()),
         }
     }
 
@@ -345,6 +347,7 @@ impl App {
                 connected: false,
                 profile_name: None,
                 active_profile_id: None,
+                singbox_pid: None,
             },
             crate::paths::state_json_path(),
         );
@@ -364,8 +367,32 @@ impl App {
 
     /// Print waybar status JSON to stdout.
     pub fn print_waybar_status() {
-        let state = Self::read_state_from(crate::paths::state_json_path());
+        let path = crate::paths::state_json_path();
+        let mut state = Self::read_state_from(&path);
+
+        if state.connected {
+            let alive = state
+                .singbox_pid
+                .map_or(false, |pid| Self::is_singbox_alive(pid));
+            if !alive {
+                state = AppState {
+                    connected: false,
+                    profile_name: None,
+                    active_profile_id: None,
+                    singbox_pid: None,
+                };
+                Self::write_state_to(&state, &path);
+            }
+        }
+
         Self::print_waybar_from_state(&state);
+    }
+
+    fn is_singbox_alive(pid: u32) -> bool {
+        let exe = std::path::PathBuf::from(format!("/proc/{pid}/exe"));
+        std::fs::read_link(&exe)
+            .map(|target| target.to_string_lossy().contains("sing-box"))
+            .unwrap_or(false)
     }
 
     fn read_state_from(path: impl AsRef<std::path::Path>) -> AppState {
@@ -376,6 +403,7 @@ impl App {
                 connected: false,
                 profile_name: None,
                 active_profile_id: None,
+                singbox_pid: None,
             })
     }
 
@@ -623,6 +651,7 @@ mod tests {
             connected: true,
             profile_name: Some("Alpha".to_string()),
             active_profile_id: Some("550e8400-e29b-41d4-a716-446655440000".to_string()),
+            singbox_pid: Some(1234),
         };
         App::write_state_to(&connected, temp.path());
 
@@ -632,6 +661,7 @@ mod tests {
                 connected: false,
                 profile_name: None,
                 active_profile_id: None,
+                singbox_pid: None,
             },
             temp.path(),
         );
@@ -648,6 +678,7 @@ mod tests {
             connected: true,
             profile_name: Some("Test Profile".to_string()),
             active_profile_id: Some("550e8400-e29b-41d4-a716-446655440000".to_string()),
+            singbox_pid: Some(1234),
         };
         let temp = tempfile::NamedTempFile::new().unwrap();
         App::write_state_to(&state, temp.path());
@@ -696,11 +727,57 @@ mod tests {
     }
 
     #[test]
+    fn is_singbox_alive_false_for_nonexistent_pid() {
+        assert!(!App::is_singbox_alive(999_999));
+    }
+
+    #[test]
+    fn is_singbox_alive_false_for_systemd() {
+        // PID 1 is systemd, not sing-box
+        assert!(!App::is_singbox_alive(1));
+    }
+
+    #[test]
+    fn print_waybar_status_clears_stale_state() {
+        let temp = tempfile::NamedTempFile::new().unwrap();
+        let stale = AppState {
+            connected: true,
+            profile_name: Some("Stale".to_string()),
+            active_profile_id: Some("550e8400-e29b-41d4-a716-446655440000".to_string()),
+            singbox_pid: Some(999_999),
+        };
+        App::write_state_to(&stale, temp.path());
+
+        // Simulate the check logic from print_waybar_status
+        let mut state = App::read_state_from(temp.path());
+        if state.connected {
+            let alive = state
+                .singbox_pid
+                .map_or(false, |pid| App::is_singbox_alive(pid));
+            if !alive {
+                state = AppState {
+                    connected: false,
+                    profile_name: None,
+                    active_profile_id: None,
+                    singbox_pid: None,
+                };
+                App::write_state_to(&state, temp.path());
+            }
+        }
+
+        let read = App::read_state_from(temp.path());
+        assert!(!read.connected);
+        assert!(read.profile_name.is_none());
+        assert!(read.singbox_pid.is_none());
+    }
+
+    #[test]
     fn format_waybar_connected() {
         let state = AppState {
             connected: true,
             profile_name: Some("Alpha".to_string()),
             active_profile_id: None,
+            singbox_pid: Some(1234),
         };
         let json = App::format_waybar(&state);
         assert!(json.contains("󰦝"));
@@ -714,6 +791,7 @@ mod tests {
             connected: false,
             profile_name: None,
             active_profile_id: None,
+            singbox_pid: None,
         };
         let json = App::format_waybar(&state);
         assert!(json.contains("󰦜"));
