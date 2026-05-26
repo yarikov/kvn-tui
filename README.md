@@ -153,6 +153,23 @@ sudo kvn-tui
 
 > `kvn-tui` must be run as root so that sing-box can create and manage the TUN interface and system routes.
 
+### Run without password
+
+To avoid typing your password on every launch, create a sudoers drop-in file:
+
+```bash
+echo "$USER ALL=(ALL) NOPASSWD: /usr/bin/kvn-tui" | sudo tee /etc/sudoers.d/kvn-tui
+sudo chmod 440 /etc/sudoers.d/kvn-tui
+```
+
+Then launch with:
+
+```bash
+sudo kvn-tui
+```
+
+> Adjust the path `/usr/bin/kvn-tui` if you installed to `/usr/local/bin/kvn-tui` or another location. Use `which kvn-tui` to verify.
+
 ### Default Key Bindings
 
 | Key | Action |
