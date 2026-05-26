@@ -18,9 +18,30 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 use crate::app::App;
 use crate::paths::ensure_config_dirs;
 
+/// Check whether any of the provided CLI arguments is a version flag.
+fn should_show_version<I, S>(args: I) -> bool
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<str>,
+{
+    args.into_iter()
+        .any(|arg| matches!(arg.as_ref(), "-v" | "-V" | "--version"))
+}
+
+/// Return the version string shown for `--version`.
+fn version_string() -> String {
+    format!("kvn-tui {}", env!("CARGO_PKG_VERSION"))
+}
+
 /// Entry point for the TUI VPN client.
 #[tokio::main]
 async fn main() -> Result<()> {
+    // Handle version flag.
+    if should_show_version(std::env::args()) {
+        println!("{}", version_string());
+        return Ok(());
+    }
+
     // Initialize logging.
     tracing_subscriber::registry()
         .with(
@@ -43,4 +64,47 @@ async fn main() -> Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{should_show_version, version_string};
+
+    #[test]
+    fn version_flag_v() {
+        assert!(should_show_version(["-v"]));
+    }
+
+    #[test]
+    fn version_string_format() {
+        let s = version_string();
+        assert!(s.starts_with("kvn-tui "), "version string should start with 'kvn-tui ': got {}", s);
+        // CARGO_PKG_VERSION in this test build is "0.1.4" (from Cargo.toml).
+        assert_eq!(s, "kvn-tui 0.1.4");
+    }
+
+    #[test]
+    fn version_flag_uppercase_v() {
+        assert!(should_show_version(["-V"]));
+    }
+
+    #[test]
+    fn version_flag_long() {
+        assert!(should_show_version(["--version"]));
+    }
+
+    #[test]
+    fn no_version_flag() {
+        assert!(!should_show_version(["kvn-tui"]));
+    }
+
+    #[test]
+    fn empty_args() {
+        assert!(!should_show_version(Vec::<&str>::new()));
+    }
+
+    #[test]
+    fn help_flag_is_not_version() {
+        assert!(!should_show_version(["kvn-tui", "--help"]));
+    }
 }
