@@ -50,26 +50,15 @@ if [ -f "$WAYBAR_STYLE" ]; then
   if ! grep -q '#custom-kvn-tui' "$WAYBAR_STYLE"; then
     echo "Adding kvn-tui styles to waybar CSS..."
 
-    # Read accent colors from the current Omarchy theme.
-    THEME_COLORS="${HOME}/.config/omarchy/current/theme/colors.toml"
-    if [ -f "$THEME_COLORS" ]; then
-      COLOR_CONNECTED=$(grep '^color2' "$THEME_COLORS" | head -n1 | cut -d'"' -f2)
-      COLOR_DISCONNECTED=$(grep '^color0' "$THEME_COLORS" | head -n1 | cut -d'"' -f2)
-    fi
-    # Fallbacks if theme colors are not found.
-    : "${COLOR_CONNECTED:=#adda78}"
-    : "${COLOR_DISCONNECTED:=#72696a}"
-
-    cat >> "$WAYBAR_STYLE" <<EOF
+    cat >> "$WAYBAR_STYLE" <<'EOF'
 
 #custom-kvn-tui {
   margin-right: 18px;
 }
 #custom-kvn-tui.connected {
-  color: ${COLOR_CONNECTED};
+  color: #adda78;
 }
 #custom-kvn-tui.disconnected {
-  color: ${COLOR_DISCONNECTED};
 }
 EOF
   else
