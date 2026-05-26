@@ -79,8 +79,8 @@ mod tests {
     fn version_string_format() {
         let s = version_string();
         assert!(s.starts_with("kvn-tui "), "version string should start with 'kvn-tui ': got {}", s);
-        // CARGO_PKG_VERSION in this test build is "0.1.4" (from Cargo.toml).
-        assert_eq!(s, "kvn-tui 0.1.4");
+        let expected = format!("kvn-tui {}", env!("CARGO_PKG_VERSION"));
+        assert_eq!(s, expected);
     }
 
     #[test]
