@@ -100,7 +100,7 @@ fn handle_normal(app: &mut App, key: KeyEvent) -> bool {
         KeyCode::Char('u') => {
             app.trigger_geo_update();
         }
-        KeyCode::Char('e') => handle_editor_result(app, crate::editor::open_profiles_editor()),
+        KeyCode::Char('e') => handle_editor_result(app, crate::editor::open_profiles_editor(app.selected)),
         KeyCode::Char('r') if app.singbox_process.is_some() => {
             app.mode = AppMode::Connecting;
         }
