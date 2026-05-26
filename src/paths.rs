@@ -35,6 +35,13 @@ pub fn geo_dir() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("./geo"))
 }
 
+/// Return the path to the application state JSON file.
+pub fn state_json_path() -> PathBuf {
+    config_dir()
+        .map(|d| d.join("state.json"))
+        .unwrap_or_else(|| PathBuf::from("kvn-tui-state.json"))
+}
+
 /// Ensure the configuration directory and its sub-directories exist.
 /// Returns the config directory on success.
 pub fn ensure_config_dirs() -> anyhow::Result<PathBuf> {
@@ -75,5 +82,11 @@ mod tests {
         let config = config_dir().unwrap();
         let profiles = profiles_path().unwrap();
         assert!(profiles.starts_with(&config));
+    }
+
+    #[test]
+    fn state_json_path_is_not_empty() {
+        let path = state_json_path();
+        assert!(!path.as_os_str().is_empty());
     }
 }

@@ -28,6 +28,15 @@ where
         .any(|arg| matches!(arg.as_ref(), "-v" | "-V" | "--version"))
 }
 
+/// Check whether any of the provided CLI arguments is the waybar status flag.
+fn should_show_waybar_status<I, S>(args: I) -> bool
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<str>,
+{
+    args.into_iter().any(|arg| arg.as_ref() == "--waybar-status")
+}
+
 /// Return the version string shown for `--version`.
 fn version_string() -> String {
     format!("kvn-tui {}", env!("CARGO_PKG_VERSION"))
@@ -36,6 +45,12 @@ fn version_string() -> String {
 /// Entry point for the TUI VPN client.
 #[tokio::main]
 async fn main() -> Result<()> {
+    // Handle waybar status flag (before anything else — fast and stateless).
+    if should_show_waybar_status(std::env::args()) {
+        App::print_waybar_status();
+        return Ok(());
+    }
+
     // Handle version flag.
     if should_show_version(std::env::args()) {
         println!("{}", version_string());
@@ -68,7 +83,7 @@ async fn main() -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{should_show_version, version_string};
+    use super::{should_show_version, should_show_waybar_status, version_string};
 
     #[test]
     fn version_flag_v() {
@@ -107,4 +122,11 @@ mod tests {
     fn help_flag_is_not_version() {
         assert!(!should_show_version(["kvn-tui", "--help"]));
     }
+
+    #[test]
+    fn waybar_status_flag_detected() {
+        assert!(should_show_waybar_status(["kvn-tui", "--waybar-status"]));
+    }
+
+
 }

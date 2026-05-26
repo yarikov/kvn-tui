@@ -20,6 +20,7 @@ pub fn connect(app: &mut App, profile: &Profile) -> Result<()> {
     // Update log path so the UI can tail sing-box logs.
     app.set_singbox_log_path(crate::paths::singbox_log_path());
 
+    app.write_state();
     Ok(())
 }
 
@@ -34,4 +35,5 @@ pub fn disconnect(app: &mut App) {
     app.mode = AppMode::Normal;
     app.active_profile_id = None;
     app.connecting = false;
+    app.write_state();
 }

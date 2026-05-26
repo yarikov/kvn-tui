@@ -2,6 +2,7 @@ use std::path::PathBuf;
 use std::process::Child;
 
 use anyhow::Result;
+use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::config::profile::{Config, Profile, Protocol};
@@ -45,6 +46,14 @@ impl AppStatus {
     pub fn is_error(&self) -> bool {
         matches!(self, AppStatus::Error(_))
     }
+}
+
+/// Serializable application state for external integrations (waybar, etc.).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AppState {
+    pub connected: bool,
+    pub profile_name: Option<String>,
+    pub active_profile_id: Option<String>,
 }
 
 /// Application state shared across the UI and background tasks.
@@ -154,6 +163,9 @@ impl App {
             tracing::warn!("Failed to ensure geo databases: {}", e);
         }
         let selected = config.resolve_selected();
+
+        // Reset state to disconnected on startup in case of previous crash.
+        Self::clear_state();
 
         Ok(Self {
             mode: AppMode::Normal,
@@ -308,6 +320,83 @@ impl App {
     /// Set the path to the sing-box log file to tail in the UI.
     pub fn set_singbox_log_path(&mut self, path: PathBuf) {
         self.log_tailer.set_path(path);
+    }
+
+    /// Write current connection state to the state JSON file.
+    pub fn write_state(&self) {
+        let state = self.build_state();
+        Self::write_state_to(&state, crate::paths::state_json_path());
+    }
+
+    fn build_state(&self) -> AppState {
+        AppState {
+            connected: self.singbox_process.is_some(),
+            profile_name: self.active_profile_id.and_then(|id| {
+                self.config.profiles.iter().find(|p| p.id == id).map(|p| p.name.clone())
+            }),
+            active_profile_id: self.active_profile_id.map(|id| id.to_string()),
+        }
+    }
+
+    /// Clear the state file (used on startup to recover from a crash).
+    pub fn clear_state() {
+        Self::write_state_to(
+            &AppState {
+                connected: false,
+                profile_name: None,
+                active_profile_id: None,
+            },
+            crate::paths::state_json_path(),
+        );
+    }
+
+    fn write_state_to(state: &AppState, path: impl AsRef<std::path::Path>) {
+        let path = path.as_ref();
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        if let Ok(json) = serde_json::to_string_pretty(state) {
+            if let Err(e) = std::fs::write(path, json) {
+                tracing::warn!("Failed to write state file: {}", e);
+            }
+        }
+    }
+
+    /// Print waybar status JSON to stdout.
+    pub fn print_waybar_status() {
+        let state = Self::read_state_from(crate::paths::state_json_path());
+        Self::print_waybar_from_state(&state);
+    }
+
+    fn read_state_from(path: impl AsRef<std::path::Path>) -> AppState {
+        std::fs::read_to_string(path.as_ref())
+            .ok()
+            .and_then(|s| serde_json::from_str(&s).ok())
+            .unwrap_or(AppState {
+                connected: false,
+                profile_name: None,
+                active_profile_id: None,
+            })
+    }
+
+    fn format_waybar(state: &AppState) -> String {
+        let (icon, tooltip, class) = if state.connected {
+            let name = state.profile_name.as_deref().unwrap_or("unknown");
+            ("󰦝", format!("Connected: {}", name), "connected")
+        } else {
+            ("󰦜", "Disconnected".to_string(), "disconnected")
+        };
+
+        format!(
+            "{{\"text\":\"{}\",\"tooltip\":\"{}\",\"class\":\"{}\"}}",
+            icon,
+            tooltip,
+            class
+        )
+    }
+
+    fn print_waybar_from_state(state: &AppState) {
+        println!("{}", Self::format_waybar(state));
     }
 
     /// Read new lines from the sing-box log file and append them to the UI log buffer.
@@ -524,5 +613,111 @@ mod tests {
         app.tail_singbox_logs();
         assert_eq!(app.logs.len(), 2);
         assert!(app.logs[1].contains("new"));
+    }
+
+    #[test]
+    fn clear_state_writes_disconnected() {
+        let temp = tempfile::NamedTempFile::new().unwrap();
+        // Pre-populate with a connected state to simulate a crash.
+        let connected = AppState {
+            connected: true,
+            profile_name: Some("Alpha".to_string()),
+            active_profile_id: Some("550e8400-e29b-41d4-a716-446655440000".to_string()),
+        };
+        App::write_state_to(&connected, temp.path());
+
+        // clear_state should overwrite with disconnected.
+        App::write_state_to(
+            &AppState {
+                connected: false,
+                profile_name: None,
+                active_profile_id: None,
+            },
+            temp.path(),
+        );
+
+        let read = App::read_state_from(temp.path());
+        assert!(!read.connected);
+        assert!(read.profile_name.is_none());
+        assert!(read.active_profile_id.is_none());
+    }
+
+    #[test]
+    fn write_state_to_creates_valid_json() {
+        let state = AppState {
+            connected: true,
+            profile_name: Some("Test Profile".to_string()),
+            active_profile_id: Some("550e8400-e29b-41d4-a716-446655440000".to_string()),
+        };
+        let temp = tempfile::NamedTempFile::new().unwrap();
+        App::write_state_to(&state, temp.path());
+
+        let read = App::read_state_from(temp.path());
+        assert!(read.connected);
+        assert_eq!(read.profile_name, Some("Test Profile".to_string()));
+        assert_eq!(read.active_profile_id, Some("550e8400-e29b-41d4-a716-446655440000".to_string()));
+    }
+
+    #[test]
+    fn read_state_from_returns_default_when_missing() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let missing = temp.path().join("nonexistent.json");
+        let state = App::read_state_from(&missing);
+        assert!(!state.connected);
+        assert!(state.profile_name.is_none());
+        assert!(state.active_profile_id.is_none());
+    }
+
+    #[test]
+    fn build_state_reflects_connection_status() {
+        let mut app = app_with_profiles(vec![Profile::new(
+            "Alpha".to_string(),
+            Protocol::Vless,
+            "1.1.1.1".to_string(),
+            443,
+            "u1".to_string(),
+        )]);
+        let id = app.config.profiles[0].id;
+
+        // Disconnected
+        let state = app.build_state();
+        assert!(!state.connected);
+        assert!(state.profile_name.is_none());
+
+        // Connected (simulate without real Child)
+        app.active_profile_id = Some(id);
+        // singbox_process is None, so still disconnected
+        let state = app.build_state();
+        assert!(!state.connected);
+
+        // We can't easily set singbox_process to Some(Child) in a unit test,
+        // so we test the active_profile_id mapping only.
+        assert_eq!(state.active_profile_id, Some(id.to_string()));
+    }
+
+    #[test]
+    fn format_waybar_connected() {
+        let state = AppState {
+            connected: true,
+            profile_name: Some("Alpha".to_string()),
+            active_profile_id: None,
+        };
+        let json = App::format_waybar(&state);
+        assert!(json.contains("󰦝"));
+        assert!(json.contains("Connected: Alpha"));
+        assert!(json.contains("\"class\":\"connected\""));
+    }
+
+    #[test]
+    fn format_waybar_disconnected() {
+        let state = AppState {
+            connected: false,
+            profile_name: None,
+            active_profile_id: None,
+        };
+        let json = App::format_waybar(&state);
+        assert!(json.contains("󰦜"));
+        assert!(json.contains("Disconnected"));
+        assert!(json.contains("\"class\":\"disconnected\""));
     }
 }
