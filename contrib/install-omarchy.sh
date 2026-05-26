@@ -55,11 +55,6 @@ if [ -f "$WAYBAR_STYLE" ]; then
 #custom-kvn-tui {
   margin-right: 18px;
 }
-#custom-kvn-tui.connected {
-  color: #adda78;
-}
-#custom-kvn-tui.disconnected {
-}
 EOF
   else
     echo "Waybar CSS already present."
