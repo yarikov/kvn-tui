@@ -16,7 +16,7 @@ The app does **not** implement VPN protocols itself. It is a configuration gener
 
 | Module | Path | Responsibility |
 |--------|------|----------------|
-| `app` | `src/app/mod.rs`, `src/app/services.rs` | Application state (`App`), mode enum, background services (log tailer, health checker, geo updater, suspend watcher) |
+| `app` | `src/app/mod.rs`, `src/app/services.rs` | Application state (`App`), mode enum, background services (log tailer, geo updater, suspend watcher) |
 | `ui` | `src/ui/mod.rs`, `src/ui/layout.rs`, `src/ui/widgets.rs`, `src/ui/styles.rs`, `src/ui/nav.rs` | ratatui rendering, layout splits, widget definitions, color theme, navigation helpers |
 | `input` | `src/input/mod.rs` | crossterm event handling, vim key bindings, mode-specific input routing |
 | `config` | `src/config/mod.rs`, `src/config/profile.rs`, `src/config/singbox.rs` | JSON config I/O, profile struct definitions, sing-box JSON config generation |

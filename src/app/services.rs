@@ -4,10 +4,6 @@ use std::path::PathBuf;
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::time::{Duration, Instant};
 
-/// Health check interval in seconds.
-const HEALTH_CHECK_INTERVAL_SECS: u64 = 10;
-/// HTTP request timeout for health checks in seconds.
-const HEALTH_CHECK_TIMEOUT_SECS: u64 = 10;
 /// Suspend detection threshold in seconds.
 const SUSPEND_THRESHOLD_SECS: u64 = 30;
 
@@ -54,79 +50,6 @@ impl LogTailer {
             self.pos = file_len;
         }
         lines
-    }
-}
-
-/// Periodic health-check over HTTPS.
-pub struct HealthChecker {
-    tx: Sender<String>,
-    rx: Receiver<String>,
-    last_check: Instant,
-}
-
-impl HealthChecker {
-    pub fn new() -> Self {
-        let (tx, rx) = channel();
-        Self {
-            tx,
-            rx,
-            last_check: Instant::now(),
-        }
-    }
-
-    /// Poll completed results and optionally spawn a new check.
-    /// Returns any newly received messages.
-    pub fn check(&mut self, connected: bool) -> Vec<String> {
-        let mut results = Vec::new();
-        while let Ok(msg) = self.rx.try_recv() {
-            results.push(msg);
-        }
-
-        if !connected {
-            return results;
-        }
-
-        if self.last_check.elapsed() < Duration::from_secs(HEALTH_CHECK_INTERVAL_SECS) {
-            return results;
-        }
-        self.last_check = Instant::now();
-
-        let tx = self.tx.clone();
-        tokio::task::spawn_blocking(move || {
-            let client = match reqwest::blocking::Client::builder()
-                .timeout(Duration::from_secs(HEALTH_CHECK_TIMEOUT_SECS))
-                .no_proxy()
-                .build()
-            {
-                Ok(c) => c,
-                Err(e) => {
-                    if let Err(e) = tx.send(format!("Failed to build HTTP client: {}", e)) {
-                        tracing::warn!("Health check send failed: {}", e);
-                    }
-                    return;
-                }
-            };
-
-            match client.get("https://www.google.com/generate_204").send() {
-                Ok(resp) if resp.status().as_u16() == 204 => {
-                    if let Err(e) = tx.send("Connection healthy".to_string()) {
-                        tracing::warn!("Health check send failed: {}", e);
-                    }
-                }
-                Ok(resp) => {
-                    if let Err(e) = tx.send(format!("Unexpected status: {}", resp.status())) {
-                        tracing::warn!("Health check send failed: {}", e);
-                    }
-                }
-                Err(e) => {
-                    if let Err(e) = tx.send(format!("No connectivity: {}", e)) {
-                        tracing::warn!("Health check send failed: {}", e);
-                    }
-                }
-            }
-        });
-
-        results
     }
 }
 

@@ -66,7 +66,6 @@ pub struct App {
     pub geo_manager: GeoManager,
     pub geo_updating: bool,
     log_tailer: services::LogTailer,
-    health_checker: services::HealthChecker,
     geo_updater: services::GeoUpdater,
     suspend_watcher: services::SuspendWatcher,
 }
@@ -174,7 +173,6 @@ impl App {
             geo_manager,
             geo_updating: false,
             log_tailer: services::LogTailer::new(crate::paths::singbox_log_path()),
-            health_checker: services::HealthChecker::new(),
             geo_updater: services::GeoUpdater::new(),
             suspend_watcher: services::SuspendWatcher::new(),
         })
@@ -270,11 +268,6 @@ impl App {
             self.push_log(line);
         }
 
-        let health_messages = self.health_checker.check(connected);
-        for msg in health_messages {
-            self.push_log(format!("[health] {}", msg));
-        }
-
         let geo_messages = self.geo_updater.poll();
         for msg in geo_messages {
             self.geo_updating = false;
@@ -354,7 +347,6 @@ impl App {
             geo_manager,
             geo_updating: false,
             log_tailer: services::LogTailer::new(crate::paths::singbox_log_path()),
-            health_checker: services::HealthChecker::new(),
             geo_updater: services::GeoUpdater::new(),
             suspend_watcher: services::SuspendWatcher::test_new(),
         }
