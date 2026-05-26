@@ -37,6 +37,30 @@ where
     args.into_iter().any(|arg| arg.as_ref() == "--waybar-status")
 }
 
+/// Check whether any of the provided CLI arguments is the omarchy install flag.
+fn should_install_omarchy<I, S>(args: I) -> bool
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<str>,
+{
+    args.into_iter().any(|arg| arg.as_ref() == "--install-omarchy")
+}
+
+/// Run the embedded Omarchy integration installer script.
+fn install_omarchy() -> anyhow::Result<()> {
+    let script = include_str!("../contrib/install-omarchy.sh");
+    let tmp = std::env::temp_dir().join("kvn-tui-install-omarchy.sh");
+    std::fs::write(&tmp, script)?;
+    let status = std::process::Command::new("bash")
+        .arg(&tmp)
+        .status()?;
+    std::fs::remove_file(&tmp).ok();
+    if !status.success() {
+        anyhow::bail!("install-omarchy.sh exited with status {}", status);
+    }
+    Ok(())
+}
+
 /// Return the version string shown for `--version`.
 fn version_string() -> String {
     format!("kvn-tui {}", env!("CARGO_PKG_VERSION"))
@@ -45,7 +69,12 @@ fn version_string() -> String {
 /// Entry point for the TUI VPN client.
 #[tokio::main]
 async fn main() -> Result<()> {
-    // Handle waybar status flag (before anything else — fast and stateless).
+    // Handle omarchy install flag (before anything else).
+    if should_install_omarchy(std::env::args()) {
+        return install_omarchy();
+    }
+
+    // Handle waybar status flag (fast and stateless).
     if should_show_waybar_status(std::env::args()) {
         App::print_waybar_status();
         return Ok(());
@@ -83,7 +112,7 @@ async fn main() -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{should_show_version, should_show_waybar_status, version_string};
+    use super::{should_show_version, should_show_waybar_status, should_install_omarchy, version_string};
 
     #[test]
     fn version_flag_v() {
@@ -126,6 +155,11 @@ mod tests {
     #[test]
     fn waybar_status_flag_detected() {
         assert!(should_show_waybar_status(["kvn-tui", "--waybar-status"]));
+    }
+
+    #[test]
+    fn install_omarchy_flag_detected() {
+        assert!(should_install_omarchy(["kvn-tui", "--install-omarchy"]));
     }
 
 

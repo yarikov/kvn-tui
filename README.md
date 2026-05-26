@@ -75,6 +75,23 @@ The application relies on Wayland-specific clipboard integration (`wl-paste`) an
 yay -S kvn-tui-bin
 ```
 
+### Omarchy Setup
+
+If you use [Omarchy](https://omarchy.org/), run this after installation to enable Waybar and Walker integration:
+
+```bash
+kvn-tui --install-omarchy
+```
+
+This automatically:
+
+- Adds a `custom/kvn-tui` module to Waybar (shows connected/disconnected status, clicks open the TUI)
+- Installs a `.desktop` entry so the app appears in Walker (`Super + Space`)
+- Pulls accent colors from the current Omarchy theme for the Waybar icon
+- Restarts Waybar to apply changes
+
+> The installer is idempotent — running it again will skip already-applied changes.
+
 ### Build & Install from Source
 
 #### Prerequisites
