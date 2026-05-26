@@ -1,0 +1,9 @@
+[Desktop Entry]
+Name=kvn-tui
+Comment=Terminal VPN client
+Exec=omarchy-launch-or-focus-tui sudo kvn-tui
+Type=Application
+Terminal=false
+Categories=Network;VPN;
+Keywords=vpn;network;sing-box;vless;
+Icon=network-vpn-symbolic

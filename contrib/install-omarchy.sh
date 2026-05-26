@@ -79,6 +79,26 @@ else
   echo "Warning: waybar style not found at $WAYBAR_STYLE"
 fi
 
+# ── Desktop entry for Walker / Super+Space ──
+DESKTOP_FILE="${HOME}/.local/share/applications/kvn-tui.desktop"
+if [ ! -f "$DESKTOP_FILE" ]; then
+  echo "Installing desktop entry..."
+  mkdir -p "$(dirname "$DESKTOP_FILE")"
+  cat > "$DESKTOP_FILE" <<'EOF'
+[Desktop Entry]
+Name=kvn-tui
+Comment=Terminal VPN client
+Exec=omarchy-launch-or-focus-tui sudo kvn-tui
+Type=Application
+Terminal=false
+Categories=Network;VPN;
+Keywords=vpn;network;sing-box;vless;
+Icon=network-vpn-symbolic
+EOF
+else
+  echo "Desktop entry already present."
+fi
+
 # ── Restart waybar ──
 if command -v omarchy &> /dev/null; then
   echo "Restarting waybar..."
