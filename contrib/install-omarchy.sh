@@ -4,7 +4,25 @@ set -e
 WAYBAR_CONFIG="${HOME}/.config/waybar/config.jsonc"
 WAYBAR_STYLE="${HOME}/.config/waybar/style.css"
 
+backup_file() {
+  local file="$1"
+  if [ -f "$file" ] && [ ! -f "$file.bak.before-kvn-tui" ]; then
+    cp "$file" "$file.bak.before-kvn-tui"
+  fi
+}
+
+restore_file() {
+  local file="$1"
+  if [ -f "$file.bak.before-kvn-tui" ]; then
+    cp "$file.bak.before-kvn-tui" "$file"
+  fi
+}
+
 echo "Installing kvn-tui Omarchy integration..."
+
+# ── Backup waybar files ──
+backup_file "$WAYBAR_CONFIG"
+backup_file "$WAYBAR_STYLE"
 
 # ── Waybar module ──
 if [ -f "$WAYBAR_CONFIG" ]; then
@@ -87,6 +105,15 @@ fi
 if command -v omarchy &> /dev/null; then
   echo "Restarting waybar..."
   omarchy restart waybar
+  sleep 2
+  if ! pgrep -x waybar > /dev/null 2>&1; then
+    echo "Error: waybar failed to start. Restoring backups..."
+    restore_file "$WAYBAR_CONFIG"
+    restore_file "$WAYBAR_STYLE"
+    omarchy restart waybar
+    echo "Backups restored. Please check waybar config manually."
+    exit 1
+  fi
 else
   echo "Warning: omarchy command not found. Please restart waybar manually."
 fi
