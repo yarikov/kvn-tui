@@ -16,16 +16,21 @@ The app does **not** implement VPN protocols itself. It is a configuration gener
 
 | Module | Path | Responsibility |
 |--------|------|----------------|
-| `app` | `src/app/mod.rs`, `src/app/services.rs` | Application state (`App`), mode enum, background services (log tailer, geo updater, suspend watcher) |
+| `model` | `src/model.rs` | Application state (`Model`), mode enum, input state — pure data, no side effects |
+| `msg` | `src/msg.rs` | Message enum (`Msg`) — all external events (keys, ticks, logs, geo, resume, etc.) |
+| `update` | `src/update.rs` | Pure `update(model, msg) -> Vec<Effect>` — business logic, input routing, mode transitions |
+| `effect` | `src/effect.rs` | Effect enum — declarative description of side effects to be executed by runtime |
+| `runtime` | `src/runtime.rs` | TUI main loop: owns `mpsc` channel, spawns threads, renders UI, executes effects |
 | `ui` | `src/ui/mod.rs`, `src/ui/layout.rs`, `src/ui/widgets.rs`, `src/ui/styles.rs`, `src/ui/nav.rs` | ratatui rendering, layout splits, widget definitions, color theme, navigation helpers |
-| `input` | `src/input/mod.rs` | crossterm event handling, vim key bindings, mode-specific input routing |
 | `config` | `src/config/mod.rs`, `src/config/profile.rs`, `src/config/singbox.rs` | JSON config I/O, profile struct definitions, sing-box JSON config generation |
 | `singbox` | `src/singbox/mod.rs`, `src/singbox/runner.rs` | Process lifecycle: write temp config, run `sing-box check`, spawn `sing-box run`, kill on disconnect |
 | `clipboard` | `src/clipboard/mod.rs` | Wayland clipboard integration (`wl-paste`), VLESS share link parsing (`vless://`) |
 | `geo` | `src/geo/mod.rs` | Download and cache geoip/geosite rule-sets for sing-box routing |
 | `editor` | `src/editor/mod.rs` | Launch `$EDITOR` / `$VISUAL` on `profiles.json`, temporarily restore terminal |
 | `paths` | `src/paths.rs` | XDG directory resolution (`~/.config/kvn-tui/`), atomic path construction |
+| `state_io` | `src/state_io.rs` | Read/write `state.json` for waybar integration and crash recovery |
 | `suspend` | `src/suspend.rs` | D-Bus listener for `systemd-logind` `PrepareForSleep` signals (zbus) |
+| `services` | `src/services/mod.rs`, `src/services/log_tailer.rs` | Log tailer for sing-box output |
 
 ---
 
@@ -33,7 +38,7 @@ The app does **not** implement VPN protocols itself. It is a configuration gener
 
 - **Rust**: edition 2021, minimum version 1.87
 - **External binary**: `sing-box` must be installed separately and available on `$PATH` (or via `SING_BOX_PATH` env var)
-- **Key crates**: `tokio` (async), `ratatui` + `crossterm` (TUI), `serde` + `serde_json` (config), `zbus` (D-Bus), `reqwest` (HTTP), `tracing` (logs), `anyhow` + `thiserror` (errors)
+- **Key crates**: `ratatui` + `crossterm` (TUI), `serde` + `serde_json` (config), `zbus` (D-Bus), `ureq` (HTTP), `tracing` (logs), `anyhow` + `thiserror` (errors)
 
 Build release:
 
@@ -97,6 +102,24 @@ sudo ./target/release/kvn-tui
 
 ## Key Design Decisions
 
+### TEA Architecture
+The application follows **The Elm Architecture (TEA)**:
+1. **Model** (`model.rs`) holds all application state as pure data.
+2. **Messages** (`msg.rs`) represent every external event — keyboard input, timer ticks, log lines, geo updates, system resume.
+3. **Update** (`update.rs`) is a pure function `update(model, msg) -> Vec<Effect>`: no I/O, no threads, no system calls. All business logic lives here.
+4. **Effects** (`effect.rs`) are declarative descriptions of side effects (`Connect`, `DownloadGeo`, `SaveConfig`, `Quit`, etc.).
+5. **Runtime** (`runtime.rs`) owns the `mpsc` channel, spawns background threads (event reader, ticker, suspend watcher), renders the UI, and executes effects by performing the actual I/O.
+
+This separation makes `update.rs` fully synchronous and trivial to unit-test.
+
+### Background Services
+Background work is executed in dedicated threads spawned by `runtime.rs`:
+- **Event reader** — reads `crossterm` events and sends `Msg::Key` / `Msg::Resize`.
+- **Ticker** — sends `Msg::Tick` every 250 ms to drive log tailing and connection state machines.
+- **Suspend watcher** — blocking zbus listener that sends `Msg::SystemResumed`.
+- **Effects** — `Connect`, `Reconnect`, `DownloadGeo`, and `PasteClipboard` each spawn a short-lived thread that sends the result back via the same channel.
+- **Log tailer** — `LogTailer` (`services/log_tailer.rs`) reads new lines from the sing-box log file on every `Tick`.
+
 ### sing-box Config Generation
 - `config::singbox::generate_config` builds a complete sing-box 1.12+ JSON object from a `Profile` and `Settings`.
 - The config is written to a temp file (`/tmp/kvn-tui-singbox.json` or `$XDG_RUNTIME_DIR`), validated with `sing-box check`, and only then is `sing-box run` spawned.
@@ -113,7 +136,11 @@ sudo ./target/release/kvn-tui
 - The parser extracts: UUID, host, port, fragment (name), `flow`, `security`, `fp` (fingerprint), `type` (transport), `serviceName`, and REALITY params (`pbk`, `sid`, `sni`, `spx`).
 
 ### Suspend / Resume
-- `suspend.rs` spawns an async zbus listener. On resume (`PrepareForSleep` with `false`), it signals the main loop via an `mpsc` channel so the app can reconnect.
+- `suspend.rs` runs a blocking zbus listener in a dedicated thread. On resume (`PrepareForSleep` with `false`), it sends `Msg::SystemResumed` through the `mpsc` channel so `update.rs` can schedule a reconnect effect.
+
+### State I/O
+- `state_io.rs` writes a small JSON file (`state.json`) on every connect/disconnect. It stores connection status, active profile name, and sing-box PID.
+- Used by the `--waybar-status` CLI flag and for crash recovery (state is cleared on startup).
 
 ---
 
@@ -125,6 +152,7 @@ sudo ./target/release/kvn-tui
 | Geo rule-sets | `~/.config/kvn-tui/geo/` |
 | sing-box logs | `~/.config/kvn-tui/logs/sing-box.log` |
 | Temp sing-box config | `$XDG_RUNTIME_DIR/kvn-tui-singbox.json` or `/tmp/kvn-tui-singbox.json` |
+| Runtime state (waybar) | `~/.config/kvn-tui/state.json` |
 
 ---
 

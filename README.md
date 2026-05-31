@@ -39,21 +39,22 @@ Under the hood, `kvn-tui` is built entirely in **Rust** and leverages the follow
 
 | Component | Library / Tool | Purpose |
 |-----------|--------------|---------|
-| Async runtime | [Tokio](https://tokio.rs/) | Non-blocking I/O and background services |
 | TUI framework | [ratatui](https://ratatui.rs/) + [crossterm](https://github.com/crossterm-rs/crossterm) | Terminal UI rendering and input handling |
 | VPN backend | [sing-box](https://sing-box.sagernet.org/) (external binary) | Actual VPN engine (TUN, routing, protocols) |
 | Serialization | [serde](https://serde.rs/) + `serde_json` | Configuration and profile storage |
-| HTTP client | [reqwest](https://github.com/seanmonstar/reqwest) | Geo database downloads |
-| D-Bus integration | [zbus](https://docs.rs/zbus/latest/zbus/) + `futures-util` | Suspend/resume detection via `systemd-logind` |
+| HTTP client | [ureq](https://github.com/algesten/ureq) | Geo database downloads |
+| D-Bus integration | [zbus](https://docs.rs/zbus/latest/zbus/) | Suspend/resume detection via `systemd-logind` |
 | Logging | [tracing](https://github.com/tokio-rs/tracing) | Structured application logs |
 | Error handling | [anyhow](https://github.com/dtolnay/anyhow) + [thiserror](https://github.com/dtolnay/thiserror) | Ergonomic error propagation |
 | Utilities | `uuid`, `chrono`, `url`, `urlencoding`, `dirs` | IDs, timestamps, URI parsing, XDG directories |
 
 ### Architecture Highlights
 
+- **TEA (The Elm Architecture)** — the application is split into pure `Model` / `update` / `Effect` / `Runtime` layers. Business logic in `update.rs` is fully synchronous and side-effect-free, making it easy to unit-test.
 - **sing-box runner** — dynamically generates valid sing-box 1.12+ JSON configurations from profile data, validates them with `sing-box check`, and spawns the process with automatic crash detection.
-- **Background services** — log tailer, geo updater, and suspend watcher all run concurrently on the Tokio runtime.
+- **Background services** — event reader, ticker, suspend watcher, and effect workers run in dedicated threads communicating through an `mpsc` channel. Log tailing and geo updates are driven by messages, not shared mutable state.
 - **Atomic config writes** — `profiles.json` is written to a temporary file and renamed to prevent corruption.
+- **State I/O** — connection status and active profile are persisted to `state.json` for waybar integration and crash recovery.
 
 ---
 
