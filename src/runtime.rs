@@ -82,6 +82,23 @@ fn execute_effect(
 ) -> Result<()> {
     match effect {
         Effect::Connect(profile, settings) => {
+            model.connection_pending = true;
+            let tx = tx.clone();
+            thread::spawn(move || {
+                match crate::singbox::runner::start(&profile, &settings) {
+                    Ok(child) => {
+                        let _ = tx.send(Msg::Connected(child));
+                    }
+                    Err(e) => {
+                        let _ = tx.send(Msg::ConnectFailed(e.to_string()));
+                    }
+                }
+            });
+        }
+        Effect::Reconnect(profile, settings) => {
+            // Kill existing process first
+            crate::singbox::disconnect(model);
+            model.connection_pending = true;
             let tx = tx.clone();
             thread::spawn(move || {
                 match crate::singbox::runner::start(&profile, &settings) {
@@ -96,6 +113,8 @@ fn execute_effect(
         }
         Effect::Disconnect => {
             crate::singbox::disconnect(model);
+            model.connection_pending = false;
+            model.active_profile_id = None;
             model.status = crate::model::AppStatus::Info("Disconnected".into());
             model.mode = crate::model::AppMode::Normal;
             crate::state_io::write_state(model);

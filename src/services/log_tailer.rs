@@ -10,6 +10,12 @@ pub struct LogTailer {
 
 impl LogTailer {
     pub fn new(path: PathBuf) -> Self {
+        let pos = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+        Self { path, pos }
+    }
+
+    #[cfg(test)]
+    pub fn test_new(path: PathBuf) -> Self {
         Self { path, pos: 0 }
     }
 
@@ -56,7 +62,8 @@ mod tests {
         writeln!(temp, "log line 2").unwrap();
         let path = temp.path().to_path_buf();
 
-        let mut tailer = LogTailer::new(path);
+        // Start from beginning for this test
+        let mut tailer = LogTailer::test_new(path);
         let lines = tailer.tail();
         assert_eq!(lines.len(), 2);
         assert!(lines[0].contains("log line 1"));
@@ -69,7 +76,8 @@ mod tests {
         writeln!(temp, "this is a long old log line").unwrap();
         let path = temp.path().to_path_buf();
 
-        let mut tailer = LogTailer::new(path.clone());
+        // Start from beginning for this test
+        let mut tailer = LogTailer::test_new(path.clone());
         let lines = tailer.tail();
         assert_eq!(lines.len(), 1);
 

@@ -28,13 +28,14 @@ pub fn update(model: &mut Model, msg: Msg) -> Vec<Effect> {
                 let profile = model.selected_profile().cloned();
                 let settings = model.config.settings.clone();
                 profile
-                    .map(|p| vec![Effect::Connect(p, settings)])
+                    .map(|p| vec![Effect::Reconnect(p, settings)])
                     .unwrap_or_default()
             } else {
                 vec![]
             }
         }
         Msg::Connected(child) => {
+            model.connection_pending = false;
             model.singbox_process = Some(child);
             model.mode = AppMode::Connected;
             if let Some(profile) = model.selected_profile() {
@@ -49,6 +50,7 @@ pub fn update(model: &mut Model, msg: Msg) -> Vec<Effect> {
             vec![Effect::WriteState]
         }
         Msg::ConnectFailed(err) => {
+            model.connection_pending = false;
             model.mode = AppMode::Error;
             model.status = crate::model::AppStatus::Error(format!(
                 "Connection failed: {}",
@@ -103,10 +105,14 @@ fn handle_tick(model: &mut Model) -> Vec<Effect> {
     // and sends GeoUpdated messages, so nothing to do here directly.
 
     // Connection handling
-    if model.mode == AppMode::Connecting {
+    if model.mode == AppMode::Connecting && !model.connection_pending {
         if let Some(profile) = model.selected_profile().cloned() {
             let settings = model.config.settings.clone();
-            effects.push(Effect::Connect(profile, settings));
+            if model.singbox_process.is_some() {
+                effects.push(Effect::Reconnect(profile, settings));
+            } else {
+                effects.push(Effect::Connect(profile, settings));
+            }
         } else {
             model.mode = AppMode::Normal;
         }
@@ -818,7 +824,33 @@ mod tests {
         let mut model = Model::test_new(crate::config::profile::Config::default());
         let effects = update(&mut model, Msg::ConnectFailed("timeout".into()));
         assert_eq!(model.mode, AppMode::Error);
+        assert!(!model.connection_pending);
         assert!(effects.is_empty());
+    }
+
+    #[test]
+    fn handle_tick_skips_connect_when_pending() {
+        let mut model = model_with_profiles(vec![Profile::new(
+            "A".to_string(),
+            Protocol::Vless,
+            "1.1.1.1".to_string(),
+            443,
+            "u1".to_string(),
+        )]);
+        model.mode = AppMode::Connecting;
+        model.connection_pending = true;
+        let effects = handle_tick(&mut model);
+        assert!(effects.iter().all(|e| !matches!(e, Effect::Connect(_, _) | Effect::Reconnect(_, _))));
+    }
+
+    #[test]
+    fn connected_clears_pending() {
+        let mut model = Model::test_new(crate::config::profile::Config::default());
+        model.connection_pending = true;
+        let effects = update(&mut model, Msg::Connected(std::process::Command::new("true").spawn().unwrap()));
+        assert!(!model.connection_pending);
+        assert_eq!(model.mode, AppMode::Connected);
+        assert_eq!(effects, vec![Effect::WriteState]);
     }
 
     #[test]
