@@ -1,6 +1,7 @@
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
+use ratatui::style::Modifier;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
+use ratatui::widgets::{Block, Borders, Clear, Paragraph, Row, Table, Wrap};
 use ratatui::Frame;
 
 use crate::model::{AppMode, Model};
@@ -71,30 +72,47 @@ fn draw_status_bar(frame: &mut Frame, model: &Model, area: Rect) {
 
 /// Draw the help popup overlay.
 fn draw_help(frame: &mut Frame, area: Rect) {
-    draw_modal(
-        frame,
-        area,
-        " Help ",
-        vec![
-            Line::from(Span::styled("Key Bindings", Theme::accent())),
-            Line::from(""),
-            Line::from("j / Down    Move down"),
-            Line::from("k / Up      Move up"),
-            Line::from("g           Go to first"),
-            Line::from("G           Go to last"),
-            Line::from("Enter       Connect to selected"),
-            Line::from("p           Paste from clipboard"),
-            Line::from("n           New profile"),
-            Line::from("d           Delete profile"),
-            Line::from("m           Routing mode (popup list)"),
-            Line::from("u           Update geoip/geosite databases"),
-            Line::from("e           Open profiles.json in $EDITOR"),
-            Line::from("r           Reconnect"),
-            Line::from("s           Stop / disconnect"),
-            Line::from("q / Esc     Quit"),
-            Line::from("?           Show this help"),
-        ],
-    );
+    let popup_area = centered_rect(POPUP_WIDTH_PERCENT, POPUP_HEIGHT_PERCENT, area);
+
+    frame.render_widget(Clear, popup_area);
+
+    let block = Block::default()
+        .title(" Help ")
+        .borders(Borders::ALL)
+        .border_style(Theme::border())
+        .style(Theme::popup_bg());
+
+    let inner = block.inner(popup_area);
+    frame.render_widget(block, popup_area);
+
+    let header = Row::new(vec!["Key", "Action"])
+        .style(Theme::accent().add_modifier(Modifier::BOLD));
+
+    let rows: Vec<Row> = vec![
+        Row::new(vec!["j / Down", "Move down"]),
+        Row::new(vec!["k / Up", "Move up"]),
+        Row::new(vec!["g", "Go to first"]),
+        Row::new(vec!["G", "Go to last"]),
+        Row::new(vec!["Enter", "Connect to selected"]),
+        Row::new(vec!["p", "Paste from clipboard"]),
+        Row::new(vec!["n", "New profile"]),
+        Row::new(vec!["d", "Delete profile"]),
+        Row::new(vec!["m", "Routing mode (popup list)"]),
+        Row::new(vec!["u", "Update geoip/geosite databases"]),
+        Row::new(vec!["e", "Open profiles.json in $EDITOR"]),
+        Row::new(vec!["r", "Reconnect"]),
+        Row::new(vec!["s", "Stop / disconnect"]),
+        Row::new(vec!["q / Esc", "Quit"]),
+        Row::new(vec!["?", "Show this help"]),
+    ];
+
+    let table = Table::new(
+        rows,
+        [Constraint::Length(12), Constraint::Min(1)],
+    )
+    .header(header);
+
+    frame.render_widget(table, inner);
 }
 
 /// Draw the delete confirmation dialog.
@@ -292,5 +310,50 @@ mod tests {
         let popup = centered_rect(50, 50, area);
         assert_eq!(popup.width, 0);
         assert_eq!(popup.height, 0);
+    }
+
+    #[test]
+    fn help_renders_commands() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        let backend = TestBackend::new(80, 40);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let frame = terminal.draw(|frame| {
+            let area = frame.area();
+            draw_help(frame, area);
+        }).unwrap();
+
+        let content: String = frame.buffer.content.iter().map(|c| c.symbol()).collect();
+        let expected = [
+            ("j / Down", "Move down"),
+            ("k / Up", "Move up"),
+            ("g", "Go to first"),
+            ("G", "Go to last"),
+            ("Enter", "Connect to selected"),
+            ("p", "Paste from clipboard"),
+            ("n", "New profile"),
+            ("d", "Delete profile"),
+            ("m", "Routing mode (popup list)"),
+            ("u", "Update geoip/geosite databases"),
+            ("e", "Open profiles.json in $EDITOR"),
+            ("r", "Reconnect"),
+            ("s", "Stop / disconnect"),
+            ("q / Esc", "Quit"),
+            ("?", "Show this help"),
+        ];
+        for (key, action) in expected {
+            assert!(
+                content.contains(key),
+                "help should contain key: {}",
+                key
+            );
+            assert!(
+                content.contains(action),
+                "help should contain action: {}",
+                action
+            );
+        }
+        assert!(content.contains("Help"), "should contain Help title");
     }
 }
