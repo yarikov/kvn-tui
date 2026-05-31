@@ -3,12 +3,12 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
 use ratatui::Frame;
 
-use crate::app::{App, AppMode};
+use crate::model::{AppMode, Model};
 use crate::ui::styles::Theme;
 use crate::ui::widgets::{ProfileList, StatusBar};
 
 /// Render the full application UI into the terminal frame.
-pub fn draw(frame: &mut Frame, app: &App) {
+pub fn draw(frame: &mut Frame, model: &Model) {
     let area = frame.area();
 
     // Main vertical layout: content + status bar
@@ -17,29 +17,29 @@ pub fn draw(frame: &mut Frame, app: &App) {
         .constraints([Constraint::Min(0), Constraint::Length(1)])
         .split(area);
 
-    draw_main(frame, app, chunks[0]);
-    draw_status_bar(frame, app, chunks[1]);
+    draw_main(frame, model, chunks[0]);
+    draw_status_bar(frame, model, chunks[1]);
 
-    match app.mode {
+    match model.mode {
         AppMode::Help => draw_help(frame, area),
         AppMode::ConfirmDelete => draw_confirm_delete(frame, area),
         AppMode::ConfirmQuit => draw_confirm_quit(frame, area),
-        AppMode::Error => draw_error(frame, area, app.status.text()),
-        AppMode::CreateProfile => draw_input_modal(frame, app, area),
-        AppMode::PasteUri => draw_paste_uri(frame, app, area),
-        AppMode::RoutingMode => draw_routing_mode(frame, app, area),
+        AppMode::Error => draw_error(frame, area, model.status.text()),
+        AppMode::CreateProfile => draw_input_modal(frame, model, area),
+        AppMode::PasteUri => draw_paste_uri(frame, model, area),
+        AppMode::RoutingMode => draw_routing_mode(frame, model, area),
         _ => {}
     }
 }
 
 /// Draw the main content area with the profile list and logs.
-fn draw_main(frame: &mut Frame, app: &App, area: Rect) {
+fn draw_main(frame: &mut Frame, model: &Model, area: Rect) {
     let chunks = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
         .split(area);
 
-    let profile_list = ProfileList::new(app);
+    let profile_list = ProfileList::new(model);
     frame.render_widget(profile_list, chunks[0]);
 
     let log_block = Block::default()
@@ -49,8 +49,8 @@ fn draw_main(frame: &mut Frame, app: &App, area: Rect) {
 
     // Show the most recent log lines that fit in the available area.
     let available_height = chunks[1].height.saturating_sub(2) as usize;
-    let start = app.logs.len().saturating_sub(available_height);
-    let log_text: Vec<Line> = app
+    let start = model.logs.len().saturating_sub(available_height);
+    let log_text: Vec<Line> = model
         .logs
         .iter()
         .skip(start)
@@ -64,8 +64,8 @@ fn draw_main(frame: &mut Frame, app: &App, area: Rect) {
 }
 
 /// Draw the bottom status bar.
-fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect) {
-    let status = StatusBar::new(app);
+fn draw_status_bar(frame: &mut Frame, model: &Model, area: Rect) {
+    let status = StatusBar::new(model);
     frame.render_widget(status, area);
 }
 
@@ -146,7 +146,7 @@ fn draw_error(frame: &mut Frame, area: Rect, message: &str) {
 }
 
 /// Draw the input modal for pasting a URI manually.
-fn draw_paste_uri(frame: &mut Frame, app: &App, area: Rect) {
+fn draw_paste_uri(frame: &mut Frame, model: &Model, area: Rect) {
     draw_modal(
         frame,
         area,
@@ -154,7 +154,7 @@ fn draw_paste_uri(frame: &mut Frame, app: &App, area: Rect) {
         vec![
             Line::from(Span::styled("Paste VPN URI", Theme::accent())),
             Line::from(""),
-            Line::from(app.input_buffer.as_str()),
+            Line::from(model.input.buffer.as_str()),
             Line::from(""),
             Line::from("Enter to confirm, Esc to cancel"),
         ],
@@ -162,10 +162,10 @@ fn draw_paste_uri(frame: &mut Frame, app: &App, area: Rect) {
 }
 
 /// Draw the input modal for creating or editing a profile.
-fn draw_input_modal(frame: &mut Frame, app: &App, area: Rect) {
-    let label = app.input_field.label();
+fn draw_input_modal(frame: &mut Frame, model: &Model, area: Rect) {
+    let label = model.input.field.label();
 
-    let title = if app.mode == AppMode::CreateProfile {
+    let title = if model.mode == AppMode::CreateProfile {
         " New Profile "
     } else {
         " Edit Profile "
@@ -178,7 +178,7 @@ fn draw_input_modal(frame: &mut Frame, app: &App, area: Rect) {
         vec![
             Line::from(Span::styled(label, Theme::accent())),
             Line::from(""),
-            Line::from(app.input_buffer.as_str()),
+            Line::from(model.input.buffer.as_str()),
             Line::from(""),
             Line::from("Enter to confirm, Esc to cancel"),
         ],
@@ -209,7 +209,7 @@ fn draw_modal(frame: &mut Frame, area: Rect, title: &str, lines: Vec<Line>) {
 }
 
 /// Draw the routing mode selection modal.
-fn draw_routing_mode(frame: &mut Frame, app: &App, area: Rect) {
+fn draw_routing_mode(frame: &mut Frame, model: &Model, area: Rect) {
     use crate::config::profile::RoutingMode;
     use ratatui::style::Modifier;
     use ratatui::text::Span;
@@ -221,13 +221,13 @@ fn draw_routing_mode(frame: &mut Frame, app: &App, area: Rect) {
     ];
 
     for (i, mode) in modes.iter().enumerate() {
-        let marker = if i == app.routing_selected {
+        let marker = if i == model.routing_selected {
             "> "
         } else {
             "  "
         };
         let text = format!("{}{}", marker, mode.as_str());
-        let style = if i == app.routing_selected {
+        let style = if i == model.routing_selected {
             Theme::accent().add_modifier(Modifier::BOLD)
         } else {
             Theme::normal()

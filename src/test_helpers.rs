@@ -1,7 +1,7 @@
 use crossterm::event::{KeyCode, KeyEvent};
 
-use crate::app::App;
 use crate::config::profile::{Config, Profile, Protocol};
+use crate::model::Model;
 
 /// Generate a small set of sample profiles for unit tests.
 pub fn sample_profiles() -> Vec<Profile> {
@@ -30,11 +30,11 @@ pub fn sample_profiles() -> Vec<Profile> {
     ]
 }
 
-/// Build an `App` pre-filled with the given profiles for testing.
-pub fn app_with_profiles(profiles: Vec<Profile>) -> App {
+/// Build a `Model` pre-filled with the given profiles for testing.
+pub fn model_with_profiles(profiles: Vec<Profile>) -> Model {
     let mut config = Config::default();
     config.profiles = profiles;
-    App::test_new(config)
+    Model::test_new(config)
 }
 
 /// Create a simple `KeyEvent` from a character for testing input handlers.

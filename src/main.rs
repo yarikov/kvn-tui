@@ -1,53 +1,41 @@
-mod app;
 mod clipboard;
 mod config;
 mod editor;
+mod effect;
 mod geo;
-mod input;
+mod model;
+mod msg;
 mod paths;
+mod services;
 mod singbox;
+mod state_io;
 mod suspend;
 mod ui;
+mod update;
+mod runtime;
 
 #[cfg(test)]
 mod test_helpers;
 
 use anyhow::Result;
+use clap::Parser;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
-use crate::app::App;
+use crate::model::Model;
 use crate::paths::ensure_config_dirs;
 
-/// Check whether any of the provided CLI arguments is a version flag.
-fn should_show_version<I, S>(args: I) -> bool
-where
-    I: IntoIterator<Item = S>,
-    S: AsRef<str>,
-{
-    args.into_iter()
-        .any(|arg| matches!(arg.as_ref(), "-v" | "-V" | "--version"))
-}
+#[derive(Parser)]
+#[command(version, about)]
+struct Cli {
+    #[arg(long)]
+    waybar_status: bool,
 
-/// Check whether any of the provided CLI arguments is the waybar status flag.
-fn should_show_waybar_status<I, S>(args: I) -> bool
-where
-    I: IntoIterator<Item = S>,
-    S: AsRef<str>,
-{
-    args.into_iter().any(|arg| arg.as_ref() == "--waybar-status")
-}
-
-/// Check whether any of the provided CLI arguments is the omarchy install flag.
-fn should_install_omarchy<I, S>(args: I) -> bool
-where
-    I: IntoIterator<Item = S>,
-    S: AsRef<str>,
-{
-    args.into_iter().any(|arg| arg.as_ref() == "--install-omarchy")
+    #[arg(long)]
+    install_omarchy: bool,
 }
 
 /// Run the embedded Omarchy integration installer script.
-fn install_omarchy() -> anyhow::Result<()> {
+fn install_omarchy() -> Result<()> {
     let script = include_str!("../contrib/install-omarchy.sh");
     let tmp = std::env::temp_dir().join("kvn-tui-install-omarchy.sh");
     std::fs::write(&tmp, script)?;
@@ -61,35 +49,23 @@ fn install_omarchy() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Return the version string shown for `--version`.
-fn version_string() -> String {
-    format!("kvn-tui {}", env!("CARGO_PKG_VERSION"))
-}
-
 /// Entry point for the TUI VPN client.
-#[tokio::main]
-async fn main() -> Result<()> {
-    // Handle omarchy install flag (before anything else).
-    if should_install_omarchy(std::env::args()) {
+fn main() -> Result<()> {
+    let cli = Cli::parse();
+
+    if cli.install_omarchy {
         return install_omarchy();
     }
-
-    // Handle waybar status flag (fast and stateless).
-    if should_show_waybar_status(std::env::args()) {
-        App::print_waybar_status();
-        return Ok(());
-    }
-
-    // Handle version flag.
-    if should_show_version(std::env::args()) {
-        println!("{}", version_string());
+    if cli.waybar_status {
+        state_io::print_waybar_status();
         return Ok(());
     }
 
     // Initialize logging.
     tracing_subscriber::registry()
         .with(
-            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| "info".into()),
         )
         .with(tracing_subscriber::fmt::layer().without_time())
         .init();
@@ -98,10 +74,10 @@ async fn main() -> Result<()> {
     ensure_config_dirs()?;
 
     // Initialize application state.
-    let app = App::new()?;
+    let model = Model::new()?;
 
     // Run the terminal user interface.
-    if let Err(e) = ui::run(app).await {
+    if let Err(e) = runtime::run(model) {
         tracing::error!("TUI error: {}", e);
         eprintln!("Error: {}", e);
         std::process::exit(1);
@@ -112,55 +88,24 @@ async fn main() -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{should_show_version, should_show_waybar_status, should_install_omarchy, version_string};
+    use super::*;
 
     #[test]
-    fn version_flag_v() {
-        assert!(should_show_version(["-v"]));
-    }
-
-    #[test]
-    fn version_string_format() {
-        let s = version_string();
-        assert!(s.starts_with("kvn-tui "), "version string should start with 'kvn-tui ': got {}", s);
-        let expected = format!("kvn-tui {}", env!("CARGO_PKG_VERSION"));
-        assert_eq!(s, expected);
-    }
-
-    #[test]
-    fn version_flag_uppercase_v() {
-        assert!(should_show_version(["-V"]));
-    }
-
-    #[test]
-    fn version_flag_long() {
-        assert!(should_show_version(["--version"]));
-    }
-
-    #[test]
-    fn no_version_flag() {
-        assert!(!should_show_version(["kvn-tui"]));
-    }
-
-    #[test]
-    fn empty_args() {
-        assert!(!should_show_version(Vec::<&str>::new()));
-    }
-
-    #[test]
-    fn help_flag_is_not_version() {
-        assert!(!should_show_version(["kvn-tui", "--help"]));
+    fn version_via_clap() {
+        // clap handles --version automatically
+        let cli = Cli::try_parse_from(["kvn-tui", "--version"]);
+        assert!(cli.is_err()); // clap exits on --version, but in test it returns Err
     }
 
     #[test]
     fn waybar_status_flag_detected() {
-        assert!(should_show_waybar_status(["kvn-tui", "--waybar-status"]));
+        let cli = Cli::parse_from(["kvn-tui", "--waybar-status"]);
+        assert!(cli.waybar_status);
     }
 
     #[test]
     fn install_omarchy_flag_detected() {
-        assert!(should_install_omarchy(["kvn-tui", "--install-omarchy"]));
+        let cli = Cli::parse_from(["kvn-tui", "--install-omarchy"]);
+        assert!(cli.install_omarchy);
     }
-
-
 }

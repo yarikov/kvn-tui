@@ -3,18 +3,10 @@ use std::process::Command;
 use anyhow::{Context, Result};
 use url::Url;
 
-use crate::app::App;
 use crate::config::profile::{Profile, Protocol, RealitySettings};
 
-/// Read clipboard contents and attempt to parse a VPN share link.
-/// Falls back to manual URI input if the clipboard is unavailable.
-pub fn paste_profile(app: &mut App) -> Result<()> {
-    let text = read_clipboard_text()?;
-    add_profile_from_text(app, &text)
-}
-
 /// Read text from the Wayland clipboard via `wl-paste`.
-fn read_clipboard_text() -> Result<String> {
+pub fn read_clipboard_text() -> Result<String> {
     let text = read_clipboard_command("wl-paste", &[])?;
     if !text.is_empty() {
         Ok(text)
@@ -37,16 +29,8 @@ fn read_clipboard_command(cmd: &str, args: &[&str]) -> Result<String> {
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
-/// Parse a share link text and add the resulting profile to the app.
-pub fn add_profile_from_text(app: &mut App, text: &str) -> Result<()> {
-    let profile = parse_share_link(text)?;
-    app.add_profile(profile.clone());
-    app.set_status(format!("Pasted profile: {}", profile.name));
-    Ok(())
-}
-
-/// Parse a VLESS share link into a Profile.
-fn parse_share_link(text: &str) -> Result<Profile> {
+/// Parse a share link text into a Profile.
+pub fn parse_share_link(text: &str) -> Result<Profile> {
     let trimmed = text.trim();
 
     if let Some(rest) = trimmed.strip_prefix("vless://") {
@@ -110,7 +94,6 @@ fn parse_vless(rest: &str) -> Result<Profile> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::profile::Config;
 
     #[test]
     fn parse_long_vless_uri() {
@@ -181,18 +164,7 @@ mod tests {
 
     #[test]
     fn parse_vless_missing_host_fails() {
-        // vless:// without any host fails
         let result = parse_share_link("vless://");
         assert!(result.is_err());
-    }
-
-    #[test]
-    fn add_profile_from_text_adds_to_app() {
-        let mut app = App::test_new(Config::default());
-        let uri = "vless://uuid@1.2.3.4:443#TestProfile";
-        add_profile_from_text(&mut app, uri).unwrap();
-        assert_eq!(app.config.profiles.len(), 1);
-        assert_eq!(app.config.profiles[0].name, "TestProfile");
-        assert!(app.status.text().contains("Pasted profile"));
     }
 }

@@ -1,10 +1,12 @@
 use std::fs;
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+
+use crate::msg::GeoResult;
 
 const GEOIP_RU_URL: &str =
     "https://raw.githubusercontent.com/SagerNet/sing-geoip/rule-set/geoip-ru.srs";
@@ -26,7 +28,7 @@ struct GeoMetadata {
 pub struct GeoManager {
     geo_dir: PathBuf,
     metadata_path: PathBuf,
-    client: reqwest::blocking::Client,
+    agent: ureq::Agent,
 }
 
 impl GeoManager {
@@ -38,16 +40,12 @@ impl GeoManager {
             .with_context(|| format!("Failed to create geo dir {:?}", geo_dir))?;
 
         let metadata_path = geo_dir.join("metadata.json");
-
-        let client = reqwest::blocking::Client::builder()
-            .timeout(std::time::Duration::from_secs(60))
-            .build()
-            .context("Failed to build HTTP client")?;
+        let agent = ureq::Agent::new_with_defaults();
 
         Ok(Self {
             geo_dir,
             metadata_path,
-            client,
+            agent,
         })
     }
 
@@ -65,60 +63,12 @@ impl GeoManager {
             .map(|dt| dt.format("%Y-%m-%d %H:%M").to_string())
     }
 
-    /// Ensure rule-set files exist, downloading them if missing.
-    pub fn ensure_databases(&self) -> Result<bool> {
-        let (geoip_ru, geosite_ru) = self.local_paths();
-        let need_geoip = !geoip_ru.exists();
-        let need_geosite = !geosite_ru.exists();
-
-        if !need_geoip && !need_geosite {
-            return Ok(false);
-        }
-
-        let mut meta = self.load_metadata().unwrap_or_default();
-        let mut updated = false;
-
-        if need_geoip {
-            match self.download_file(GEOIP_RU_URL, &geoip_ru) {
-                Ok(etag) => {
-                    meta.geoip_ru_etag = etag;
-                    updated = true;
-                }
-                Err(e) => {
-                    eprintln!("Warning: failed to download geoip-ru.srs: {}", e);
-                }
-            }
-        }
-
-        if need_geosite {
-            match self.download_file(GEOSITE_RU_URL, &geosite_ru) {
-                Ok(etag) => {
-                    meta.geosite_ru_etag = etag;
-                    updated = true;
-                }
-                Err(e) => {
-                    eprintln!("Warning: failed to download geosite-category-ru.srs: {}", e);
-                }
-            }
-        }
-
-        if updated {
-            meta.updated_at = Some(Utc::now());
-            if let Err(e) = self.save_metadata(&meta) {
-                tracing::warn!("Failed to save geo metadata: {}", e);
-            }
-        }
-
-        Ok(updated)
-    }
-
     /// Check whether rule-sets have updates available.
     /// Returns (geoip_ru_has_update, geosite_ru_has_update).
     pub fn check_update_available(&self) -> Result<(bool, bool)> {
         let meta = self.load_metadata().unwrap_or_default();
         let (geoip_ru, geosite_ru) = self.local_paths();
 
-        // If files are missing, always consider an update needed.
         let geoip_missing = !geoip_ru.exists();
         let geosite_missing = !geosite_ru.exists();
 
@@ -142,7 +92,6 @@ impl GeoManager {
         let mut meta = self.load_metadata().unwrap_or_default();
         let (geoip_ru, geosite_ru) = self.local_paths();
 
-        // Download geoip-ru
         match self.download_file(GEOIP_RU_URL, &geoip_ru) {
             Ok(etag) => {
                 meta.geoip_ru_etag = etag;
@@ -150,7 +99,6 @@ impl GeoManager {
             Err(e) => return Err(e).context("Failed to download geoip-ru.srs"),
         }
 
-        // Download geosite-category-ru
         match self.download_file(GEOSITE_RU_URL, &geosite_ru) {
             Ok(etag) => {
                 meta.geosite_ru_etag = etag;
@@ -165,26 +113,26 @@ impl GeoManager {
     }
 
     /// Full update flow: check then download if needed.
-    /// Returns message describing what happened.
-    pub fn update_if_needed(&self) -> Result<String> {
+    /// Returns typed result describing what happened.
+    pub fn update_if_needed(&self) -> Result<GeoResult> {
         let (geoip_need, geosite_need) = self.check_update_available()?;
 
         if !geoip_need && !geosite_need {
-            return Ok("Geo rule-sets are up to date".to_string());
+            return Ok(GeoResult::UpToDate);
         }
 
         let updated = self.download_databases()?;
         if updated {
             let mut parts = Vec::new();
             if geoip_need {
-                parts.push("geoip-ru");
+                parts.push("geoip-ru".to_string());
             }
             if geosite_need {
-                parts.push("geosite-category-ru");
+                parts.push("geosite-category-ru".to_string());
             }
-            Ok(format!("Updated: {}", parts.join(", ")))
+            Ok(GeoResult::Updated(parts))
         } else {
-            Ok("No updates found".to_string())
+            Ok(GeoResult::UpToDate)
         }
     }
 
@@ -211,12 +159,12 @@ impl GeoManager {
 
     fn check_single(&self, url: &str, saved_etag: Option<&str>) -> Result<bool> {
         let resp = self
-            .client
+            .agent
             .head(url)
-            .send()
+            .call()
             .with_context(|| format!("HEAD request failed for {}", url))?;
 
-        if !resp.status().is_success() {
+        if resp.status() != 200 {
             return Ok(true); // assume update needed if we can't check
         }
 
@@ -230,30 +178,29 @@ impl GeoManager {
     }
 
     /// Download a file and return its ETag on success.
-    fn download_file(&self, url: &str, dest: &PathBuf) -> Result<Option<String>> {
+    fn download_file(&self, url: &str, dest: &Path) -> Result<Option<String>> {
         let resp = self
-            .client
+            .agent
             .get(url)
-            .send()
+            .call()
             .with_context(|| format!("GET {}", url))?;
 
-        if !resp.status().is_success() {
+        if resp.status() != 200 {
             anyhow::bail!("HTTP {} for {}", resp.status(), url);
         }
 
-        let etag = resp
-            .headers()
-            .get("etag")
-            .and_then(|v| v.to_str().ok())
-            .map(String::from);
+        let etag = resp.headers().get("etag").and_then(|v| v.to_str().ok()).map(String::from);
 
-        let bytes = resp.bytes().context("Failed to read response body")?;
+        let bytes = resp.into_body()
+            .read_to_vec()
+            .context("Failed to read response body")?;
         self.write_atomic(dest, &bytes)?;
         Ok(etag)
     }
 
-    fn write_atomic(&self, dest: &PathBuf, data: &[u8]) -> Result<()> {
-        let temp = dest.with_extension("tmp");
+    fn write_atomic(&self, dest: &Path, data: &[u8]) -> Result<()> {
+        let name = dest.file_name().unwrap_or_default();
+        let temp = dest.with_file_name(format!("{}.tmp", name.to_string_lossy()));
         let mut file = fs::File::create(&temp)
             .with_context(|| format!("Failed to create temp file {:?}", temp))?;
         file.write_all(data)
@@ -296,13 +243,11 @@ mod tests {
     fn load_metadata_missing_returns_default() {
         let gm = GeoManager::new().unwrap();
         let (geoip_ru, geosite_ru) = gm.local_paths();
-        // remove metadata if present
         let _ = fs::remove_file(&gm.metadata_path);
         let meta = gm.load_metadata().unwrap();
         assert!(meta.geoip_ru_etag.is_none());
         assert!(meta.geosite_ru_etag.is_none());
         assert!(meta.updated_at.is_none());
-        // Clean up downloaded files from other tests if they exist
         let _ = fs::remove_file(&geoip_ru);
         let _ = fs::remove_file(&geosite_ru);
     }
@@ -319,12 +264,24 @@ mod tests {
         let _ = fs::remove_file(&dest);
     }
 
+    #[test]
+    fn write_atomic_preserves_srs_extension() {
+        let gm = GeoManager::new().unwrap();
+        let dest = gm.geo_dir.join("geoip-ru.srs");
+        let _ = fs::remove_file(&dest);
+        gm.write_atomic(&dest, b"data").unwrap();
+        assert!(dest.exists());
+        // Temp file should have been geoip-ru.srs.tmp, not geoip-ru.tmp
+        let temp = gm.geo_dir.join("geoip-ru.srs.tmp");
+        assert!(!temp.exists());
+        let _ = fs::remove_file(&dest);
+    }
+
     /// Integration test that hits the real network. Run with `cargo test -- --ignored`.
     #[test]
     #[ignore]
     fn test_download_srs_files() {
         let gm = GeoManager::new().unwrap();
-        // Ensure clean state
         let (geoip_ru, geosite_ru) = gm.local_paths();
         let _ = fs::remove_file(&geoip_ru);
         let _ = fs::remove_file(&geosite_ru);
@@ -336,15 +293,13 @@ mod tests {
         assert!(geoip_ru.exists(), "geoip-ru.srs should exist");
         assert!(geosite_ru.exists(), "geosite-category-ru.srs should exist");
 
-        // Check metadata
         let updated = gm.last_updated();
         assert!(updated.is_some(), "last_updated should be set");
 
-        // Second call should be up-to-date (same ETag)
         let result = gm.update_if_needed().unwrap();
         assert!(
-            result.contains("up to date") || result.contains("Updated"),
-            "unexpected result: {}",
+            matches!(result, GeoResult::UpToDate),
+            "unexpected result: {:?}",
             result
         );
     }
