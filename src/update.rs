@@ -23,7 +23,7 @@ pub fn update(model: &mut Model, msg: Msg) -> Vec<Effect> {
         }
         Msg::GeoUpdated(result) => handle_geo_result(model, result),
         Msg::SystemResumed => {
-            if model.singbox_process.is_some() {
+            if model.connected {
                 model.status = crate::model::AppStatus::Info("Resumed — reconnecting…".into());
                 let profile = model.selected_profile().cloned();
                 let settings = model.config.settings.clone();
@@ -34,9 +34,10 @@ pub fn update(model: &mut Model, msg: Msg) -> Vec<Effect> {
                 vec![]
             }
         }
-        Msg::Connected(child) => {
+        Msg::Connected { pid } => {
             model.connection_pending = false;
-            model.singbox_process = Some(child);
+            model.connected = true;
+            model.singbox_pid = Some(pid);
             model.mode = AppMode::Connected;
             if let Some(profile) = model.selected_profile() {
                 let profile_id = profile.id;
@@ -108,7 +109,7 @@ fn handle_tick(model: &mut Model) -> Vec<Effect> {
     if model.mode == AppMode::Connecting && !model.connection_pending {
         if let Some(profile) = model.selected_profile().cloned() {
             let settings = model.config.settings.clone();
-            if model.singbox_process.is_some() {
+            if model.connected {
                 effects.push(Effect::Reconnect(profile, settings));
             } else {
                 effects.push(Effect::Connect(profile, settings));
@@ -134,7 +135,7 @@ fn handle_key(model: &mut Model, key: KeyEvent) -> Vec<Effect> {
         AppMode::CreateProfile | AppMode::PasteUri => handle_input_mode(model, key),
         AppMode::Connecting | AppMode::Connected => match key.code {
             KeyCode::Char('q') | KeyCode::Esc => {
-                if model.singbox_process.is_some() {
+                if model.connected {
                     model.mode = AppMode::ConfirmQuit;
                 } else {
                     return vec![Effect::Quit];
@@ -212,17 +213,17 @@ fn handle_normal(model: &mut Model, key: KeyEvent) -> Vec<Effect> {
         KeyCode::Char('e') => {
             return vec![Effect::OpenEditor(model.selected)];
         }
-        KeyCode::Char('r') if model.singbox_process.is_some() => {
+        KeyCode::Char('r') if model.connected => {
             model.mode = AppMode::Connecting;
         }
-        KeyCode::Char('s') if model.singbox_process.is_some() => {
+        KeyCode::Char('s') if model.connected => {
             return vec![Effect::Disconnect];
         }
 
         // Help and quit
         KeyCode::Char('?') => model.mode = AppMode::Help,
         KeyCode::Char('q') | KeyCode::Esc => {
-            if model.singbox_process.is_some() {
+            if model.connected {
                 model.mode = AppMode::ConfirmQuit;
             } else {
                 return vec![Effect::Quit];
@@ -286,7 +287,7 @@ fn handle_routing_mode(model: &mut Model, key: KeyEvent) -> Vec<Effect> {
                 ));
 
                 let effects = vec![Effect::SaveConfig];
-                if changed && model.singbox_process.is_some() {
+                if changed && model.connected {
                     model.mode = AppMode::Connecting;
                     model.logs.push_back(format!(
                         "[routing] Mode changed to {} — reconnecting",
@@ -394,7 +395,7 @@ fn handle_geo_result(model: &mut Model, result: GeoResult) -> Vec<Effect> {
             for part in &parts {
                 model.logs.push_back(format!("[geo] Updated: {}", part));
             }
-            if model.singbox_process.is_some() {
+            if model.connected {
                 model.logs.push_back(
                     "[geo] Reconnecting to apply new geo databases".into(),
                 );
@@ -847,7 +848,7 @@ mod tests {
     fn connected_clears_pending() {
         let mut model = Model::test_new(crate::config::profile::Config::default());
         model.connection_pending = true;
-        let effects = update(&mut model, Msg::Connected(std::process::Command::new("true").spawn().unwrap()));
+        let effects = update(&mut model, Msg::Connected { pid: 12345 });
         assert!(!model.connection_pending);
         assert_eq!(model.mode, AppMode::Connected);
         assert_eq!(effects, vec![Effect::WriteState]);

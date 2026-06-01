@@ -1,7 +1,7 @@
 use std::fs;
 use std::io::Read;
 use std::path::PathBuf;
-use std::process::{Child, Command, Stdio};
+use std::process::{Command, Stdio};
 use std::thread;
 use std::time::Duration;
 
@@ -9,6 +9,7 @@ use anyhow::{Context, Result};
 
 use crate::config::profile::{Profile, Settings};
 use crate::config::singbox::generate_config;
+use crate::process_handle::ProcessHandle;
 
 /// Path to the sing-box binary. Can be overridden by SING_BOX_PATH env variable.
 fn singbox_binary() -> String {
@@ -51,7 +52,7 @@ fn check_config(path: &PathBuf) -> Result<()> {
 
 /// Start the sing-box process with the given profile.
 /// Validates config first, then spawns the process and verifies it stays alive.
-pub fn start(profile: &Profile, settings: &Settings) -> Result<Child> {
+pub fn start(profile: &Profile, settings: &Settings) -> Result<ProcessHandle> {
     let config_path = write_config(profile, settings)?;
 
     // Validate configuration before starting.
@@ -88,7 +89,7 @@ pub fn start(profile: &Profile, settings: &Settings) -> Result<Child> {
         }
         Ok(None) => {
             // Process is still running — good.
-            Ok(child)
+            Ok(ProcessHandle::new(child))
         }
         Err(e) => {
             anyhow::bail!("Failed to check sing-box status: {}", e);
@@ -96,14 +97,7 @@ pub fn start(profile: &Profile, settings: &Settings) -> Result<Child> {
     }
 }
 
-/// Stop a running sing-box process.
-pub fn stop(child: &mut Child) -> Result<()> {
-    child.kill().context("Failed to kill sing-box process")?;
-    if let Err(e) = child.wait() {
-        tracing::warn!("Failed to wait for sing-box process: {}", e);
-    }
-    Ok(())
-}
+
 
 #[cfg(test)]
 mod tests {

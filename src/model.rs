@@ -1,5 +1,4 @@
 use std::collections::VecDeque;
-use std::process::Child;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -58,7 +57,8 @@ pub struct Model {
     pub config: Config,
     pub selected: usize,
     pub status: AppStatus,
-    pub singbox_process: Option<Child>,
+    pub connected: bool,
+    pub singbox_pid: Option<u32>,
     pub active_profile_id: Option<Uuid>,
     pub routing_selected: usize,
     pub logs: VecDeque<String>,
@@ -113,7 +113,8 @@ impl Model {
             config,
             selected,
             status: AppStatus::Info("Press ? for help".to_string()),
-            singbox_process: None,
+            connected: false,
+            singbox_pid: None,
             active_profile_id: None,
             routing_selected: 0,
             logs: VecDeque::new(),
@@ -241,7 +242,8 @@ impl Model {
             config,
             selected,
             status: AppStatus::Info(String::new()),
-            singbox_process: None,
+            connected: false,
+            singbox_pid: None,
             active_profile_id: None,
             routing_selected: 0,
             logs: VecDeque::new(),

@@ -1,5 +1,4 @@
 use crossterm::event::KeyEvent;
-use std::process::Child;
 use crate::config::profile::Config;
 
 pub enum Msg {
@@ -9,7 +8,7 @@ pub enum Msg {
     LogLine(String),
     GeoUpdated(GeoResult),
     SystemResumed,
-    Connected(Child),
+    Connected { pid: u32 },
     ConnectFailed(String),
     ClipboardRead(Result<String, String>),
     EditorClosed(Result<Config, String>),

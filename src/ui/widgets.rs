@@ -92,13 +92,13 @@ impl<'a> StatusBar<'a> {
 
 impl<'a> Widget for StatusBar<'a> {
     fn render(self, area: Rect, buf: &mut Buffer) {
-        let style = if self.model.singbox_process.is_some() {
+        let style = if self.model.connected {
             Theme::success()
         } else {
             Theme::status()
         };
 
-        let status = if self.model.singbox_process.is_some() {
+        let status = if self.model.connected {
             "[CONNECTED]"
         } else {
             "[DISCONNECTED]"

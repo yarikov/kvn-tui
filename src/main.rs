@@ -7,6 +7,7 @@ mod geo;
 mod model;
 mod msg;
 mod paths;
+mod process_handle;
 mod services;
 mod singbox;
 mod state_io;

@@ -1,5 +1,6 @@
 use std::io;
 use std::sync::mpsc::{channel, Sender};
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
@@ -15,6 +16,7 @@ use ratatui::Terminal;
 use crate::effect::Effect;
 use crate::model::Model;
 use crate::msg::{GeoResult, Msg};
+use crate::process_handle::ProcessHandle;
 use crate::services::LogTailer;
 use crate::update::update;
 
@@ -34,10 +36,23 @@ pub fn run(mut model: Model) -> Result<()> {
 
     let mut log_tailer = LogTailer::new(crate::paths::singbox_log_path());
 
-    let result = run_loop(&mut terminal, &mut model, rx, &tx, &mut log_tailer);
+    let process_slot = Arc::new(Mutex::new(None));
+
+    let result = run_loop(
+        &mut terminal,
+        &mut model,
+        rx,
+        &tx,
+        &mut log_tailer,
+        process_slot.clone(),
+    );
 
     // Ensure sing-box is stopped before exiting.
-    crate::singbox::disconnect(&mut model);
+    if let Some(mut handle) = process_slot.lock().unwrap().take() {
+        if let Err(e) = handle.kill_and_wait() {
+            tracing::warn!("Failed to stop sing-box on exit: {}", e);
+        }
+    }
 
     disable_raw_mode()?;
     terminal.backend_mut().execute(LeaveAlternateScreen)?;
@@ -51,6 +66,7 @@ fn run_loop(
     rx: std::sync::mpsc::Receiver<Msg>,
     tx: &Sender<Msg>,
     log_tailer: &mut LogTailer,
+    process_slot: Arc<Mutex<Option<ProcessHandle>>>,
 ) -> Result<()> {
     loop {
         if model.needs_redraw {
@@ -63,7 +79,7 @@ fn run_loop(
         let effects = update(model, msg);
 
         for effect in effects {
-            execute_effect(effect, tx, model, terminal, log_tailer)?;
+            execute_effect(effect, tx, model, terminal, log_tailer, &process_slot)?;
         }
 
         if model.should_quit {
@@ -79,15 +95,19 @@ fn execute_effect(
     model: &mut Model,
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     log_tailer: &mut LogTailer,
+    process_slot: &Arc<Mutex<Option<ProcessHandle>>>,
 ) -> Result<()> {
     match effect {
         Effect::Connect(profile, settings) => {
             model.connection_pending = true;
             let tx = tx.clone();
+            let slot = process_slot.clone();
             thread::spawn(move || {
                 match crate::singbox::runner::start(&profile, &settings) {
-                    Ok(child) => {
-                        let _ = tx.send(Msg::Connected(child));
+                    Ok(handle) => {
+                        let pid = handle.pid;
+                        *slot.lock().unwrap() = Some(handle);
+                        let _ = tx.send(Msg::Connected { pid });
                     }
                     Err(e) => {
                         let _ = tx.send(Msg::ConnectFailed(e.to_string()));
@@ -97,13 +117,20 @@ fn execute_effect(
         }
         Effect::Reconnect(profile, settings) => {
             // Kill existing process first
-            crate::singbox::disconnect(model);
+            if let Some(mut handle) = process_slot.lock().unwrap().take() {
+                if let Err(e) = handle.kill_and_wait() {
+                    tracing::warn!("Failed to stop sing-box process: {}", e);
+                }
+            }
             model.connection_pending = true;
             let tx = tx.clone();
+            let slot = process_slot.clone();
             thread::spawn(move || {
                 match crate::singbox::runner::start(&profile, &settings) {
-                    Ok(child) => {
-                        let _ = tx.send(Msg::Connected(child));
+                    Ok(handle) => {
+                        let pid = handle.pid;
+                        *slot.lock().unwrap() = Some(handle);
+                        let _ = tx.send(Msg::Connected { pid });
                     }
                     Err(e) => {
                         let _ = tx.send(Msg::ConnectFailed(e.to_string()));
@@ -112,9 +139,15 @@ fn execute_effect(
             });
         }
         Effect::Disconnect => {
-            crate::singbox::disconnect(model);
+            if let Some(mut handle) = process_slot.lock().unwrap().take() {
+                if let Err(e) = handle.kill_and_wait() {
+                    tracing::warn!("Failed to stop sing-box process: {}", e);
+                }
+            }
             model.connection_pending = false;
             model.active_profile_id = None;
+            model.connected = false;
+            model.singbox_pid = None;
             model.status = crate::model::AppStatus::Info("Disconnected".into());
             model.mode = crate::model::AppMode::Normal;
             crate::state_io::write_state(model);

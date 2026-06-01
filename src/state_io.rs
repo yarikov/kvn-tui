@@ -8,12 +8,12 @@ pub fn write_state(model: &Model) {
 
 fn build_state(model: &Model) -> AppState {
     AppState {
-        connected: model.singbox_process.is_some(),
+        connected: model.connected,
         profile_name: model.active_profile_id.and_then(|id| {
             model.config.profiles.iter().find(|p| p.id == id).map(|p| p.name.clone())
         }),
         active_profile_id: model.active_profile_id.map(|id| id.to_string()),
-        singbox_pid: model.singbox_process.as_ref().map(|c| c.id()),
+        singbox_pid: model.singbox_pid,
     }
 }
 
