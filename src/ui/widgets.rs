@@ -92,13 +92,13 @@ impl<'a> StatusBar<'a> {
 
 impl<'a> Widget for StatusBar<'a> {
     fn render(self, area: Rect, buf: &mut Buffer) {
-        let style = if self.model.connected {
+        let style = if self.model.connection == crate::model::ConnectionState::Connected {
             Theme::success()
         } else {
             Theme::status()
         };
 
-        let status = if self.model.connected {
+        let status = if self.model.connection == crate::model::ConnectionState::Connected {
             "[CONNECTED]"
         } else {
             "[DISCONNECTED]"

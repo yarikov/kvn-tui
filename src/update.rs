@@ -23,7 +23,7 @@ pub fn update(model: &mut Model, msg: Msg) -> Vec<Effect> {
         }
         Msg::GeoUpdated(result) => handle_geo_result(model, result),
         Msg::SystemResumed => {
-            if model.connected {
+            if model.connection == ConnectionState::Connected {
                 model.status = crate::model::AppStatus::Info("Resumed — reconnecting…".into());
                 let profile = model.selected_profile().cloned();
                 let settings = model.config.settings.clone();
@@ -35,8 +35,6 @@ pub fn update(model: &mut Model, msg: Msg) -> Vec<Effect> {
             }
         }
         Msg::Connected { pid } => {
-            model.connection_pending = false;
-            model.connected = true;
             model.singbox_pid = Some(pid);
             model.connection = ConnectionState::Connected;
             model.overlay = Overlay::None;
@@ -52,7 +50,7 @@ pub fn update(model: &mut Model, msg: Msg) -> Vec<Effect> {
             vec![Effect::WriteState]
         }
         Msg::ConnectFailed(err) => {
-            model.connection_pending = false;
+            model.connection = ConnectionState::Idle;
             model.overlay = Overlay::Error;
             model.status = crate::model::AppStatus::Error(format!(
                 "Connection failed: {}",
@@ -107,10 +105,10 @@ fn handle_tick(model: &mut Model) -> Vec<Effect> {
     // and sends GeoUpdated messages, so nothing to do here directly.
 
     // Connection handling
-    if model.connection == ConnectionState::Connecting && !model.connection_pending {
+    if model.connection == ConnectionState::Connecting {
         if let Some(profile) = model.selected_profile().cloned() {
             let settings = model.config.settings.clone();
-            if model.connected {
+            if model.connection == ConnectionState::Connected {
                 effects.push(Effect::Connect { profile, settings, force_restart: true });
             } else {
                 effects.push(Effect::Connect { profile, settings, force_restart: false });
@@ -197,17 +195,17 @@ fn handle_main(model: &mut Model, key: KeyEvent) -> Vec<Effect> {
         KeyCode::Char('e') => {
             return vec![Effect::OpenEditor(model.selected)];
         }
-        KeyCode::Char('r') if model.connected => {
+        KeyCode::Char('r') if model.connection == ConnectionState::Connected => {
             model.connection = ConnectionState::Connecting;
         }
-        KeyCode::Char('s') if model.connected => {
+        KeyCode::Char('s') if model.connection == ConnectionState::Connected => {
             return vec![Effect::Disconnect];
         }
 
         // Help and quit
         KeyCode::Char('?') => model.overlay = Overlay::Help,
         KeyCode::Char('q') | KeyCode::Esc => {
-            if model.connected {
+            if model.connection == ConnectionState::Connected {
                 model.overlay = Overlay::ConfirmQuit;
             } else {
                 return vec![Effect::Quit];
@@ -271,7 +269,7 @@ fn handle_routing_mode(model: &mut Model, key: KeyEvent) -> Vec<Effect> {
                 ));
 
                 let effects = vec![Effect::SaveConfig];
-                if changed && model.connected {
+                if changed && model.connection == ConnectionState::Connected {
                     model.connection = ConnectionState::Connecting;
                     model.logs.push_back(format!(
                         "[routing] Mode changed to {} — reconnecting",
@@ -379,7 +377,7 @@ fn handle_geo_result(model: &mut Model, result: GeoResult) -> Vec<Effect> {
             for part in &parts {
                 model.logs.push_back(format!("[geo] Updated: {}", part));
             }
-            if model.connected {
+            if model.connection == ConnectionState::Connected {
                 model.logs.push_back(
                     "[geo] Reconnecting to apply new geo databases".into(),
                 );
@@ -720,12 +718,13 @@ mod tests {
     }
 
     #[test]
-    fn connected_mode_q_quits_without_process() {
+    fn connected_mode_q_opens_confirm_quit() {
         let mut model = model_with_profiles(vec![]);
         model.connection = ConnectionState::Connected;
         model.overlay = Overlay::None;
         let effects = handle_key(&mut model, key('q'));
-        assert_eq!(effects, vec![Effect::Quit]);
+        assert!(effects.is_empty());
+        assert_eq!(model.overlay, Overlay::ConfirmQuit);
     }
 
     #[test]
@@ -733,7 +732,6 @@ mod tests {
         let mut model = model_with_profiles(vec![]);
         model.connection = ConnectionState::Connected;
         model.overlay = Overlay::None;
-        model.connected = true;
         let effects = handle_key(&mut model, key('s'));
         assert_eq!(effects, vec![Effect::Disconnect]);
     }
@@ -758,7 +756,6 @@ mod tests {
         ]);
         model.connection = ConnectionState::Connected;
         model.overlay = Overlay::None;
-        model.connected = true;
         assert_eq!(model.selected, 0);
         let _ = handle_key(&mut model, key('j'));
         assert_eq!(model.selected, 1);
@@ -781,7 +778,6 @@ mod tests {
         )]);
         model.connection = ConnectionState::Connected;
         model.overlay = Overlay::None;
-        model.connected = true;
         let effects = handle_key(&mut model, KeyEvent::from(KeyCode::Enter));
         assert!(effects.is_empty());
         assert_eq!(model.connection, ConnectionState::Connecting);
@@ -798,7 +794,6 @@ mod tests {
         )]);
         model.connection = ConnectionState::Connected;
         model.overlay = Overlay::None;
-        model.connected = true;
         let effects = handle_key(&mut model, key('r'));
         assert!(effects.is_empty());
         assert_eq!(model.connection, ConnectionState::Connecting);
@@ -809,7 +804,6 @@ mod tests {
         let mut model = model_with_profiles(vec![]);
         model.connection = ConnectionState::Connected;
         model.overlay = Overlay::None;
-        model.connected = true;
         let effects = handle_key(&mut model, key('?'));
         assert!(effects.is_empty());
         assert_eq!(model.overlay, Overlay::Help);
@@ -820,7 +814,7 @@ mod tests {
         let mut model = Model::test_new(crate::config::profile::Config::default());
         let effects = update(&mut model, Msg::ConnectFailed("timeout".into()));
         assert_eq!(model.overlay, Overlay::Error);
-        assert!(!model.connection_pending);
+        assert_eq!(model.connection, ConnectionState::Idle);
         assert!(effects.is_empty());
     }
 
@@ -833,8 +827,7 @@ mod tests {
             443,
             "u1".to_string(),
         )]);
-        model.connection = ConnectionState::Connecting;
-        model.connection_pending = true;
+        model.connection = ConnectionState::ConnectPending;
         let effects = handle_tick(&mut model);
         assert!(effects.iter().all(|e| !matches!(e, Effect::Connect { .. })));
     }
@@ -842,9 +835,8 @@ mod tests {
     #[test]
     fn connected_clears_pending() {
         let mut model = Model::test_new(crate::config::profile::Config::default());
-        model.connection_pending = true;
+        model.connection = ConnectionState::ConnectPending;
         let effects = update(&mut model, Msg::Connected { pid: 12345 });
-        assert!(!model.connection_pending);
         assert_eq!(model.connection, ConnectionState::Connected);
         assert_eq!(model.overlay, Overlay::None);
         assert_eq!(effects, vec![Effect::WriteState]);

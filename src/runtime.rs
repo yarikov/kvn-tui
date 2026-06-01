@@ -125,7 +125,7 @@ fn execute_effect(
                     }
                 }
             }
-            model.connection_pending = true;
+            model.connection = crate::model::ConnectionState::ConnectPending;
             let tx = tx.clone();
             let slot = process_slot.clone();
             thread::spawn(move || {
@@ -147,9 +147,8 @@ fn execute_effect(
                     tracing::warn!("Failed to stop sing-box process: {}", e);
                 }
             }
-            model.connection_pending = false;
+            model.connection = crate::model::ConnectionState::Idle;
             model.active_profile_id = None;
-            model.connected = false;
             model.singbox_pid = None;
             model.status = crate::model::AppStatus::Info("Disconnected".into());
             model.overlay = crate::model::Overlay::None;

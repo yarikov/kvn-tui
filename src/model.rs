@@ -25,6 +25,7 @@ pub enum ConnectionState {
     #[default]
     Idle,
     Connecting,
+    ConnectPending,
     Connected,
 }
 
@@ -66,7 +67,6 @@ pub struct Model {
     pub config: Config,
     pub selected: usize,
     pub status: AppStatus,
-    pub connected: bool,
     pub singbox_pid: Option<u32>,
     pub active_profile_id: Option<Uuid>,
     pub routing_selected: usize,
@@ -76,7 +76,6 @@ pub struct Model {
     pub geo_updating: bool,
     pub needs_redraw: bool,
     pub should_quit: bool,
-    pub connection_pending: bool,
 }
 
 /// Which input field is currently being edited.
@@ -123,7 +122,6 @@ impl Model {
             config,
             selected,
             status: AppStatus::Info("Press ? for help".to_string()),
-            connected: false,
             singbox_pid: None,
             active_profile_id: None,
             routing_selected: 0,
@@ -133,7 +131,6 @@ impl Model {
             geo_updating: false,
             needs_redraw: false,
             should_quit: false,
-            connection_pending: false,
         })
     }
 
@@ -253,7 +250,6 @@ impl Model {
             config,
             selected,
             status: AppStatus::Info(String::new()),
-            connected: false,
             singbox_pid: None,
             active_profile_id: None,
             routing_selected: 0,
@@ -263,7 +259,6 @@ impl Model {
             geo_updating: false,
             needs_redraw: false,
             should_quit: false,
-            connection_pending: false,
         }
     }
 }

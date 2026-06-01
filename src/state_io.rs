@@ -11,7 +11,7 @@ pub fn write_state(model: &Model) {
 
 fn build_state(model: &Model) -> AppState {
     AppState {
-        connected: model.connected,
+        connected: model.connection == crate::model::ConnectionState::Connected,
         profile_name: model.active_profile_id.and_then(|id| {
             model.config.profiles.iter().find(|p| p.id == id).map(|p| p.name.clone())
         }),
