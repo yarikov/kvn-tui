@@ -98,28 +98,16 @@ fn execute_effect(
     process_slot: &Arc<Mutex<Option<ProcessHandle>>>,
 ) -> Result<()> {
     match effect {
-        Effect::Connect(profile, settings) => {
-            model.connection_pending = true;
-            let tx = tx.clone();
-            let slot = process_slot.clone();
-            thread::spawn(move || {
-                match crate::singbox::runner::start(&profile, &settings) {
-                    Ok(handle) => {
-                        let pid = handle.pid;
-                        *slot.lock().unwrap() = Some(handle);
-                        let _ = tx.send(Msg::Connected { pid });
+        Effect::Connect {
+            profile,
+            settings,
+            force_restart,
+        } => {
+            if force_restart {
+                if let Some(mut handle) = process_slot.lock().unwrap().take() {
+                    if let Err(e) = handle.kill_and_wait() {
+                        tracing::warn!("Failed to stop sing-box process: {}", e);
                     }
-                    Err(e) => {
-                        let _ = tx.send(Msg::ConnectFailed(e.to_string()));
-                    }
-                }
-            });
-        }
-        Effect::Reconnect(profile, settings) => {
-            // Kill existing process first
-            if let Some(mut handle) = process_slot.lock().unwrap().take() {
-                if let Err(e) = handle.kill_and_wait() {
-                    tracing::warn!("Failed to stop sing-box process: {}", e);
                 }
             }
             model.connection_pending = true;

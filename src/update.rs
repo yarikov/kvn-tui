@@ -28,7 +28,7 @@ pub fn update(model: &mut Model, msg: Msg) -> Vec<Effect> {
                 let profile = model.selected_profile().cloned();
                 let settings = model.config.settings.clone();
                 profile
-                    .map(|p| vec![Effect::Reconnect(p, settings)])
+                    .map(|p| vec![Effect::Connect { profile: p, settings, force_restart: true }])
                     .unwrap_or_default()
             } else {
                 vec![]
@@ -110,9 +110,9 @@ fn handle_tick(model: &mut Model) -> Vec<Effect> {
         if let Some(profile) = model.selected_profile().cloned() {
             let settings = model.config.settings.clone();
             if model.connected {
-                effects.push(Effect::Reconnect(profile, settings));
+                effects.push(Effect::Connect { profile, settings, force_restart: true });
             } else {
-                effects.push(Effect::Connect(profile, settings));
+                effects.push(Effect::Connect { profile, settings, force_restart: false });
             }
         } else {
             model.mode = AppMode::Normal;
@@ -841,7 +841,7 @@ mod tests {
         model.mode = AppMode::Connecting;
         model.connection_pending = true;
         let effects = handle_tick(&mut model);
-        assert!(effects.iter().all(|e| !matches!(e, Effect::Connect(_, _) | Effect::Reconnect(_, _))));
+        assert!(effects.iter().all(|e| !matches!(e, Effect::Connect { .. })));
     }
 
     #[test]
