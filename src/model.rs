@@ -5,19 +5,27 @@ use uuid::Uuid;
 use crate::config::profile::{Config, Profile, Protocol};
 use crate::config::{load_config, save_config};
 
-/// Current screen mode of the application.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AppMode {
-    Normal,
+/// UI overlay shown on top of the main screen.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Overlay {
+    #[default]
+    None,
     Help,
     ConfirmDelete,
     ConfirmQuit,
     CreateProfile,
     PasteUri,
-    Connecting,
-    Connected,
     Error,
     RoutingMode,
+}
+
+/// VPN connection state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ConnectionState {
+    #[default]
+    Idle,
+    Connecting,
+    Connected,
 }
 
 /// Typed status message for the application.
@@ -53,7 +61,8 @@ pub struct AppState {
 
 /// Application data model — no side effects.
 pub struct Model {
-    pub mode: AppMode,
+    pub overlay: Overlay,
+    pub connection: ConnectionState,
     pub config: Config,
     pub selected: usize,
     pub status: AppStatus,
@@ -109,7 +118,8 @@ impl Model {
         crate::state_io::clear_state();
 
         Ok(Self {
-            mode: AppMode::Normal,
+            overlay: Overlay::None,
+            connection: ConnectionState::Idle,
             config,
             selected,
             status: AppStatus::Info("Press ? for help".to_string()),
@@ -164,7 +174,7 @@ impl Model {
             if self.selected >= self.config.profiles.len() && !self.config.profiles.is_empty() {
                 self.selected = self.config.profiles.len() - 1;
             }
-            self.mode = AppMode::Normal;
+            self.overlay = Overlay::None;
         }
     }
 
@@ -238,7 +248,8 @@ impl Model {
     pub fn test_new(config: Config) -> Self {
         let selected = config.resolve_selected();
         Self {
-            mode: AppMode::Normal,
+            overlay: Overlay::None,
+            connection: ConnectionState::Idle,
             config,
             selected,
             status: AppStatus::Info(String::new()),
@@ -320,7 +331,7 @@ mod tests {
         assert_eq!(model.config.profiles[0].name, "A");
         assert_eq!(model.config.profiles[1].name, "C");
         assert_eq!(model.selected, 1);
-        assert_eq!(model.mode, AppMode::Normal);
+        assert_eq!(model.overlay, Overlay::None);
     }
 
     #[test]
@@ -365,22 +376,22 @@ mod tests {
     #[test]
     fn set_status_clears_error_and_mode() {
         let mut model = model_with_profiles(vec![]);
-        model.mode = AppMode::Error;
+        model.overlay = Overlay::Error;
         model.status = AppStatus::Error("oops".into());
         model.status = AppStatus::Info("ok".into());
-        model.mode = AppMode::Normal;
+        model.overlay = Overlay::None;
         assert_eq!(model.status.text(), "ok");
         assert!(!model.status.is_error());
-        assert_eq!(model.mode, AppMode::Normal);
+        assert_eq!(model.overlay, Overlay::None);
     }
 
     #[test]
     fn set_error_sets_message_and_mode() {
         let mut model = model_with_profiles(vec![]);
         model.status = AppStatus::Error("fail".into());
-        model.mode = AppMode::Error;
+        model.overlay = Overlay::Error;
         assert_eq!(model.status.text(), "fail");
         assert!(model.status.is_error());
-        assert_eq!(model.mode, AppMode::Error);
+        assert_eq!(model.overlay, Overlay::Error);
     }
 }

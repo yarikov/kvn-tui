@@ -1,7 +1,7 @@
 use crossterm::event::{KeyCode, KeyEvent};
 use crate::config::profile::{Profile, Protocol, RoutingMode};
 use crate::effect::Effect;
-use crate::model::{AppMode, InputField, Model};
+use crate::model::{ConnectionState, InputField, Model, Overlay};
 use crate::msg::{GeoResult, Msg};
 
 /// Maximum number of log lines kept in the UI buffer.
@@ -38,7 +38,8 @@ pub fn update(model: &mut Model, msg: Msg) -> Vec<Effect> {
             model.connection_pending = false;
             model.connected = true;
             model.singbox_pid = Some(pid);
-            model.mode = AppMode::Connected;
+            model.connection = ConnectionState::Connected;
+            model.overlay = Overlay::None;
             if let Some(profile) = model.selected_profile() {
                 let profile_id = profile.id;
                 let profile_name = profile.name.clone();
@@ -52,7 +53,7 @@ pub fn update(model: &mut Model, msg: Msg) -> Vec<Effect> {
         }
         Msg::ConnectFailed(err) => {
             model.connection_pending = false;
-            model.mode = AppMode::Error;
+            model.overlay = Overlay::Error;
             model.status = crate::model::AppStatus::Error(format!(
                 "Connection failed: {}",
                 err
@@ -106,7 +107,7 @@ fn handle_tick(model: &mut Model) -> Vec<Effect> {
     // and sends GeoUpdated messages, so nothing to do here directly.
 
     // Connection handling
-    if model.mode == AppMode::Connecting && !model.connection_pending {
+    if model.connection == ConnectionState::Connecting && !model.connection_pending {
         if let Some(profile) = model.selected_profile().cloned() {
             let settings = model.config.settings.clone();
             if model.connected {
@@ -115,7 +116,8 @@ fn handle_tick(model: &mut Model) -> Vec<Effect> {
                 effects.push(Effect::Connect { profile, settings, force_restart: false });
             }
         } else {
-            model.mode = AppMode::Normal;
+            model.connection = ConnectionState::Idle;
+            model.overlay = Overlay::None;
         }
     }
 
@@ -123,42 +125,24 @@ fn handle_tick(model: &mut Model) -> Vec<Effect> {
 }
 
 fn handle_key(model: &mut Model, key: KeyEvent) -> Vec<Effect> {
-    match model.mode {
-        AppMode::Normal => handle_normal(model, key),
-        AppMode::Help => {
-            model.mode = AppMode::Normal;
+    match model.overlay {
+        Overlay::None => handle_main(model, key),
+        Overlay::Help => {
+            model.overlay = Overlay::None;
             vec![]
         }
-        AppMode::ConfirmDelete => handle_confirm_delete(model, key),
-        AppMode::ConfirmQuit => handle_confirm_quit(model, key),
-        AppMode::RoutingMode => handle_routing_mode(model, key),
-        AppMode::CreateProfile | AppMode::PasteUri => handle_input_mode(model, key),
-        AppMode::Connecting | AppMode::Connected => match key.code {
-            KeyCode::Char('q') | KeyCode::Esc => {
-                if model.connected {
-                    model.mode = AppMode::ConfirmQuit;
-                } else {
-                    return vec![Effect::Quit];
-                }
-                vec![]
-            }
-            KeyCode::Char('r') => {
-                model.mode = AppMode::Connecting;
-                vec![]
-            }
-            KeyCode::Char('s') => {
-                vec![Effect::Disconnect]
-            }
-            _ => handle_normal(model, key),
-        },
-        AppMode::Error => {
-            model.mode = AppMode::Normal;
+        Overlay::ConfirmDelete => handle_confirm_delete(model, key),
+        Overlay::ConfirmQuit => handle_confirm_quit(model, key),
+        Overlay::RoutingMode => handle_routing_mode(model, key),
+        Overlay::CreateProfile | Overlay::PasteUri => handle_input_mode(model, key),
+        Overlay::Error => {
+            model.overlay = Overlay::None;
             vec![]
         }
     }
 }
 
-fn handle_normal(model: &mut Model, key: KeyEvent) -> Vec<Effect> {
+fn handle_main(model: &mut Model, key: KeyEvent) -> Vec<Effect> {
     match key.code {
         // Navigation
         KeyCode::Char('j') | KeyCode::Down => {
@@ -176,13 +160,13 @@ fn handle_normal(model: &mut Model, key: KeyEvent) -> Vec<Effect> {
 
         // Actions
         KeyCode::Enter if model.selected_profile().is_some() => {
-            model.mode = AppMode::Connecting;
+            model.connection = ConnectionState::Connecting;
         }
         KeyCode::Char('p') => {
             return vec![Effect::PasteClipboard];
         }
         KeyCode::Char('n') => {
-            model.mode = AppMode::CreateProfile;
+            model.overlay = Overlay::CreateProfile;
             model.input.field = InputField::Name;
             model.input.buffer.clear();
             model.input.draft = Some(Profile::new(
@@ -195,10 +179,10 @@ fn handle_normal(model: &mut Model, key: KeyEvent) -> Vec<Effect> {
         }
 
         KeyCode::Char('d') if model.selected_profile().is_some() => {
-            model.mode = AppMode::ConfirmDelete;
+            model.overlay = Overlay::ConfirmDelete;
         }
         KeyCode::Char('m') => {
-            model.mode = AppMode::RoutingMode;
+            model.overlay = Overlay::RoutingMode;
             model.routing_selected = model.config.settings.routing_mode.index();
         }
         KeyCode::Char('u') => {
@@ -214,17 +198,17 @@ fn handle_normal(model: &mut Model, key: KeyEvent) -> Vec<Effect> {
             return vec![Effect::OpenEditor(model.selected)];
         }
         KeyCode::Char('r') if model.connected => {
-            model.mode = AppMode::Connecting;
+            model.connection = ConnectionState::Connecting;
         }
         KeyCode::Char('s') if model.connected => {
             return vec![Effect::Disconnect];
         }
 
         // Help and quit
-        KeyCode::Char('?') => model.mode = AppMode::Help,
+        KeyCode::Char('?') => model.overlay = Overlay::Help,
         KeyCode::Char('q') | KeyCode::Esc => {
             if model.connected {
-                model.mode = AppMode::ConfirmQuit;
+                model.overlay = Overlay::ConfirmQuit;
             } else {
                 return vec![Effect::Quit];
             }
@@ -242,7 +226,7 @@ fn handle_confirm_delete(model: &mut Model, key: KeyEvent) -> Vec<Effect> {
             return vec![Effect::SaveConfig];
         }
         KeyCode::Char('n') | KeyCode::Esc => {
-            model.mode = AppMode::Normal;
+            model.overlay = Overlay::None;
         }
         _ => {}
     }
@@ -255,7 +239,7 @@ fn handle_confirm_quit(model: &mut Model, key: KeyEvent) -> Vec<Effect> {
             return vec![Effect::Quit];
         }
         KeyCode::Char('n') | KeyCode::Esc => {
-            model.mode = AppMode::Normal;
+            model.overlay = Overlay::None;
         }
         _ => {}
     }
@@ -280,7 +264,7 @@ fn handle_routing_mode(model: &mut Model, key: KeyEvent) -> Vec<Effect> {
             if let Some(mode) = RoutingMode::from_index(model.routing_selected) {
                 let changed = model.config.settings.routing_mode != mode;
                 model.config.settings.routing_mode = mode;
-                model.mode = AppMode::Normal;
+                model.overlay = Overlay::None;
                 model.status = crate::model::AppStatus::Info(format!(
                     "Routing mode: {}",
                     mode.as_str()
@@ -288,7 +272,7 @@ fn handle_routing_mode(model: &mut Model, key: KeyEvent) -> Vec<Effect> {
 
                 let effects = vec![Effect::SaveConfig];
                 if changed && model.connected {
-                    model.mode = AppMode::Connecting;
+                    model.connection = ConnectionState::Connecting;
                     model.logs.push_back(format!(
                         "[routing] Mode changed to {} — reconnecting",
                         mode.as_str()
@@ -298,7 +282,7 @@ fn handle_routing_mode(model: &mut Model, key: KeyEvent) -> Vec<Effect> {
             }
         }
         KeyCode::Char('q') | KeyCode::Esc => {
-            model.mode = AppMode::Normal;
+            model.overlay = Overlay::None;
         }
         _ => {}
     }
@@ -308,10 +292,10 @@ fn handle_routing_mode(model: &mut Model, key: KeyEvent) -> Vec<Effect> {
 fn handle_input_mode(model: &mut Model, key: KeyEvent) -> Vec<Effect> {
     match key.code {
         KeyCode::Enter => {
-            if model.mode == AppMode::PasteUri {
+            if model.overlay == Overlay::PasteUri {
                 let text = model.input.buffer.trim().to_string();
                 model.input.buffer.clear();
-                model.mode = AppMode::Normal;
+                model.overlay = Overlay::None;
                 if !text.is_empty() {
                     return handle_clipboard_text(model, &text);
                 }
@@ -320,7 +304,7 @@ fn handle_input_mode(model: &mut Model, key: KeyEvent) -> Vec<Effect> {
             }
         }
         KeyCode::Esc => {
-            model.mode = AppMode::Normal;
+            model.overlay = Overlay::None;
             model.input.buffer.clear();
             model.input.field = InputField::None;
             model.input.draft = None;
@@ -362,13 +346,13 @@ fn commit_profile(model: &mut Model) {
         model.input.field.apply(draft, &model.input.buffer);
     }
 
-    if model.mode == AppMode::CreateProfile {
+    if model.overlay == Overlay::CreateProfile {
         let profile = model.input.draft.take().unwrap();
         model.add_profile(profile);
         model.status = crate::model::AppStatus::Info("Profile created".into());
     }
 
-    model.mode = AppMode::Normal;
+    model.overlay = Overlay::None;
     model.input.field = InputField::None;
     model.input.buffer.clear();
 }
@@ -399,7 +383,7 @@ fn handle_geo_result(model: &mut Model, result: GeoResult) -> Vec<Effect> {
                 model.logs.push_back(
                     "[geo] Reconnecting to apply new geo databases".into(),
                 );
-                model.mode = AppMode::Connecting;
+                model.connection = ConnectionState::Connecting;
             }
             vec![]
         }
@@ -427,7 +411,7 @@ mod tests {
         let mut model = model_with_profiles(vec![]);
         let effects = update(&mut model, Msg::Resize);
         assert!(effects.is_empty());
-        assert_eq!(model.mode, AppMode::Normal);
+        assert_eq!(model.overlay, Overlay::None);
     }
 
     #[test]
@@ -449,13 +433,13 @@ mod tests {
             ),
         ]);
         assert_eq!(model.selected, 0);
-        let _ = handle_normal(&mut model, key('j'));
+        let _ = handle_main(&mut model, key('j'));
         assert_eq!(model.selected, 1);
-        let _ = handle_normal(&mut model, key('k'));
+        let _ = handle_main(&mut model, key('k'));
         assert_eq!(model.selected, 0);
-        let _ = handle_normal(&mut model, key('G'));
+        let _ = handle_main(&mut model, key('G'));
         assert_eq!(model.selected, 1);
-        let _ = handle_normal(&mut model, key('g'));
+        let _ = handle_main(&mut model, key('g'));
         assert_eq!(model.selected, 0);
     }
 
@@ -468,24 +452,24 @@ mod tests {
             443,
             "u1".to_string(),
         )]);
-        let effects = handle_normal(&mut model, KeyEvent::from(KeyCode::Enter));
-        assert_eq!(model.mode, AppMode::Connecting);
+        let effects = handle_main(&mut model, KeyEvent::from(KeyCode::Enter));
+        assert_eq!(model.connection, ConnectionState::Connecting);
         assert!(effects.is_empty());
     }
 
     #[test]
     fn normal_mode_enter_no_profile() {
         let mut model = model_with_profiles(vec![]);
-        let effects = handle_normal(&mut model, KeyEvent::from(KeyCode::Enter));
-        assert_eq!(model.mode, AppMode::Normal);
+        let effects = handle_main(&mut model, KeyEvent::from(KeyCode::Enter));
+        assert_eq!(model.overlay, Overlay::None);
         assert!(effects.is_empty());
     }
 
     #[test]
     fn normal_mode_n_creates_profile() {
         let mut model = model_with_profiles(vec![]);
-        let effects = handle_normal(&mut model, key('n'));
-        assert_eq!(model.mode, AppMode::CreateProfile);
+        let effects = handle_main(&mut model, key('n'));
+        assert_eq!(model.overlay, Overlay::CreateProfile);
         assert_eq!(model.input.field, InputField::Name);
         assert!(model.input.draft.is_some());
         assert!(effects.is_empty());
@@ -500,8 +484,8 @@ mod tests {
             443,
             "u1".to_string(),
         )]);
-        let effects = handle_normal(&mut model, key('d'));
-        assert_eq!(model.mode, AppMode::ConfirmDelete);
+        let effects = handle_main(&mut model, key('d'));
+        assert_eq!(model.overlay, Overlay::ConfirmDelete);
         assert!(effects.is_empty());
     }
 
@@ -509,8 +493,8 @@ mod tests {
     fn normal_mode_m_opens_routing() {
         let mut model = model_with_profiles(vec![]);
         model.config.settings.routing_mode = RoutingMode::BypassRu;
-        let effects = handle_normal(&mut model, key('m'));
-        assert_eq!(model.mode, AppMode::RoutingMode);
+        let effects = handle_main(&mut model, key('m'));
+        assert_eq!(model.overlay, Overlay::RoutingMode);
         assert_eq!(model.routing_selected, RoutingMode::BypassRu.index());
         assert!(effects.is_empty());
     }
@@ -518,25 +502,25 @@ mod tests {
     #[test]
     fn normal_mode_q_quits_when_no_process() {
         let mut model = model_with_profiles(vec![]);
-        let effects = handle_normal(&mut model, key('q'));
+        let effects = handle_main(&mut model, key('q'));
         assert_eq!(effects, vec![Effect::Quit]);
     }
 
     #[test]
     fn help_mode_any_key_returns_to_normal() {
         let mut model = model_with_profiles(vec![]);
-        model.mode = AppMode::Help;
+        model.overlay = Overlay::Help;
         let effects = handle_key(&mut model, key('x'));
-        assert_eq!(model.mode, AppMode::Normal);
+        assert_eq!(model.overlay, Overlay::None);
         assert!(effects.is_empty());
     }
 
     #[test]
     fn error_mode_any_key_returns_to_normal() {
         let mut model = model_with_profiles(vec![]);
-        model.mode = AppMode::Error;
+        model.overlay = Overlay::Error;
         let effects = handle_key(&mut model, key('x'));
-        assert_eq!(model.mode, AppMode::Normal);
+        assert_eq!(model.overlay, Overlay::None);
         assert!(effects.is_empty());
     }
 
@@ -549,10 +533,10 @@ mod tests {
             443,
             "u1".to_string(),
         )]);
-        model.mode = AppMode::ConfirmDelete;
+        model.overlay = Overlay::ConfirmDelete;
         let effects = handle_confirm_delete(&mut model, key('y'));
         assert!(model.config.profiles.is_empty());
-        assert_eq!(model.mode, AppMode::Normal);
+        assert_eq!(model.overlay, Overlay::None);
         assert_eq!(effects, vec![Effect::SaveConfig]);
     }
 
@@ -565,17 +549,17 @@ mod tests {
             443,
             "u1".to_string(),
         )]);
-        model.mode = AppMode::ConfirmDelete;
+        model.overlay = Overlay::ConfirmDelete;
         let effects = handle_confirm_delete(&mut model, key('n'));
         assert_eq!(model.config.profiles.len(), 1);
-        assert_eq!(model.mode, AppMode::Normal);
+        assert_eq!(model.overlay, Overlay::None);
         assert!(effects.is_empty());
     }
 
     #[test]
     fn confirm_quit_yes() {
         let mut model = model_with_profiles(vec![]);
-        model.mode = AppMode::ConfirmQuit;
+        model.overlay = Overlay::ConfirmQuit;
         let effects = handle_confirm_quit(&mut model, key('y'));
         assert_eq!(effects, vec![Effect::Quit]);
     }
@@ -583,16 +567,16 @@ mod tests {
     #[test]
     fn confirm_quit_no() {
         let mut model = model_with_profiles(vec![]);
-        model.mode = AppMode::ConfirmQuit;
+        model.overlay = Overlay::ConfirmQuit;
         let effects = handle_confirm_quit(&mut model, key('n'));
         assert!(effects.is_empty());
-        assert_eq!(model.mode, AppMode::Normal);
+        assert_eq!(model.overlay, Overlay::None);
     }
 
     #[test]
     fn routing_mode_navigates() {
         let mut model = model_with_profiles(vec![]);
-        model.mode = AppMode::RoutingMode;
+        model.overlay = Overlay::RoutingMode;
         model.routing_selected = 0;
 
         let _ = handle_routing_mode(&mut model, key('j'));
@@ -613,13 +597,13 @@ mod tests {
     #[test]
     fn routing_mode_enter_changes_mode() {
         let mut model = model_with_profiles(vec![]);
-        model.mode = AppMode::RoutingMode;
+        model.overlay = Overlay::RoutingMode;
         model.routing_selected = RoutingMode::OnlyRu.index();
         model.config.settings.routing_mode = RoutingMode::Global;
 
         let effects = handle_routing_mode(&mut model, KeyEvent::from(KeyCode::Enter));
         assert_eq!(model.config.settings.routing_mode, RoutingMode::OnlyRu);
-        assert_eq!(model.mode, AppMode::Normal);
+        assert_eq!(model.overlay, Overlay::None);
         assert!(model.status.text().contains("Only RU"));
         assert_eq!(effects, vec![Effect::SaveConfig]);
     }
@@ -627,17 +611,17 @@ mod tests {
     #[test]
     fn routing_mode_esc_cancels() {
         let mut model = model_with_profiles(vec![]);
-        model.mode = AppMode::RoutingMode;
+        model.overlay = Overlay::RoutingMode;
         model.routing_selected = 2;
         let effects = handle_routing_mode(&mut model, KeyEvent::from(KeyCode::Esc));
-        assert_eq!(model.mode, AppMode::Normal);
+        assert_eq!(model.overlay, Overlay::None);
         assert!(effects.is_empty());
     }
 
     #[test]
     fn input_mode_advances_fields_and_creates_profile() {
         let mut model = model_with_profiles(vec![]);
-        model.mode = AppMode::CreateProfile;
+        model.overlay = Overlay::CreateProfile;
         model.input.field = InputField::Name;
         model.input.draft = Some(Profile::new(
             String::new(),
@@ -674,7 +658,7 @@ mod tests {
         // Protocol -> commit
         model.input.buffer = "vless".to_string();
         advance_input_field(&mut model);
-        assert_eq!(model.mode, AppMode::Normal);
+        assert_eq!(model.overlay, Overlay::None);
         assert_eq!(model.config.profiles.len(), 1);
         assert_eq!(model.config.profiles[0].name, "MyProfile");
         assert_eq!(model.config.profiles[0].protocol, Protocol::Vless);
@@ -683,7 +667,7 @@ mod tests {
     #[test]
     fn input_mode_invalid_port_ignored() {
         let mut model = model_with_profiles(vec![]);
-        model.mode = AppMode::CreateProfile;
+        model.overlay = Overlay::CreateProfile;
         model.input.field = InputField::Port;
         model.input.draft = Some(Profile::new(
             String::new(),
@@ -702,7 +686,7 @@ mod tests {
     #[test]
     fn input_mode_esc_cancels() {
         let mut model = model_with_profiles(vec![]);
-        model.mode = AppMode::CreateProfile;
+        model.overlay = Overlay::CreateProfile;
         model.input.field = InputField::Name;
         model.input.buffer = "text".to_string();
         model.input.draft = Some(Profile::new(
@@ -714,7 +698,7 @@ mod tests {
         ));
 
         let effects = handle_input_mode(&mut model, KeyEvent::from(KeyCode::Esc));
-        assert_eq!(model.mode, AppMode::Normal);
+        assert_eq!(model.overlay, Overlay::None);
         assert!(model.input.buffer.is_empty());
         assert_eq!(model.input.field, InputField::None);
         assert!(model.input.draft.is_none());
@@ -724,7 +708,7 @@ mod tests {
     #[test]
     fn input_mode_backspace_and_char() {
         let mut model = model_with_profiles(vec![]);
-        model.mode = AppMode::CreateProfile;
+        model.overlay = Overlay::CreateProfile;
         model.input.field = InputField::Name;
         model.input.buffer.clear();
 
@@ -738,7 +722,8 @@ mod tests {
     #[test]
     fn connected_mode_q_quits_without_process() {
         let mut model = model_with_profiles(vec![]);
-        model.mode = AppMode::Connected;
+        model.connection = ConnectionState::Connected;
+        model.overlay = Overlay::None;
         let effects = handle_key(&mut model, key('q'));
         assert_eq!(effects, vec![Effect::Quit]);
     }
@@ -746,7 +731,9 @@ mod tests {
     #[test]
     fn connected_mode_s_disconnects() {
         let mut model = model_with_profiles(vec![]);
-        model.mode = AppMode::Connected;
+        model.connection = ConnectionState::Connected;
+        model.overlay = Overlay::None;
+        model.connected = true;
         let effects = handle_key(&mut model, key('s'));
         assert_eq!(effects, vec![Effect::Disconnect]);
     }
@@ -769,7 +756,9 @@ mod tests {
                 "u2".to_string(),
             ),
         ]);
-        model.mode = AppMode::Connected;
+        model.connection = ConnectionState::Connected;
+        model.overlay = Overlay::None;
+        model.connected = true;
         assert_eq!(model.selected, 0);
         let _ = handle_key(&mut model, key('j'));
         assert_eq!(model.selected, 1);
@@ -790,10 +779,12 @@ mod tests {
             443,
             "u1".to_string(),
         )]);
-        model.mode = AppMode::Connected;
+        model.connection = ConnectionState::Connected;
+        model.overlay = Overlay::None;
+        model.connected = true;
         let effects = handle_key(&mut model, KeyEvent::from(KeyCode::Enter));
         assert!(effects.is_empty());
-        assert_eq!(model.mode, AppMode::Connecting);
+        assert_eq!(model.connection, ConnectionState::Connecting);
     }
 
     #[test]
@@ -805,26 +796,30 @@ mod tests {
             443,
             "u1".to_string(),
         )]);
-        model.mode = AppMode::Connected;
+        model.connection = ConnectionState::Connected;
+        model.overlay = Overlay::None;
+        model.connected = true;
         let effects = handle_key(&mut model, key('r'));
         assert!(effects.is_empty());
-        assert_eq!(model.mode, AppMode::Connecting);
+        assert_eq!(model.connection, ConnectionState::Connecting);
     }
 
     #[test]
     fn connected_mode_help() {
         let mut model = model_with_profiles(vec![]);
-        model.mode = AppMode::Connected;
+        model.connection = ConnectionState::Connected;
+        model.overlay = Overlay::None;
+        model.connected = true;
         let effects = handle_key(&mut model, key('?'));
         assert!(effects.is_empty());
-        assert_eq!(model.mode, AppMode::Help);
+        assert_eq!(model.overlay, Overlay::Help);
     }
 
     #[test]
     fn connect_failed_sets_error_mode() {
         let mut model = Model::test_new(crate::config::profile::Config::default());
         let effects = update(&mut model, Msg::ConnectFailed("timeout".into()));
-        assert_eq!(model.mode, AppMode::Error);
+        assert_eq!(model.overlay, Overlay::Error);
         assert!(!model.connection_pending);
         assert!(effects.is_empty());
     }
@@ -838,7 +833,7 @@ mod tests {
             443,
             "u1".to_string(),
         )]);
-        model.mode = AppMode::Connecting;
+        model.connection = ConnectionState::Connecting;
         model.connection_pending = true;
         let effects = handle_tick(&mut model);
         assert!(effects.iter().all(|e| !matches!(e, Effect::Connect { .. })));
@@ -850,7 +845,8 @@ mod tests {
         model.connection_pending = true;
         let effects = update(&mut model, Msg::Connected { pid: 12345 });
         assert!(!model.connection_pending);
-        assert_eq!(model.mode, AppMode::Connected);
+        assert_eq!(model.connection, ConnectionState::Connected);
+        assert_eq!(model.overlay, Overlay::None);
         assert_eq!(effects, vec![Effect::WriteState]);
     }
 

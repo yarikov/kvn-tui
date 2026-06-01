@@ -137,7 +137,7 @@ fn execute_effect(
             model.connected = false;
             model.singbox_pid = None;
             model.status = crate::model::AppStatus::Info("Disconnected".into());
-            model.mode = crate::model::AppMode::Normal;
+            model.overlay = crate::model::Overlay::None;
             crate::state_io::write_state(model);
         }
         Effect::DownloadGeo => {

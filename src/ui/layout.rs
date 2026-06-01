@@ -4,7 +4,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph, Row, Table, Wrap};
 use ratatui::Frame;
 
-use crate::model::{AppMode, Model};
+use crate::model::{Model, Overlay};
 use crate::ui::styles::Theme;
 use crate::ui::widgets::{ProfileList, StatusBar};
 
@@ -21,15 +21,15 @@ pub fn draw(frame: &mut Frame, model: &Model) {
     draw_main(frame, model, chunks[0]);
     draw_status_bar(frame, model, chunks[1]);
 
-    match model.mode {
-        AppMode::Help => draw_help(frame, area),
-        AppMode::ConfirmDelete => draw_confirm_delete(frame, area),
-        AppMode::ConfirmQuit => draw_confirm_quit(frame, area),
-        AppMode::Error => draw_error(frame, area, model.status.text()),
-        AppMode::CreateProfile => draw_input_modal(frame, model, area),
-        AppMode::PasteUri => draw_paste_uri(frame, model, area),
-        AppMode::RoutingMode => draw_routing_mode(frame, model, area),
-        _ => {}
+    match model.overlay {
+        Overlay::Help => draw_help(frame, area),
+        Overlay::ConfirmDelete => draw_confirm_delete(frame, area),
+        Overlay::ConfirmQuit => draw_confirm_quit(frame, area),
+        Overlay::Error => draw_error(frame, area, model.status.text()),
+        Overlay::CreateProfile => draw_input_modal(frame, model, area),
+        Overlay::PasteUri => draw_paste_uri(frame, model, area),
+        Overlay::RoutingMode => draw_routing_mode(frame, model, area),
+        Overlay::None => {}
     }
 }
 
@@ -183,7 +183,7 @@ fn draw_paste_uri(frame: &mut Frame, model: &Model, area: Rect) {
 fn draw_input_modal(frame: &mut Frame, model: &Model, area: Rect) {
     let label = model.input.field.label();
 
-    let title = if model.mode == AppMode::CreateProfile {
+    let title = if model.overlay == Overlay::CreateProfile {
         " New Profile "
     } else {
         " Edit Profile "
