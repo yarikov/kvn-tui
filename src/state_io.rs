@@ -3,7 +3,10 @@ use crate::model::{AppState, Model};
 /// Write current connection state to the state JSON file.
 pub fn write_state(model: &Model) {
     let state = build_state(model);
-    write_state_to(&state, crate::paths::state_json_path());
+    let path = crate::paths::state_json_path();
+    if let Err(e) = write_state_to(&state, &path) {
+        tracing::warn!("state write failed: {e}");
+    }
 }
 
 fn build_state(model: &Model) -> AppState {
@@ -19,27 +22,26 @@ fn build_state(model: &Model) -> AppState {
 
 /// Clear the state file (used on startup to recover from a crash).
 pub fn clear_state() {
-    write_state_to(
-        &AppState {
-            connected: false,
-            profile_name: None,
-            active_profile_id: None,
-            singbox_pid: None,
-        },
-        crate::paths::state_json_path(),
-    );
+    let state = AppState {
+        connected: false,
+        profile_name: None,
+        active_profile_id: None,
+        singbox_pid: None,
+    };
+    let path = crate::paths::state_json_path();
+    if let Err(e) = write_state_to(&state, &path) {
+        tracing::warn!("state clear failed: {e}");
+    }
 }
 
-fn write_state_to(state: &AppState, path: impl AsRef<std::path::Path>) {
+fn write_state_to(state: &AppState, path: impl AsRef<std::path::Path>) -> std::io::Result<()> {
     let path = path.as_ref();
     if let Some(parent) = path.parent() {
-        let _ = std::fs::create_dir_all(parent);
+        std::fs::create_dir_all(parent)?;
     }
-    if let Ok(json) = serde_json::to_string_pretty(state) {
-        if let Err(e) = std::fs::write(path, json) {
-            tracing::warn!("Failed to write state file: {}", e);
-        }
-    }
+    let json = serde_json::to_string_pretty(state)
+        .expect("AppState serialization is infallible");
+    std::fs::write(path, json)
 }
 
 fn read_state_from(path: impl AsRef<std::path::Path>) -> AppState {
@@ -70,7 +72,7 @@ pub fn print_waybar_status() {
                 active_profile_id: None,
                 singbox_pid: None,
             };
-            write_state_to(&state, &path);
+            let _ = write_state_to(&state, &path);
         }
     }
 
@@ -118,9 +120,9 @@ mod tests {
             active_profile_id: Some("550e8400-e29b-41d4-a716-446655440000".to_string()),
             singbox_pid: Some(1234),
         };
-        write_state_to(&connected, temp.path());
+        let _ = write_state_to(&connected, temp.path());
 
-        write_state_to(
+        let _ = write_state_to(
             &AppState {
                 connected: false,
                 profile_name: None,
@@ -145,7 +147,7 @@ mod tests {
             singbox_pid: Some(1234),
         };
         let temp = tempfile::NamedTempFile::new().unwrap();
-        write_state_to(&state, temp.path());
+        let _ = write_state_to(&state, temp.path());
 
         let read = read_state_from(temp.path());
         assert!(read.connected);
@@ -182,7 +184,7 @@ mod tests {
             active_profile_id: Some("550e8400-e29b-41d4-a716-446655440000".to_string()),
             singbox_pid: Some(999_999),
         };
-        write_state_to(&stale, temp.path());
+        let _ = write_state_to(&stale, temp.path());
 
         let mut state = read_state_from(temp.path());
         if state.connected {
@@ -196,7 +198,7 @@ mod tests {
                     active_profile_id: None,
                     singbox_pid: None,
                 };
-                write_state_to(&state, temp.path());
+                let _ = write_state_to(&state, temp.path());
             }
         }
 
