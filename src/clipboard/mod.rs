@@ -3,7 +3,7 @@ use std::process::Command;
 use anyhow::{Context, Result};
 use url::Url;
 
-use crate::config::profile::{Profile, Protocol, RealitySettings};
+use crate::config::profile::{Flow, Profile, Protocol, RealitySettings, Security, TransportType};
 
 /// Read text from the Wayland clipboard via `wl-paste`.
 pub fn read_clipboard_text() -> Result<String> {
@@ -64,16 +64,28 @@ fn parse_vless(rest: &str) -> Result<Profile> {
         .collect();
 
     if let Some(flow) = query.get("flow") {
-        profile.flow = Some(flow.clone());
+        profile.flow = match flow.as_str() {
+            "xtls-rprx-vision" => Some(Flow::XtlsRprxVision),
+            _ => None,
+        };
     }
     if let Some(security) = query.get("security") {
-        profile.security = Some(security.clone());
+        profile.security = match security.as_str() {
+            "reality" => Some(Security::Reality),
+            "tls" => Some(Security::Tls),
+            _ => None,
+        };
     }
     if let Some(fp) = query.get("fp") {
         profile.fingerprint = Some(fp.clone());
     }
     if let Some(transport) = query.get("type") {
-        profile.transport_type = Some(transport.clone());
+        profile.transport_type = match transport.as_str() {
+            "grpc" => Some(TransportType::Grpc),
+            "ws" => Some(TransportType::Ws),
+            "http" => Some(TransportType::Http),
+            _ => None,
+        };
     }
     if let Some(service_name) = query.get("serviceName") {
         profile.transport_service_name = Some(service_name.clone());
@@ -141,7 +153,7 @@ mod tests {
     fn parse_vless_partial_reality() {
         let uri = "vless://uuid@1.2.3.4:8443?security=reality&pbk=pk123&sni=sni.test#Partial";
         let profile = parse_share_link(uri).unwrap();
-        assert_eq!(profile.security, Some("reality".to_string()));
+        assert_eq!(profile.security, Some(Security::Reality));
         let reality = profile.reality.unwrap();
         assert_eq!(reality.public_key, "pk123");
         assert_eq!(reality.server_name, "sni.test");

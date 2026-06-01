@@ -1,6 +1,6 @@
 use serde_json::{json, Value};
 
-use super::profile::{Profile, RoutingMode, Settings};
+use super::profile::{DnsStrategy, Profile, RoutingMode, Settings, TransportType};
 
 /// Generate a complete sing-box JSON configuration from a profile.
 /// Uses the modern sing-box 1.12+ format.
@@ -72,7 +72,7 @@ pub fn generate_config(profile: &Profile, settings: &Settings) -> anyhow::Result
 
 /// Build route object and local rule-sets based on routing mode.
 /// Returns (route_value, rule_sets_vec).
-fn build_route(routing_mode: &RoutingMode, dns_strategy: String) -> (Value, Vec<Value>) {
+fn build_route(routing_mode: &RoutingMode, dns_strategy: DnsStrategy) -> (Value, Vec<Value>) {
     let mut rules = vec![
         json!({
             "ip_version": 6,
@@ -227,7 +227,7 @@ fn build_vless_outbound(profile: &Profile) -> anyhow::Result<Value> {
     // Add transport layer if specified (grpc, ws, httpupgrade, etc.)
     if let Some(ref transport_type) = profile.transport_type {
         let mut transport = json!({"type": transport_type});
-        if transport_type == "grpc" {
+        if *transport_type == TransportType::Grpc {
             if let Some(ref service_name) = profile.transport_service_name {
                 transport["service_name"] = json!(service_name);
             }
@@ -253,14 +253,14 @@ mod tests {
             59431,
             "671c62c7-6768-4b98-ac6b-572c9c707be0".to_string(),
         );
-        p.security = Some("reality".to_string());
+        p.security = Some(crate::config::profile::Security::Reality);
         p.reality = Some(RealitySettings {
             public_key: "0IO3LodsrMnhOWh4ogwgdVqYg30CS5-snhFMwldOuAQ".to_string(),
             short_id: "f04debc34cbc48a4".to_string(),
             server_name: "google.com".to_string(),
             spider_x: "/".to_string(),
         });
-        p.transport_type = Some("grpc".to_string());
+        p.transport_type = Some(TransportType::Grpc);
         p.fingerprint = Some("chrome".to_string());
         p
     }
@@ -343,7 +343,7 @@ mod tests {
     #[test]
     fn vless_outbound_with_flow() {
         let mut profile = test_profile();
-        profile.flow = Some("xtls-rprx-vision".to_string());
+        profile.flow = Some(crate::config::profile::Flow::XtlsRprxVision);
         let outbound = build_vless_outbound(&profile).unwrap();
         assert_eq!(outbound["flow"], "xtls-rprx-vision");
     }
@@ -378,7 +378,7 @@ mod tests {
 
     #[test]
     fn build_route_global_has_basic_rules() {
-        let (route, rule_sets) = build_route(&RoutingMode::Global, "ipv4_only".to_string());
+        let (route, rule_sets) = build_route(&RoutingMode::Global, DnsStrategy::OnlyIpv4);
         assert!(rule_sets.is_empty());
         let rules = route["rules"].as_array().unwrap();
         assert_eq!(rules.len(), 3); // ipv6 reject, dns hijack, direct cidr
@@ -387,7 +387,7 @@ mod tests {
 
     #[test]
     fn build_route_only_ru_has_private_rule_and_final_direct() {
-        let (route, _rule_sets) = build_route(&RoutingMode::OnlyRu, "prefer_ipv4".to_string());
+        let (route, _rule_sets) = build_route(&RoutingMode::OnlyRu, DnsStrategy::PreferIpv4);
         let rules = route["rules"].as_array().unwrap();
         assert!(rules.len() >= 4); // basic 3 + ip_is_private
         assert_eq!(route["final"], "direct");

@@ -73,6 +73,44 @@ pub struct RealitySettings {
     pub spider_x: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum Security {
+    #[default]
+    None,
+    Reality,
+    Tls,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum TransportType {
+    Grpc,
+    Ws,
+    Http,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub enum Flow {
+    #[default]
+    None,
+    #[serde(rename = "xtls-rprx-vision")]
+    XtlsRprxVision,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub enum DnsStrategy {
+    #[default]
+    #[serde(rename = "prefer_ipv4")]
+    PreferIpv4,
+    #[serde(rename = "prefer_ipv6")]
+    PreferIpv6,
+    #[serde(rename = "ipv4_only")]
+    OnlyIpv4,
+    #[serde(rename = "ipv6_only")]
+    OnlyIpv6,
+}
+
 /// Single VPN profile.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
@@ -85,13 +123,13 @@ pub struct Profile {
     pub port: u16,
     pub uuid: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub flow: Option<String>,
+    pub flow: Option<Flow>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub security: Option<String>,
+    pub security: Option<Security>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reality: Option<RealitySettings>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub transport_type: Option<String>,
+    pub transport_type: Option<TransportType>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub transport_service_name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -130,7 +168,7 @@ pub struct Settings {
     #[serde(default = "default_tun_interface")]
     pub tun_interface: String,
     #[serde(default = "default_dns_strategy")]
-    pub dns_strategy: String,
+    pub dns_strategy: DnsStrategy,
     #[serde(default)]
     pub routing_mode: RoutingMode,
 }
@@ -139,8 +177,8 @@ fn default_tun_interface() -> String {
     "tun0".to_string()
 }
 
-fn default_dns_strategy() -> String {
-    "prefer_ipv4".to_string()
+fn default_dns_strategy() -> DnsStrategy {
+    DnsStrategy::PreferIpv4
 }
 
 impl Default for Settings {
@@ -259,7 +297,7 @@ mod tests {
     fn settings_default() {
         let s = Settings::default();
         assert_eq!(s.tun_interface, "tun0");
-        assert_eq!(s.dns_strategy, "prefer_ipv4");
+        assert_eq!(s.dns_strategy, DnsStrategy::PreferIpv4);
         assert_eq!(s.routing_mode, RoutingMode::Global);
         assert!(s.default_profile.is_none());
     }
@@ -281,7 +319,7 @@ mod tests {
             443,
             "550e8400-e29b-41d4-a716-446655440000".to_string(),
         );
-        profile.security = Some("reality".to_string());
+        profile.security = Some(Security::Reality);
         profile.reality = Some(RealitySettings {
             public_key: "pk".to_string(),
             short_id: "sid".to_string(),
