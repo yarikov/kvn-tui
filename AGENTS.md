@@ -6,7 +6,7 @@ This document contains project-specific context and conventions for AI coding ag
 
 ## Project Overview
 
-`kvn-tui` is a **terminal VPN client** for Arch Linux + Wayland. It is a Rust TUI application that manages VPN profiles, generates sing-box configurations, and orchestrates the `sing-box` binary as a child process. Navigation is vim-style (`j`/`k`/`g`/`G`).
+`kvn-tui` (v0.5.0) is a **terminal VPN client** for Arch Linux + Wayland. It is a Rust TUI application that manages VPN profiles, generates sing-box configurations, and orchestrates the `sing-box` binary as a child process. Navigation is vim-style (`j`/`k`/`g`/`G`).
 
 The app does **not** implement VPN protocols itself. It is a configuration generator and process manager around the external `sing-box` binary.
 
@@ -16,11 +16,13 @@ The app does **not** implement VPN protocols itself. It is a configuration gener
 
 | Module | Path | Responsibility |
 |--------|------|----------------|
-| `model` | `src/model.rs` | Application state (`Model`), mode enum, input state — pure data, no side effects |
+| `cli` | `src/cli.rs` | CLI argument parsing (`--waybar-status`, `--install-omarchy`, `--version`) |
+| `model` | `src/model.rs` | Application state (`Model`), overlay + connection state, input state — pure data, no side effects |
 | `msg` | `src/msg.rs` | Message enum (`Msg`) — all external events (keys, ticks, logs, geo, resume, etc.) |
 | `update` | `src/update.rs` | Pure `update(model, msg) -> Vec<Effect>` — business logic, input routing, mode transitions |
 | `effect` | `src/effect.rs` | Effect enum — declarative description of side effects to be executed by runtime |
 | `runtime` | `src/runtime.rs` | TUI main loop: owns `mpsc` channel, spawns threads, renders UI, executes effects |
+| `process_handle` | `src/process_handle.rs` | Wrapper around `std::process::Child` for sing-box lifecycle |
 | `ui` | `src/ui/mod.rs`, `src/ui/layout.rs`, `src/ui/widgets.rs`, `src/ui/styles.rs`, `src/ui/nav.rs` | ratatui rendering, layout splits, widget definitions, color theme, navigation helpers |
 | `config` | `src/config/mod.rs`, `src/config/profile.rs`, `src/config/singbox.rs` | JSON config I/O, profile struct definitions, sing-box JSON config generation |
 | `singbox` | `src/singbox/mod.rs`, `src/singbox/runner.rs` | Process lifecycle: write temp config, run `sing-box check`, spawn `sing-box run`, kill on disconnect |
@@ -36,7 +38,7 @@ The app does **not** implement VPN protocols itself. It is a configuration gener
 
 ## Build System & Dependencies
 
-- **Rust**: edition 2021, minimum version 1.87
+- **Rust**: edition 2024, minimum version 1.87
 - **External binary**: `sing-box` must be installed separately and available on `$PATH` (or via `SING_BOX_PATH` env var)
 - **Key crates**: `ratatui` + `crossterm` (TUI), `serde` + `serde_json` (config), `zbus` (D-Bus), `ureq` (HTTP), `tracing` (logs), `anyhow` + `thiserror` (errors)
 
@@ -93,7 +95,7 @@ sudo ./target/release/kvn-tui
 ## Testing Patterns
 
 - Tests are co-located in `#[cfg(test)] mod tests` blocks at the bottom of each source file.
-- `src/test_helpers.rs` provides shared test utilities (e.g., `app_with_profiles`).
+- `src/test_helpers.rs` provides shared test utilities (e.g., `model_with_profiles`).
 - Tests should not depend on external network or the `sing-box` binary unless explicitly marked `#[ignore]`.
 - Use `tempfile` for file-system tests; use `NamedTempFile` / `tempdir()` for isolation.
 - Example pattern: create a default `Profile`, generate a config, assert on JSON structure.
@@ -104,20 +106,20 @@ sudo ./target/release/kvn-tui
 
 ### TEA Architecture
 The application follows **The Elm Architecture (TEA)**:
-1. **Model** (`model.rs`) holds all application state as pure data.
+1. **Model** (`model.rs`) holds all application state as pure data. UI state is split into `Overlay` (popup/modal) and `ConnectionState` (idle/connecting/connected).
 2. **Messages** (`msg.rs`) represent every external event — keyboard input, timer ticks, log lines, geo updates, system resume.
 3. **Update** (`update.rs`) is a pure function `update(model, msg) -> Vec<Effect>`: no I/O, no threads, no system calls. All business logic lives here.
 4. **Effects** (`effect.rs`) are declarative descriptions of side effects (`Connect`, `DownloadGeo`, `SaveConfig`, `Quit`, etc.).
-5. **Runtime** (`runtime.rs`) owns the `mpsc` channel, spawns background threads (event reader, ticker, suspend watcher), renders the UI, and executes effects by performing the actual I/O.
+5. **Runtime** (`runtime.rs`) owns the `mpsc` channel, spawns background threads (event reader, ticker, suspend watcher), renders the UI, and executes effects by performing the actual I/O. The sing-box process handle lives in an `Arc<Mutex<Option<ProcessHandle>>>` inside the runtime, not in `Model`.
 
 This separation makes `update.rs` fully synchronous and trivial to unit-test.
 
 ### Background Services
 Background work is executed in dedicated threads spawned by `runtime.rs`:
-- **Event reader** — reads `crossterm` events and sends `Msg::Key` / `Msg::Resize`.
+- **Event reader** — polls `crossterm` events with `event::poll` and sends `Msg::Key` / `Msg::Resize`. Reading can be paused via an `AtomicBool` flag (used when opening an external editor so that keystrokes meant for the editor do not accumulate in the channel).
 - **Ticker** — sends `Msg::Tick` every 250 ms to drive log tailing and connection state machines.
 - **Suspend watcher** — blocking zbus listener that sends `Msg::SystemResumed`.
-- **Effects** — `Connect`, `Reconnect`, `DownloadGeo`, and `PasteClipboard` each spawn a short-lived thread that sends the result back via the same channel.
+- **Effects** — `Connect` (with optional `force_restart`), `DownloadGeo`, and `PasteClipboard` each spawn a short-lived thread that sends the result back via the same channel.
 - **Log tailer** — `LogTailer` (`services/log_tailer.rs`) reads new lines from the sing-box log file on every `Tick`.
 
 ### sing-box Config Generation
