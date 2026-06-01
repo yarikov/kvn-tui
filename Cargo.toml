@@ -1,7 +1,7 @@
 [package]
 name = "kvn-tui"
 version = "0.4.1"
-edition = "2021"
+edition = "2024"
 authors = ["Dmitry Yarikov <dmitry@yarikov.com>"]
 description = "Terminal VPN client for Arch Linux + Wayland with vim navigation"
 license = "MIT"

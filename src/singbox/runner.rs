@@ -107,15 +107,18 @@ mod tests {
     #[test]
     fn singbox_binary_default() {
         // Ensure no env override is set
-        std::env::remove_var("SING_BOX_PATH");
+        // TODO: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::remove_var("SING_BOX_PATH") };
         assert_eq!(singbox_binary(), "sing-box");
     }
 
     #[test]
     fn singbox_binary_env_override() {
-        std::env::set_var("SING_BOX_PATH", "/usr/local/bin/sing-box");
+        // TODO: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::set_var("SING_BOX_PATH", "/usr/local/bin/sing-box") };
         assert_eq!(singbox_binary(), "/usr/local/bin/sing-box");
-        std::env::remove_var("SING_BOX_PATH");
+        // TODO: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::remove_var("SING_BOX_PATH") };
     }
 
     #[test]
