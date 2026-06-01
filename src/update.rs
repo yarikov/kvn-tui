@@ -28,7 +28,7 @@ pub fn update(model: &mut Model, msg: Msg) -> Vec<Effect> {
                 let profile = model.selected_profile().cloned();
                 let settings = model.config.settings.clone();
                 profile
-                    .map(|p| vec![Effect::Connect { profile: p, settings, force_restart: true }])
+                    .map(|p| vec![Effect::Connect { profile: p, settings }])
                     .unwrap_or_default()
             } else {
                 vec![]
@@ -108,11 +108,7 @@ fn handle_tick(model: &mut Model) -> Vec<Effect> {
     if model.connection == ConnectionState::Connecting {
         if let Some(profile) = model.selected_profile().cloned() {
             let settings = model.config.settings.clone();
-            if model.connection == ConnectionState::Connected {
-                effects.push(Effect::Connect { profile, settings, force_restart: true });
-            } else {
-                effects.push(Effect::Connect { profile, settings, force_restart: false });
-            }
+            effects.push(Effect::Connect { profile, settings });
         } else {
             model.connection = ConnectionState::Idle;
             model.overlay = Overlay::None;

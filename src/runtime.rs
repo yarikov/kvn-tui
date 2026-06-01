@@ -113,16 +113,10 @@ fn execute_effect(
     event_reading_enabled: &Arc<AtomicBool>,
 ) -> Result<()> {
     match effect {
-        Effect::Connect {
-            profile,
-            settings,
-            force_restart,
-        } => {
-            if force_restart {
-                if let Some(mut handle) = process_slot.lock().unwrap().take() {
-                    if let Err(e) = handle.kill_and_wait() {
-                        tracing::warn!("Failed to stop sing-box process: {}", e);
-                    }
+        Effect::Connect { profile, settings } => {
+            if let Some(mut handle) = process_slot.lock().unwrap().take() {
+                if let Err(e) = handle.kill_and_wait() {
+                    tracing::warn!("Failed to stop sing-box process: {}", e);
                 }
             }
             model.connection = crate::model::ConnectionState::ConnectPending;
@@ -190,7 +184,17 @@ fn execute_effect(
             terminal.backend_mut().execute(EnterAlternateScreen)?;
             terminal.clear()?;
             event_reading_enabled.store(true, Ordering::Relaxed);
-            while rx.try_recv().is_ok() {}
+            // Drain leaked input events but preserve state messages.
+            let mut to_requeue = Vec::new();
+            while let Ok(msg) = rx.try_recv() {
+                match msg {
+                    Msg::Key(_) | Msg::Resize => {}
+                    other => to_requeue.push(other),
+                }
+            }
+            for msg in to_requeue {
+                let _ = tx.send(msg);
+            }
             let _ = tx.send(Msg::EditorClosed(result));
         }
         Effect::PasteClipboard => {

@@ -5,7 +5,6 @@ pub enum Effect {
     Connect {
         profile: Profile,
         settings: Settings,
-        force_restart: bool,
     },
     Disconnect,
     DownloadGeo,
