@@ -2,6 +2,7 @@ use std::fs;
 use std::io::Read;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
+use std::sync::OnceLock;
 use std::thread;
 use std::time::Duration;
 
@@ -11,9 +12,16 @@ use crate::config::profile::{Profile, Settings};
 use crate::config::singbox::generate_config;
 use crate::process_handle::ProcessHandle;
 
+fn resolve_singbox_binary() -> String {
+    std::env::var("SING_BOX_PATH")
+        .unwrap_or_else(|_| "sing-box".to_string())
+}
+
+static SINGBOX_BINARY: OnceLock<String> = OnceLock::new();
+
 /// Path to the sing-box binary. Can be overridden by SING_BOX_PATH env variable.
-fn singbox_binary() -> String {
-    std::env::var("SING_BOX_PATH").unwrap_or_else(|_| "sing-box".to_string())
+fn singbox_binary() -> &'static str {
+    SINGBOX_BINARY.get_or_init(resolve_singbox_binary)
 }
 
 /// Write the generated sing-box configuration to a temporary file.
@@ -34,13 +42,12 @@ fn write_config(profile: &Profile, settings: &Settings) -> Result<PathBuf> {
 
 /// Validate the sing-box configuration by running `sing-box check`.
 fn check_config(path: &PathBuf) -> Result<()> {
-    let binary = singbox_binary();
-    let output = Command::new(&binary)
+    let output = Command::new(singbox_binary())
         .arg("check")
         .arg("-c")
         .arg(path)
         .output()
-        .with_context(|| format!("Failed to run {} check", binary))?;
+        .with_context(|| format!("Failed to run {} check", singbox_binary()))?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -58,16 +65,14 @@ pub fn start(profile: &Profile, settings: &Settings) -> Result<ProcessHandle> {
     // Validate configuration before starting.
     check_config(&config_path)?;
 
-    let binary = singbox_binary();
-
-    let mut child = Command::new(&binary)
+    let mut child = Command::new(singbox_binary())
         .arg("run")
         .arg("-c")
         .arg(&config_path)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .with_context(|| format!("Failed to start sing-box (binary: {})", binary))?;
+        .with_context(|| format!("Failed to start sing-box (binary: {})", singbox_binary()))?;
 
     // Give sing-box a moment to either start or fail immediately.
     thread::sleep(Duration::from_millis(300));
@@ -105,19 +110,14 @@ mod tests {
     use crate::config::profile::{Profile, Protocol};
 
     #[test]
-    fn singbox_binary_default() {
-        // Ensure no env override is set
-        // TODO: Audit that the environment access only happens in single-threaded code.
+    fn singbox_binary_resolution() {
+        // Default (no env override)
         unsafe { std::env::remove_var("SING_BOX_PATH") };
-        assert_eq!(singbox_binary(), "sing-box");
-    }
+        assert_eq!(resolve_singbox_binary(), "sing-box");
 
-    #[test]
-    fn singbox_binary_env_override() {
-        // TODO: Audit that the environment access only happens in single-threaded code.
+        // With env override
         unsafe { std::env::set_var("SING_BOX_PATH", "/usr/local/bin/sing-box") };
-        assert_eq!(singbox_binary(), "/usr/local/bin/sing-box");
-        // TODO: Audit that the environment access only happens in single-threaded code.
+        assert_eq!(resolve_singbox_binary(), "/usr/local/bin/sing-box");
         unsafe { std::env::remove_var("SING_BOX_PATH") };
     }
 
