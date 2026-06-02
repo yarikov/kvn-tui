@@ -64,6 +64,7 @@ jobs:
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ github.event.workflow_run.head_branch }}
           files: |
             kvn-tui-*-x86_64-linux.tar.gz
             checksums.txt
