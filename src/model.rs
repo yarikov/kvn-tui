@@ -1,5 +1,5 @@
-use std::collections::VecDeque;
 use serde::{Deserialize, Serialize};
+use std::collections::VecDeque;
 use uuid::Uuid;
 
 use crate::config::profile::{Config, Profile, Protocol};
@@ -180,7 +180,6 @@ impl Model {
         self.config.profiles.push(profile);
         self.selected = self.config.profiles.len().saturating_sub(1);
     }
-
 }
 
 impl InputField {

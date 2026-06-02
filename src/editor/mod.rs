@@ -5,10 +5,10 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use anyhow::{Context, Result};
-use crossterm::terminal::{
-    disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
-};
 use crossterm::ExecutableCommand;
+use crossterm::terminal::{
+    EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
+};
 
 use crate::config::profile::Config;
 use crate::paths::profiles_path;
@@ -42,11 +42,9 @@ impl TerminalGuard {
         disable_raw_mode().inspect_err(|e| {
             tracing::warn!("Failed to disable raw mode: {}", e);
         })?;
-        stdout()
-            .execute(LeaveAlternateScreen)
-            .inspect_err(|e| {
-                tracing::warn!("Failed to leave alternate screen: {}", e);
-            })?;
+        stdout().execute(LeaveAlternateScreen).inspect_err(|e| {
+            tracing::warn!("Failed to leave alternate screen: {}", e);
+        })?;
         Ok(Self)
     }
 }
@@ -56,8 +54,8 @@ impl Drop for TerminalGuard {
         let _ = stdout()
             .execute(EnterAlternateScreen)
             .inspect_err(|e| tracing::warn!("Failed to enter alternate screen: {}", e));
-        let _ = enable_raw_mode()
-            .inspect_err(|e| tracing::warn!("Failed to enable raw mode: {}", e));
+        let _ =
+            enable_raw_mode().inspect_err(|e| tracing::warn!("Failed to enable raw mode: {}", e));
     }
 }
 
@@ -190,10 +188,9 @@ fn editor_args(editor: &str, path: &Path, line: usize) -> Vec<String> {
         .unwrap_or(editor);
 
     match name {
-        "code" | "code-oss" | "codium" => vec![
-            "--goto".to_string(),
-            format!("{}:{}", path.display(), line),
-        ],
+        "code" | "code-oss" | "codium" => {
+            vec!["--goto".to_string(), format!("{}:{}", path.display(), line)]
+        }
         _ => vec![format!("+{}", line), path.display().to_string()],
     }
 }
@@ -214,8 +211,7 @@ pub fn open_profiles_editor(profile_index: usize) -> Result<Config> {
 
     let mut backup = ConfigBackup::create(&path)?;
 
-    let _guard = TerminalGuard::new()
-        .context("Failed to restore terminal for external editor")?;
+    let _guard = TerminalGuard::new().context("Failed to restore terminal for external editor")?;
 
     let args = if let Some(line) = find_profile_line(&path, profile_index) {
         editor_args(&editor, &path, line)

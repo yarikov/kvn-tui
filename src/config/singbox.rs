@@ -1,4 +1,4 @@
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use super::profile::{DnsStrategy, Profile, RoutingMode, Settings, TransportType};
 
@@ -291,8 +291,10 @@ mod tests {
     #[test]
     fn generated_config_only_ru_final_is_direct() {
         let profile = test_profile();
-        let mut settings = Settings::default();
-        settings.routing_mode = RoutingMode::OnlyRu;
+        let settings = Settings {
+            routing_mode: RoutingMode::OnlyRu,
+            ..Default::default()
+        };
         let config = generate_config(&profile, &settings).unwrap();
         let route = config.get("route").unwrap();
         assert_eq!(route["final"].as_str().unwrap(), "direct");

@@ -8,13 +8,13 @@ mod model;
 mod msg;
 mod paths;
 mod process_handle;
+mod runtime;
 mod services;
 mod singbox;
 mod state_io;
 mod suspend;
 mod ui;
 mod update;
-mod runtime;
 
 #[cfg(test)]
 mod test_helpers;
@@ -34,8 +34,7 @@ fn main() -> Result<()> {
     // Initialize logging.
     tracing_subscriber::registry()
         .with(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "info".into()),
+            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
         )
         .with(tracing_subscriber::fmt::layer().without_time())
         .init();

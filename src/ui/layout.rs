@@ -1,8 +1,8 @@
+use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::Modifier;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph, Row, Table, Wrap};
-use ratatui::Frame;
 
 use crate::model::{Model, Overlay};
 use crate::ui::styles::Theme;
@@ -85,8 +85,8 @@ fn draw_help(frame: &mut Frame, area: Rect) {
     let inner = block.inner(popup_area);
     frame.render_widget(block, popup_area);
 
-    let header = Row::new(vec!["Key", "Action"])
-        .style(Theme::accent().add_modifier(Modifier::BOLD));
+    let header =
+        Row::new(vec!["Key", "Action"]).style(Theme::accent().add_modifier(Modifier::BOLD));
 
     let rows: Vec<Row> = vec![
         Row::new(vec!["j / Down", "Move down"]),
@@ -106,11 +106,7 @@ fn draw_help(frame: &mut Frame, area: Rect) {
         Row::new(vec!["?", "Show this help"]),
     ];
 
-    let table = Table::new(
-        rows,
-        [Constraint::Length(12), Constraint::Min(1)],
-    )
-    .header(header);
+    let table = Table::new(rows, [Constraint::Length(12), Constraint::Min(1)]).header(header);
 
     frame.render_widget(table, inner);
 }
@@ -286,14 +282,14 @@ mod tests {
     use crate::config::profile::{Profile, Protocol};
     use crate::model::{ConnectionState, InputField, Overlay};
     use crate::test_helpers::{buffer_to_string, ensure_fixed_geo, model_with_profiles};
-    use ratatui::backend::TestBackend;
     use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
 
     fn snapshot_terminal(model: &Model, width: u16, height: u16) -> String {
         let backend = TestBackend::new(width, height);
         let mut terminal = Terminal::new(backend).unwrap();
         let frame = terminal.draw(|f| draw(f, model)).unwrap();
-        buffer_to_string(&frame.buffer)
+        buffer_to_string(frame.buffer)
     }
 
     #[test]
@@ -326,15 +322,17 @@ mod tests {
 
     #[test]
     fn help_renders_commands() {
-        use ratatui::backend::TestBackend;
         use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
 
         let backend = TestBackend::new(80, 40);
         let mut terminal = Terminal::new(backend).unwrap();
-        let frame = terminal.draw(|frame| {
-            let area = frame.area();
-            draw_help(frame, area);
-        }).unwrap();
+        let frame = terminal
+            .draw(|frame| {
+                let area = frame.area();
+                draw_help(frame, area);
+            })
+            .unwrap();
 
         let content: String = frame.buffer.content.iter().map(|c| c.symbol()).collect();
         let expected = [
@@ -355,11 +353,7 @@ mod tests {
             ("?", "Show this help"),
         ];
         for (key, action) in expected {
-            assert!(
-                content.contains(key),
-                "help should contain key: {}",
-                key
-            );
+            assert!(content.contains(key), "help should contain key: {}", key);
             assert!(
                 content.contains(action),
                 "help should contain action: {}",
@@ -372,15 +366,13 @@ mod tests {
     #[test]
     fn draw_main_snapshot() {
         ensure_fixed_geo();
-        let mut model = model_with_profiles(vec![
-            Profile::new(
-                "Alpha".to_string(),
-                Protocol::Vless,
-                "1.1.1.1".to_string(),
-                443,
-                "u1".to_string(),
-            ),
-        ]);
+        let mut model = model_with_profiles(vec![Profile::new(
+            "Alpha".to_string(),
+            Protocol::Vless,
+            "1.1.1.1".to_string(),
+            443,
+            "u1".to_string(),
+        )]);
         model.logs.push_back("log line 1".to_string());
         model.logs.push_back("log line 2".to_string());
         model.connection = ConnectionState::Connected;

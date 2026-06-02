@@ -18,9 +18,7 @@ fn install_omarchy() -> Result<()> {
     let script = include_str!("../contrib/install-omarchy.sh");
     let tmp = std::env::temp_dir().join("kvn-tui-install-omarchy.sh");
     std::fs::write(&tmp, script)?;
-    let status = std::process::Command::new("bash")
-        .arg(&tmp)
-        .status()?;
+    let status = std::process::Command::new("bash").arg(&tmp).status()?;
     std::fs::remove_file(&tmp).ok();
     if !status.success() {
         anyhow::bail!("install-omarchy.sh exited with status {}", status);

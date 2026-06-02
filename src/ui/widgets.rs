@@ -37,12 +37,11 @@ impl<'a> Widget for ProfileList<'a> {
                     Theme::normal()
                 };
 
-                let connected_marker =
-                    if self.model.active_profile_id == Some(p.id) {
-                        " ●"
-                    } else {
-                        ""
-                    };
+                let connected_marker = if self.model.active_profile_id == Some(p.id) {
+                    " ●"
+                } else {
+                    ""
+                };
 
                 Row::new(vec![
                     Cell::from(format!("{}{}", p.name, connected_marker)),
@@ -109,7 +108,10 @@ impl<'a> Widget for StatusBar<'a> {
         let geo_info = if self.model.geo_updating {
             "[Geo: updating...]".to_string()
         } else {
-            match crate::geo::GeoManager::new().ok().and_then(|g| g.last_updated()) {
+            match crate::geo::GeoManager::new()
+                .ok()
+                .and_then(|g| g.last_updated())
+            {
                 Some(dt) => format!("[Geo: {}]", dt),
                 None => "[Geo: never]".to_string(),
             }

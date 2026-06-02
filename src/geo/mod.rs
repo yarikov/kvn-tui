@@ -195,9 +195,14 @@ impl GeoManager {
             anyhow::bail!("HTTP {} for {}", resp.status(), url);
         }
 
-        let etag = resp.headers().get("etag").and_then(|v| v.to_str().ok()).map(String::from);
+        let etag = resp
+            .headers()
+            .get("etag")
+            .and_then(|v| v.to_str().ok())
+            .map(String::from);
 
-        let bytes = resp.into_body()
+        let bytes = resp
+            .into_body()
             .read_to_vec()
             .context("Failed to read response body")?;
         self.write_atomic(dest, &bytes)?;
@@ -225,12 +230,6 @@ static TEST_LAST_UPDATED: std::sync::Mutex<Option<Option<String>>> = std::sync::
 /// Override `GeoManager::last_updated` for tests.
 pub fn set_test_last_updated(value: Option<String>) {
     *TEST_LAST_UPDATED.lock().unwrap() = Some(value);
-}
-
-#[cfg(test)]
-/// Clear the `last_updated` test override.
-pub fn clear_test_last_updated() {
-    *TEST_LAST_UPDATED.lock().unwrap() = None;
 }
 
 #[cfg(test)]

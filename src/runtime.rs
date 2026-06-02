@@ -1,18 +1,18 @@
 use std::io;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{channel, Sender};
+use std::sync::mpsc::{Sender, channel};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
 use anyhow::Result;
+use crossterm::ExecutableCommand;
 use crossterm::event;
 use crossterm::terminal::{
-    disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
+    EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
 };
-use crossterm::ExecutableCommand;
-use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
+use ratatui::backend::CrosstermBackend;
 
 use crate::effect::Effect;
 use crate::model::Model;
@@ -102,6 +102,7 @@ fn run_loop(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn execute_effect(
     effect: Effect,
     rx: &std::sync::mpsc::Receiver<Msg>,
@@ -122,8 +123,8 @@ fn execute_effect(
             model.connection = crate::model::ConnectionState::ConnectPending;
             let tx = tx.clone();
             let slot = process_slot.clone();
-            thread::spawn(move || {
-                match crate::singbox::runner::start(&profile, &settings) {
+            thread::spawn(
+                move || match crate::singbox::runner::start(&profile, &settings) {
                     Ok(handle) => {
                         let pid = handle.pid;
                         *slot.lock().unwrap() = Some(handle);
@@ -132,8 +133,8 @@ fn execute_effect(
                     Err(e) => {
                         let _ = tx.send(Msg::ConnectFailed(e.to_string()));
                     }
-                }
-            });
+                },
+            );
         }
         Effect::Disconnect => {
             if let Some(mut handle) = process_slot.lock().unwrap().take() {

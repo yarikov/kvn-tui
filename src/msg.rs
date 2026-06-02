@@ -1,5 +1,5 @@
-use crossterm::event::KeyEvent;
 use crate::config::profile::Config;
+use crossterm::event::KeyEvent;
 
 pub enum Msg {
     Key(KeyEvent),

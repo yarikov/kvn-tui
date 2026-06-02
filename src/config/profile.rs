@@ -233,9 +233,7 @@ impl Config {
 
         if let Some(id) = self.settings.default_profile {
             if !self.profiles.iter().any(|p| p.id == id) {
-                anyhow::bail!(
-                    "settings.default_profile ({id}) references a non-existent profile"
-                );
+                anyhow::bail!("settings.default_profile ({id}) references a non-existent profile");
             }
         }
 
@@ -421,7 +419,11 @@ mod tests {
             "uuid".to_string(),
         ));
         let err = config.validate().unwrap_err().to_string();
-        assert!(err.contains("address must not be empty"), "Error was: {}", err);
+        assert!(
+            err.contains("address must not be empty"),
+            "Error was: {}",
+            err
+        );
     }
 
     #[test]

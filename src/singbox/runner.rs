@@ -13,8 +13,7 @@ use crate::config::singbox::generate_config;
 use crate::process_handle::ProcessHandle;
 
 fn resolve_singbox_binary() -> String {
-    std::env::var("SING_BOX_PATH")
-        .unwrap_or_else(|_| "sing-box".to_string())
+    std::env::var("SING_BOX_PATH").unwrap_or_else(|_| "sing-box".to_string())
 }
 
 static SINGBOX_BINARY: OnceLock<String> = OnceLock::new();
@@ -101,8 +100,6 @@ pub fn start(profile: &Profile, settings: &Settings) -> Result<ProcessHandle> {
         }
     }
 }
-
-
 
 #[cfg(test)]
 mod tests {

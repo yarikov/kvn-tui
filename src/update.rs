@@ -1,8 +1,8 @@
-use crossterm::event::{KeyCode, KeyEvent};
 use crate::config::profile::{Profile, Protocol, RoutingMode};
 use crate::effect::Effect;
 use crate::model::{ConnectionState, InputField, Model, Overlay};
 use crate::msg::{GeoResult, Msg};
+use crossterm::event::{KeyCode, KeyEvent};
 
 /// Maximum number of log lines kept in the UI buffer.
 const MAX_LOG_LINES: usize = 1000;
@@ -28,7 +28,12 @@ pub fn update(model: &mut Model, msg: Msg) -> Vec<Effect> {
                 let profile = model.selected_profile().cloned();
                 let settings = model.config.settings.clone();
                 profile
-                    .map(|p| vec![Effect::Connect { profile: p, settings }])
+                    .map(|p| {
+                        vec![Effect::Connect {
+                            profile: p,
+                            settings,
+                        }]
+                    })
                     .unwrap_or_default()
             } else {
                 vec![]
@@ -42,48 +47,36 @@ pub fn update(model: &mut Model, msg: Msg) -> Vec<Effect> {
                 let profile_id = profile.id;
                 let profile_name = profile.name.clone();
                 model.active_profile_id = Some(profile_id);
-                model.status = crate::model::AppStatus::Info(format!(
-                    "Connected to {}",
-                    profile_name
-                ));
+                model.status =
+                    crate::model::AppStatus::Info(format!("Connected to {}", profile_name));
             }
             vec![Effect::WriteState]
         }
         Msg::ConnectFailed(err) => {
             model.connection = ConnectionState::Idle;
             model.overlay = Overlay::Error;
-            model.status = crate::model::AppStatus::Error(format!(
-                "Connection failed: {}",
-                err
-            ));
+            model.status = crate::model::AppStatus::Error(format!("Connection failed: {}", err));
             vec![]
         }
-        Msg::ClipboardRead(result) => {
-            match result {
-                Ok(text) => handle_clipboard_text(model, &text),
-                Err(e) => {
-                    model.status = crate::model::AppStatus::Error(format!(
-                        "Clipboard error: {}",
-                        e
-                    ));
-                    vec![]
-                }
+        Msg::ClipboardRead(result) => match result {
+            Ok(text) => handle_clipboard_text(model, &text),
+            Err(e) => {
+                model.status = crate::model::AppStatus::Error(format!("Clipboard error: {}", e));
+                vec![]
             }
-        }
+        },
         Msg::EditorClosed(result) => {
             model.needs_redraw = true;
             match result {
                 Ok(config) => {
                     model.config = config;
                     model.selected = model.config.resolve_selected();
-                    model.status = crate::model::AppStatus::Info(
-                        "Profiles updated from editor".into(),
-                    );
+                    model.status =
+                        crate::model::AppStatus::Info("Profiles updated from editor".into());
                     vec![]
                 }
                 Err(e) => {
-                    model.status =
-                        crate::model::AppStatus::Error(format!("Editor failed: {}", e));
+                    model.status = crate::model::AppStatus::Error(format!("Editor failed: {}", e));
                     vec![]
                 }
             }
@@ -179,14 +172,10 @@ fn handle_main(model: &mut Model, key: KeyEvent) -> Vec<Effect> {
             model.overlay = Overlay::RoutingMode;
             model.routing_selected = model.config.settings.routing_mode.index();
         }
-        KeyCode::Char('u') => {
-            if !model.geo_updating {
-                model.geo_updating = true;
-                model.status = crate::model::AppStatus::Info(
-                    "Checking for geo updates...".to_string(),
-                );
-                return vec![Effect::DownloadGeo];
-            }
+        KeyCode::Char('u') if !model.geo_updating => {
+            model.geo_updating = true;
+            model.status = crate::model::AppStatus::Info("Checking for geo updates...".to_string());
+            return vec![Effect::DownloadGeo];
         }
         KeyCode::Char('e') => {
             return vec![Effect::OpenEditor(model.selected)];
@@ -259,10 +248,8 @@ fn handle_routing_mode(model: &mut Model, key: KeyEvent) -> Vec<Effect> {
                 let changed = model.config.settings.routing_mode != mode;
                 model.config.settings.routing_mode = mode;
                 model.overlay = Overlay::None;
-                model.status = crate::model::AppStatus::Info(format!(
-                    "Routing mode: {}",
-                    mode.as_str()
-                ));
+                model.status =
+                    crate::model::AppStatus::Info(format!("Routing mode: {}", mode.as_str()));
 
                 let effects = vec![Effect::SaveConfig];
                 if changed && model.connection == ConnectionState::Connected {
@@ -374,17 +361,15 @@ fn handle_geo_result(model: &mut Model, result: GeoResult) -> Vec<Effect> {
                 model.logs.push_back(format!("[geo] Updated: {}", part));
             }
             if model.connection == ConnectionState::Connected {
-                model.logs.push_back(
-                    "[geo] Reconnecting to apply new geo databases".into(),
-                );
+                model
+                    .logs
+                    .push_back("[geo] Reconnecting to apply new geo databases".into());
                 model.connection = ConnectionState::Connecting;
             }
             vec![]
         }
         GeoResult::UpToDate => {
-            model.status = crate::model::AppStatus::Info(
-                "Geo databases are up to date".into(),
-            );
+            model.status = crate::model::AppStatus::Info("Geo databases are up to date".into());
             vec![]
         }
         GeoResult::Error(err) => {

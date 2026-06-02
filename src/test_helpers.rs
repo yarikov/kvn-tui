@@ -48,8 +48,10 @@ pub fn sample_profiles() -> Vec<Profile> {
 
 /// Build a `Model` pre-filled with the given profiles for testing.
 pub fn model_with_profiles(profiles: Vec<Profile>) -> Model {
-    let mut config = Config::default();
-    config.profiles = profiles;
+    let config = Config {
+        profiles,
+        ..Default::default()
+    };
     Model::test_new(config)
 }
 

@@ -13,7 +13,12 @@ fn build_state(model: &Model) -> AppState {
     AppState {
         connected: model.connection == crate::model::ConnectionState::Connected,
         profile_name: model.active_profile_id.and_then(|id| {
-            model.config.profiles.iter().find(|p| p.id == id).map(|p| p.name.clone())
+            model
+                .config
+                .profiles
+                .iter()
+                .find(|p| p.id == id)
+                .map(|p| p.name.clone())
         }),
         active_profile_id: model.active_profile_id.map(|id| id.to_string()),
         singbox_pid: model.singbox_pid,
@@ -39,8 +44,7 @@ fn write_state_to(state: &AppState, path: impl AsRef<std::path::Path>) -> std::i
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    let json = serde_json::to_string_pretty(state)
-        .expect("AppState serialization is infallible");
+    let json = serde_json::to_string_pretty(state).expect("AppState serialization is infallible");
     std::fs::write(path, json)
 }
 
@@ -62,9 +66,7 @@ pub fn print_waybar_status() {
     let mut state = read_state_from(&path);
 
     if state.connected {
-        let alive = state
-            .singbox_pid
-            .map_or(false, |pid| is_singbox_alive(pid));
+        let alive = state.singbox_pid.is_some_and(is_singbox_alive);
         if !alive {
             state = AppState {
                 connected: false,
@@ -152,7 +154,10 @@ mod tests {
         let read = read_state_from(temp.path());
         assert!(read.connected);
         assert_eq!(read.profile_name, Some("Test Profile".to_string()));
-        assert_eq!(read.active_profile_id, Some("550e8400-e29b-41d4-a716-446655440000".to_string()));
+        assert_eq!(
+            read.active_profile_id,
+            Some("550e8400-e29b-41d4-a716-446655440000".to_string())
+        );
     }
 
     #[test]
@@ -188,9 +193,7 @@ mod tests {
 
         let mut state = read_state_from(temp.path());
         if state.connected {
-            let alive = state
-                .singbox_pid
-                .map_or(false, |pid| is_singbox_alive(pid));
+            let alive = state.singbox_pid.is_some_and(is_singbox_alive);
             if !alive {
                 state = AppState {
                     connected: false,

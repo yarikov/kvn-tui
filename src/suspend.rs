@@ -1,5 +1,5 @@
-use std::sync::mpsc::Sender;
 use crate::msg::Msg;
+use std::sync::mpsc::Sender;
 
 /// Spawn a blocking D-Bus listener that watches for systemd-logind
 /// `PrepareForSleep` signals and notifies the caller on resume.

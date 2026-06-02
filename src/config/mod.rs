@@ -67,7 +67,10 @@ mod tests {
         let config = load_config_at(&path).unwrap();
         assert!(config.profiles.is_empty());
         assert_eq!(config.settings.tun_interface, "tun0");
-        assert_eq!(config.settings.dns_strategy, profile::DnsStrategy::PreferIpv4);
+        assert_eq!(
+            config.settings.dns_strategy,
+            profile::DnsStrategy::PreferIpv4
+        );
     }
 
     #[test]
