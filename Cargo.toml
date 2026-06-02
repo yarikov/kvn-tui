@@ -50,6 +50,7 @@ zbus = { version = "5", default-features = false, features = ["blocking-api", "a
 clap = { version = "4", features = ["derive"] }
 
 [dev-dependencies]
+insta = "1.47.2"
 tempfile = "3"
 
 [profile.release]

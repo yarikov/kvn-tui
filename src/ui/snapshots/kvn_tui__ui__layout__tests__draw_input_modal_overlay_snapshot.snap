@@ -1,0 +1,24 @@
+---
+source: src/ui/layout.rs
+expression: "snapshot_terminal(&model, 80, 20)"
+---
+┌ Profiles ────────────────────────────┐┌ Logs ────────────────────────────────┐
+│Name          Protocol Address  Port  ││                                      │
+│                                      ││                                      │
+│                                      ││                                      │
+│                                      ││                                      │
+│               ┌ New Profile ─────────────────────────────────┐               │
+│               │                 Profile Name                 │               │
+│               │                                              │               │
+│               │                  My Profile                  │               │
+│               │                                              │               │
+│               │        Enter to confirm, Esc to cancel       │               │
+│               │                                              │               │
+│               │                                              │               │
+│               │                                              │               │
+│               └──────────────────────────────────────────────┘               │
+│                                      ││                                      │
+│                                      ││                                      │
+│                                      ││                                      │
+└──────────────────────────────────────┘└──────────────────────────────────────┘
+[DISCONNECTED] [Global] [Geo: 2026-05-31 13:41]

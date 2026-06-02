@@ -209,6 +209,63 @@ mod tests {
     }
 
     #[test]
+    fn build_state_connected() {
+        use crate::config::profile::{Config, Profile, Protocol};
+        use crate::model::{ConnectionState, Model};
+        let mut model = Model::test_new(Config::default());
+        model.connection = ConnectionState::Connected;
+        let profile = Profile::new(
+            "Test".to_string(),
+            Protocol::Vless,
+            "1.1.1.1".to_string(),
+            443,
+            "u".to_string(),
+        );
+        let id = profile.id;
+        model.config.profiles.push(profile);
+        model.active_profile_id = Some(id);
+        model.singbox_pid = Some(1234);
+
+        let state = build_state(&model);
+        assert!(state.connected);
+        assert_eq!(state.profile_name, Some("Test".to_string()));
+        assert_eq!(state.active_profile_id, Some(id.to_string()));
+        assert_eq!(state.singbox_pid, Some(1234));
+    }
+
+    #[test]
+    fn build_state_idle() {
+        use crate::config::profile::Config;
+        use crate::model::Model;
+        let model = Model::test_new(Config::default());
+        let state = build_state(&model);
+        assert!(!state.connected);
+        assert!(state.profile_name.is_none());
+        assert!(state.active_profile_id.is_none());
+        assert!(state.singbox_pid.is_none());
+    }
+
+    #[test]
+    fn print_waybar_from_state_outputs_json() {
+        let state = AppState {
+            connected: true,
+            profile_name: Some("Alpha".to_string()),
+            active_profile_id: None,
+            singbox_pid: None,
+        };
+        // Just ensure it doesn't panic and produces output
+        print_waybar_from_state(&state);
+
+        let state = AppState {
+            connected: false,
+            profile_name: None,
+            active_profile_id: None,
+            singbox_pid: None,
+        };
+        print_waybar_from_state(&state);
+    }
+
+    #[test]
     fn format_waybar_connected() {
         let state = AppState {
             connected: true,

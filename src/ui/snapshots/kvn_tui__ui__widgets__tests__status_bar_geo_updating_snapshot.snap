@@ -1,0 +1,5 @@
+---
+source: src/ui/widgets.rs
+expression: buffer_to_string(&buf)
+---
+[DISCONNECTED] [Global] [Geo: updating...]

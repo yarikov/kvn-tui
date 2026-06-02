@@ -283,6 +283,18 @@ fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::profile::{Profile, Protocol};
+    use crate::model::{ConnectionState, InputField, Overlay};
+    use crate::test_helpers::{buffer_to_string, ensure_fixed_geo, model_with_profiles};
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+
+    fn snapshot_terminal(model: &Model, width: u16, height: u16) -> String {
+        let backend = TestBackend::new(width, height);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let frame = terminal.draw(|f| draw(f, model)).unwrap();
+        buffer_to_string(&frame.buffer)
+    }
 
     #[test]
     fn centered_rect_60_50_in_100_100() {
@@ -355,5 +367,92 @@ mod tests {
             );
         }
         assert!(content.contains("Help"), "should contain Help title");
+    }
+
+    #[test]
+    fn draw_main_snapshot() {
+        ensure_fixed_geo();
+        let mut model = model_with_profiles(vec![
+            Profile::new(
+                "Alpha".to_string(),
+                Protocol::Vless,
+                "1.1.1.1".to_string(),
+                443,
+                "u1".to_string(),
+            ),
+        ]);
+        model.logs.push_back("log line 1".to_string());
+        model.logs.push_back("log line 2".to_string());
+        model.connection = ConnectionState::Connected;
+        model.active_profile_id = Some(model.config.profiles[0].id);
+        insta::assert_snapshot!(snapshot_terminal(&model, 80, 20));
+    }
+
+    #[test]
+    fn draw_help_overlay_snapshot() {
+        ensure_fixed_geo();
+        let mut model = model_with_profiles(vec![]);
+        model.overlay = Overlay::Help;
+        insta::assert_snapshot!(snapshot_terminal(&model, 80, 40));
+    }
+
+    #[test]
+    fn draw_confirm_delete_overlay_snapshot() {
+        ensure_fixed_geo();
+        let mut model = model_with_profiles(vec![Profile::new(
+            "Alpha".to_string(),
+            Protocol::Vless,
+            "1.1.1.1".to_string(),
+            443,
+            "u1".to_string(),
+        )]);
+        model.overlay = Overlay::ConfirmDelete;
+        insta::assert_snapshot!(snapshot_terminal(&model, 80, 20));
+    }
+
+    #[test]
+    fn draw_confirm_quit_overlay_snapshot() {
+        ensure_fixed_geo();
+        let mut model = model_with_profiles(vec![]);
+        model.connection = ConnectionState::Connected;
+        model.overlay = Overlay::ConfirmQuit;
+        insta::assert_snapshot!(snapshot_terminal(&model, 80, 20));
+    }
+
+    #[test]
+    fn draw_error_overlay_snapshot() {
+        ensure_fixed_geo();
+        let mut model = model_with_profiles(vec![]);
+        model.overlay = Overlay::Error;
+        model.status = crate::model::AppStatus::Error("something went wrong".to_string());
+        insta::assert_snapshot!(snapshot_terminal(&model, 80, 20));
+    }
+
+    #[test]
+    fn draw_paste_uri_overlay_snapshot() {
+        ensure_fixed_geo();
+        let mut model = model_with_profiles(vec![]);
+        model.overlay = Overlay::PasteUri;
+        model.input.buffer = "vless://uuid@1.2.3.4#name".to_string();
+        insta::assert_snapshot!(snapshot_terminal(&model, 80, 20));
+    }
+
+    #[test]
+    fn draw_input_modal_overlay_snapshot() {
+        ensure_fixed_geo();
+        let mut model = model_with_profiles(vec![]);
+        model.overlay = Overlay::CreateProfile;
+        model.input.field = InputField::Name;
+        model.input.buffer = "My Profile".to_string();
+        insta::assert_snapshot!(snapshot_terminal(&model, 80, 20));
+    }
+
+    #[test]
+    fn draw_routing_mode_overlay_snapshot() {
+        ensure_fixed_geo();
+        let mut model = model_with_profiles(vec![]);
+        model.overlay = Overlay::RoutingMode;
+        model.routing_selected = 2;
+        insta::assert_snapshot!(snapshot_terminal(&model, 80, 20));
     }
 }

@@ -1,0 +1,44 @@
+---
+source: src/ui/layout.rs
+expression: "snapshot_terminal(&model, 80, 40)"
+---
+┌ Profiles ────────────────────────────┐┌ Logs ────────────────────────────────┐
+│Name          Protocol Address  Port  ││                                      │
+│                                      ││                                      │
+│                                      ││                                      │
+│                                      ││                                      │
+│                                      ││                                      │
+│                                      ││                                      │
+│                                      ││                                      │
+│                                      ││                                      │
+│                                      ││                                      │
+│               ┌ Help ────────────────────────────────────────┐               │
+│               │Key          Action                           │               │
+│               │j / Down     Move down                        │               │
+│               │k / Up       Move up                          │               │
+│               │g            Go to first                      │               │
+│               │G            Go to last                       │               │
+│               │Enter        Connect to selected              │               │
+│               │p            Paste from clipboard             │               │
+│               │n            New profile                      │               │
+│               │d            Delete profile                   │               │
+│               │m            Routing mode (popup list)        │               │
+│               │u            Update geoip/geosite databases   │               │
+│               │e            Open profiles.json in $EDITOR    │               │
+│               │r            Reconnect                        │               │
+│               │s            Stop / disconnect                │               │
+│               │q / Esc      Quit                             │               │
+│               │?            Show this help                   │               │
+│               │                                              │               │
+│               │                                              │               │
+│               └──────────────────────────────────────────────┘               │
+│                                      ││                                      │
+│                                      ││                                      │
+│                                      ││                                      │
+│                                      ││                                      │
+│                                      ││                                      │
+│                                      ││                                      │
+│                                      ││                                      │
+│                                      ││                                      │
+└──────────────────────────────────────┘└──────────────────────────────────────┘
+[DISCONNECTED] [Global] [Geo: 2026-05-31 13:41]

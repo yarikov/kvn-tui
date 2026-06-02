@@ -389,4 +389,89 @@ mod tests {
         assert!(model.status.is_error());
         assert_eq!(model.overlay, Overlay::Error);
     }
+
+    #[test]
+    fn input_field_labels() {
+        assert_eq!(InputField::Name.label(), "Profile Name");
+        assert_eq!(InputField::Address.label(), "Server Address");
+        assert_eq!(InputField::Port.label(), "Server Port");
+        assert_eq!(InputField::Uuid.label(), "UUID / Password");
+        assert_eq!(InputField::Protocol.label(), "Protocol (vless)");
+        assert_eq!(InputField::None.label(), "Input");
+    }
+
+    #[test]
+    fn input_field_next_sequence() {
+        assert_eq!(InputField::Name.next(), Some(InputField::Address));
+        assert_eq!(InputField::Address.next(), Some(InputField::Port));
+        assert_eq!(InputField::Port.next(), Some(InputField::Uuid));
+        assert_eq!(InputField::Uuid.next(), Some(InputField::Protocol));
+        assert_eq!(InputField::Protocol.next(), None);
+        assert_eq!(InputField::None.next(), None);
+    }
+
+    #[test]
+    fn input_field_apply_to_draft() {
+        use crate::config::profile::{Profile, Protocol};
+        let mut draft = Profile::new(
+            "Old".to_string(),
+            Protocol::Vless,
+            "0.0.0.0".to_string(),
+            80,
+            "old-uuid".to_string(),
+        );
+
+        InputField::Name.apply(&mut draft, "  NewName  ");
+        assert_eq!(draft.name, "NewName");
+
+        InputField::Address.apply(&mut draft, "1.2.3.4");
+        assert_eq!(draft.address, "1.2.3.4");
+
+        InputField::Port.apply(&mut draft, "443");
+        assert_eq!(draft.port, 443);
+
+        // Invalid port should be ignored
+        InputField::Port.apply(&mut draft, "abc");
+        assert_eq!(draft.port, 443);
+
+        InputField::Uuid.apply(&mut draft, "new-uuid");
+        assert_eq!(draft.uuid, "new-uuid");
+
+        InputField::Protocol.apply(&mut draft, "anything");
+        assert_eq!(draft.protocol, Protocol::Vless);
+
+        InputField::None.apply(&mut draft, "ignored");
+        // no change expected
+    }
+
+    #[test]
+    fn input_field_default_buffer() {
+        use crate::config::profile::{Profile, Protocol};
+        let draft = Profile::new(
+            "N".to_string(),
+            Protocol::Vless,
+            "1.1.1.1".to_string(),
+            443,
+            "u".to_string(),
+        );
+        assert_eq!(InputField::Name.default_buffer(&draft), "N");
+        assert_eq!(InputField::Address.default_buffer(&draft), "1.1.1.1");
+        assert_eq!(InputField::Port.default_buffer(&draft), "443");
+        assert_eq!(InputField::Uuid.default_buffer(&draft), "u");
+        assert_eq!(InputField::Protocol.default_buffer(&draft), "vless");
+        assert_eq!(InputField::None.default_buffer(&draft), "");
+    }
+
+    #[test]
+    fn model_save_roundtrip() {
+        let model = model_with_profiles(vec![Profile::new(
+            "Alpha".to_string(),
+            Protocol::Vless,
+            "1.1.1.1".to_string(),
+            443,
+            "u1".to_string(),
+        )]);
+        // Save should not panic
+        let _ = model.save();
+    }
 }

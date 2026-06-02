@@ -19,3 +19,20 @@ impl ProcessHandle {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn process_handle_lifecycle() {
+        let child = std::process::Command::new("sleep")
+            .arg("10")
+            .spawn()
+            .unwrap();
+        let pid = child.id();
+        let mut handle = ProcessHandle::new(child);
+        assert_eq!(handle.pid, pid);
+        handle.kill_and_wait().unwrap();
+    }
+}

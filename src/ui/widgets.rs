@@ -135,7 +135,8 @@ impl<'a> Widget for StatusBar<'a> {
 mod tests {
     use super::*;
     use crate::config::profile::{Profile, Protocol};
-    use crate::test_helpers::model_with_profiles;
+    use crate::model::ConnectionState;
+    use crate::test_helpers::{buffer_to_string, ensure_fixed_geo, model_with_profiles};
     use ratatui::buffer::Buffer;
     use ratatui::layout::Rect;
 
@@ -242,5 +243,55 @@ mod tests {
         let content: String = buf.content.iter().map(|c| c.symbol()).collect();
         assert!(content.contains("[DISCONNECTED]"));
         assert!(content.contains("[Global]"));
+    }
+
+    #[test]
+    fn status_bar_connected_snapshot() {
+        ensure_fixed_geo();
+        let mut model = model_with_profiles(vec![Profile::new(
+            "Alpha".to_string(),
+            Protocol::Vless,
+            "1.1.1.1".to_string(),
+            443,
+            "u1".to_string(),
+        )]);
+        model.connection = ConnectionState::Connected;
+        let mut buf = Buffer::empty(Rect::new(0, 0, 80, 1));
+        StatusBar::new(&model).render(Rect::new(0, 0, 80, 1), &mut buf);
+        insta::assert_snapshot!(buffer_to_string(&buf));
+    }
+
+    #[test]
+    fn status_bar_geo_updating_snapshot() {
+        ensure_fixed_geo();
+        let mut model = model_with_profiles(vec![]);
+        model.geo_updating = true;
+        let mut buf = Buffer::empty(Rect::new(0, 0, 80, 1));
+        StatusBar::new(&model).render(Rect::new(0, 0, 80, 1), &mut buf);
+        insta::assert_snapshot!(buffer_to_string(&buf));
+    }
+
+    #[test]
+    fn profile_list_snapshot() {
+        ensure_fixed_geo();
+        let model = model_with_profiles(vec![
+            Profile::new(
+                "Alpha".to_string(),
+                Protocol::Vless,
+                "1.1.1.1".to_string(),
+                443,
+                "u1".to_string(),
+            ),
+            Profile::new(
+                "Beta".to_string(),
+                Protocol::Vless,
+                "2.2.2.2".to_string(),
+                80,
+                "u2".to_string(),
+            ),
+        ]);
+        let mut buf = Buffer::empty(Rect::new(0, 0, 80, 10));
+        ProfileList::new(&model).render(Rect::new(0, 0, 80, 10), &mut buf);
+        insta::assert_snapshot!(buffer_to_string(&buf));
     }
 }

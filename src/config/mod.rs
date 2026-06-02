@@ -106,4 +106,29 @@ mod tests {
         let result = load_config_at(file.path());
         assert!(result.is_err());
     }
+
+    #[test]
+    fn load_and_save_config_use_default_path() {
+        let dir = tempfile::tempdir().unwrap();
+        unsafe { std::env::set_var("XDG_CONFIG_HOME", dir.path()) };
+        // Remove any existing file
+        let _ = std::fs::remove_file(crate::paths::profiles_path().unwrap());
+
+        let config = load_config().unwrap();
+        assert!(config.profiles.is_empty());
+
+        let mut config = Config::default();
+        config.profiles.push(profile::Profile::new(
+            "PathTest".to_string(),
+            profile::Protocol::Vless,
+            "9.9.9.9".to_string(),
+            443,
+            "uuid".to_string(),
+        ));
+        save_config(&config).unwrap();
+
+        let loaded = load_config().unwrap();
+        assert_eq!(loaded.profiles.len(), 1);
+        assert_eq!(loaded.profiles[0].name, "PathTest");
+    }
 }
