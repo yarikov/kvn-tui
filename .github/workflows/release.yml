@@ -1,18 +1,22 @@
 name: Release
 
 on:
-  push:
-    tags:
-      - 'v*'
+  workflow_run:
+    workflows: [CI]
+    types:
+      - completed
 
 permissions:
   contents: write
 
 jobs:
   build:
+    if: github.event.workflow_run.conclusion == 'success' && startsWith(github.event.workflow_run.head_branch, 'v')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_branch }}
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -22,7 +26,8 @@ jobs:
 
       - name: Prepare package
         run: |
-          VERSION=${GITHUB_REF_NAME#v}
+          VERSION=${{ github.event.workflow_run.head_branch }}
+          VERSION=${VERSION#v}
           mkdir -p "kvn-tui-${VERSION}-x86_64-linux"
           cp target/release/kvn-tui "kvn-tui-${VERSION}-x86_64-linux/"
           cp LICENSE "kvn-tui-${VERSION}-x86_64-linux/"
@@ -30,7 +35,8 @@ jobs:
 
       - name: Generate checksums
         run: |
-          VERSION=${GITHUB_REF_NAME#v}
+          VERSION=${{ github.event.workflow_run.head_branch }}
+          VERSION=${VERSION#v}
           sha256sum "kvn-tui-${VERSION}-x86_64-linux.tar.gz" > checksums.txt
 
       - name: Upload artifacts
@@ -43,9 +49,12 @@ jobs:
 
   release:
     needs: build
+    if: github.event.workflow_run.conclusion == 'success' && startsWith(github.event.workflow_run.head_branch, 'v')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_branch }}
 
       - name: Download artifacts
         uses: actions/download-artifact@v4
