@@ -1,4 +1,4 @@
-use crate::msg::Msg;
+use crate::app::msg::Msg;
 use std::sync::mpsc::Sender;
 
 /// Spawn a blocking D-Bus listener that watches for systemd-logind

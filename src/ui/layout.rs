@@ -4,7 +4,7 @@ use ratatui::style::Modifier;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph, Row, Table, Wrap};
 
-use crate::model::{Model, Overlay};
+use crate::app::model::{Model, Overlay};
 use crate::ui::styles::Theme;
 use crate::ui::widgets::{ProfileList, StatusBar};
 
@@ -280,7 +280,7 @@ fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
 mod tests {
     use super::*;
     use crate::config::profile::{Profile, Protocol};
-    use crate::model::{ConnectionState, InputField, Overlay};
+    use crate::app::model::{ConnectionState, InputField, Overlay};
     use crate::test_helpers::{buffer_to_string, ensure_fixed_geo, model_with_profiles};
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
@@ -416,7 +416,7 @@ mod tests {
         ensure_fixed_geo();
         let mut model = model_with_profiles(vec![]);
         model.overlay = Overlay::Error;
-        model.status = crate::model::AppStatus::Error("something went wrong".to_string());
+        model.status = crate::app::model::AppStatus::Error("something went wrong".to_string());
         insta::assert_snapshot!(snapshot_terminal(&model, 80, 20));
     }
 

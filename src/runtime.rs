@@ -14,12 +14,12 @@ use crossterm::terminal::{
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 
-use crate::effect::Effect;
-use crate::model::Model;
-use crate::msg::{GeoResult, Msg};
+use crate::app::effect::Effect;
+use crate::app::model::Model;
+use crate::app::msg::{GeoResult, Msg};
 use crate::process_handle::ProcessHandle;
 use crate::services::LogTailer;
-use crate::update::update;
+use crate::app::update::update;
 
 /// Run the TUI main loop until the user requests quit.
 pub fn run(mut model: Model) -> Result<()> {
@@ -120,7 +120,7 @@ fn execute_effect(
                     tracing::warn!("Failed to stop sing-box process: {}", e);
                 }
             }
-            model.connection = crate::model::ConnectionState::ConnectPending;
+            model.connection = crate::app::model::ConnectionState::ConnectPending;
             let tx = tx.clone();
             let slot = process_slot.clone();
             thread::spawn(
@@ -142,12 +142,12 @@ fn execute_effect(
                     tracing::warn!("Failed to stop sing-box process: {}", e);
                 }
             }
-            model.connection = crate::model::ConnectionState::Idle;
+            model.connection = crate::app::model::ConnectionState::Idle;
             model.active_profile_id = None;
             model.singbox_pid = None;
-            model.status = crate::model::AppStatus::Info("Disconnected".into());
-            model.overlay = crate::model::Overlay::None;
-            crate::state_io::write_state(model);
+            model.status = crate::app::model::AppStatus::Info("Disconnected".into());
+            model.overlay = crate::app::model::Overlay::None;
+            crate::services::state_io::write_state(model);
         }
         Effect::DownloadGeo => {
             model.geo_updating = true;
@@ -169,7 +169,7 @@ fn execute_effect(
             }
         }
         Effect::WriteState => {
-            crate::state_io::write_state(model);
+            crate::services::state_io::write_state(model);
         }
         Effect::SaveConfig => {
             if let Err(e) = model.save() {
@@ -254,6 +254,6 @@ fn spawn_ticker(tx: Sender<Msg>) {
 
 fn spawn_suspend_watcher(tx: Sender<Msg>) {
     thread::spawn(move || {
-        crate::suspend::listen_blocking(tx);
+        crate::services::suspend::listen_blocking(tx);
     });
 }

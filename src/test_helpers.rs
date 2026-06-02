@@ -2,7 +2,7 @@ use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::buffer::Buffer;
 
 use crate::config::profile::{Config, Profile, Protocol};
-use crate::model::Model;
+use crate::app::model::Model;
 
 /// Convert a ratatui Buffer to a multi-line string for snapshot testing.
 pub fn buffer_to_string(buffer: &Buffer) -> String {

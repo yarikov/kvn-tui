@@ -1,4 +1,4 @@
-use crate::model::{AppState, Model};
+use crate::app::model::{AppState, Model};
 
 /// Write current connection state to the state JSON file.
 pub fn write_state(model: &Model) {
@@ -11,7 +11,7 @@ pub fn write_state(model: &Model) {
 
 fn build_state(model: &Model) -> AppState {
     AppState {
-        connected: model.connection == crate::model::ConnectionState::Connected,
+        connected: model.connection == crate::app::model::ConnectionState::Connected,
         profile_name: model.active_profile_id.and_then(|id| {
             model
                 .config
@@ -111,7 +111,7 @@ fn print_waybar_from_state(state: &AppState) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::AppState;
+    use crate::app::model::AppState;
 
     #[test]
     fn clear_state_writes_disconnected() {
@@ -214,7 +214,7 @@ mod tests {
     #[test]
     fn build_state_connected() {
         use crate::config::profile::{Config, Profile, Protocol};
-        use crate::model::{ConnectionState, Model};
+        use crate::app::model::{ConnectionState, Model};
         let mut model = Model::test_new(Config::default());
         model.connection = ConnectionState::Connected;
         let profile = Profile::new(
@@ -239,7 +239,7 @@ mod tests {
     #[test]
     fn build_state_idle() {
         use crate::config::profile::Config;
-        use crate::model::Model;
+        use crate::app::model::Model;
         let model = Model::test_new(Config::default());
         let state = build_state(&model);
         assert!(!state.connected);

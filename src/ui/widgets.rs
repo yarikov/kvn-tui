@@ -4,7 +4,7 @@ use ratatui::style::{Modifier, Stylize};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Cell, Row, StatefulWidget, Table, Widget};
 
-use crate::model::Model;
+use crate::app::model::Model;
 use crate::ui::styles::Theme;
 
 /// Widget that renders the profile list as a table.
@@ -91,13 +91,13 @@ impl<'a> StatusBar<'a> {
 
 impl<'a> Widget for StatusBar<'a> {
     fn render(self, area: Rect, buf: &mut Buffer) {
-        let style = if self.model.connection == crate::model::ConnectionState::Connected {
+        let style = if self.model.connection == crate::app::model::ConnectionState::Connected {
             Theme::success()
         } else {
             Theme::status()
         };
 
-        let status = if self.model.connection == crate::model::ConnectionState::Connected {
+        let status = if self.model.connection == crate::app::model::ConnectionState::Connected {
             "[CONNECTED]"
         } else {
             "[DISCONNECTED]"
@@ -137,7 +137,7 @@ impl<'a> Widget for StatusBar<'a> {
 mod tests {
     use super::*;
     use crate::config::profile::{Profile, Protocol};
-    use crate::model::ConnectionState;
+    use crate::app::model::ConnectionState;
     use crate::test_helpers::{buffer_to_string, ensure_fixed_geo, model_with_profiles};
     use ratatui::buffer::Buffer;
     use ratatui::layout::Rect;

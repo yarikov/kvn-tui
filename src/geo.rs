@@ -6,7 +6,7 @@ use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-use crate::msg::GeoResult;
+use crate::app::msg::GeoResult;
 
 const GEOIP_RU_URL: &str =
     "https://raw.githubusercontent.com/SagerNet/sing-geoip/rule-set/geoip-ru.srs";

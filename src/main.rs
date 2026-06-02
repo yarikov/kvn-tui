@@ -1,20 +1,15 @@
+mod app;
 mod cli;
 mod clipboard;
 mod config;
 mod editor;
-mod effect;
 mod geo;
-mod model;
-mod msg;
 mod paths;
 mod process_handle;
 mod runtime;
 mod services;
 mod singbox;
-mod state_io;
-mod suspend;
 mod ui;
-mod update;
 
 #[cfg(test)]
 mod test_helpers;
@@ -22,7 +17,7 @@ mod test_helpers;
 use anyhow::Result;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
-use crate::model::Model;
+use crate::app::model::Model;
 use crate::paths::ensure_config_dirs;
 
 /// Entry point for the TUI VPN client.

@@ -114,7 +114,7 @@ impl Model {
         let selected = config.resolve_selected();
 
         // Reset state to disconnected on startup in case of previous crash.
-        crate::state_io::clear_state();
+        crate::services::state_io::clear_state();
 
         Ok(Self {
             overlay: Overlay::None,
