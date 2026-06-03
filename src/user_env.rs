@@ -17,6 +17,7 @@ pub fn sudo_uid() -> Option<u32> {
 }
 
 /// Look up a user's home directory via `getent passwd`.
+#[cfg(not(test))]
 pub fn home_dir(username: &str) -> Option<PathBuf> {
     let output = Command::new("getent")
         .args(["passwd", username])

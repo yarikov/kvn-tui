@@ -463,6 +463,9 @@ mod tests {
 
     #[test]
     fn model_save_roundtrip() {
+        let dir = tempfile::tempdir().unwrap();
+        unsafe { std::env::set_var("XDG_CONFIG_HOME", dir.path()) };
+
         let model = model_with_profiles(vec![Profile::new(
             "Alpha".to_string(),
             Protocol::Vless,
@@ -470,7 +473,8 @@ mod tests {
             443,
             "u1".to_string(),
         )]);
-        // Save should not panic
+        // Save should not panic and must write into the temp directory.
         let _ = model.save();
+        assert!(crate::paths::profiles_path().unwrap().exists());
     }
 }
