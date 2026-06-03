@@ -279,8 +279,8 @@ fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::profile::{Profile, Protocol};
     use crate::app::model::{ConnectionState, InputField, Overlay};
+    use crate::config::profile::{Profile, Protocol};
     use crate::test_helpers::{buffer_to_string, ensure_fixed_geo, model_with_profiles};
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;

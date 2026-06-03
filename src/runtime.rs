@@ -17,9 +17,9 @@ use ratatui::backend::CrosstermBackend;
 use crate::app::effect::Effect;
 use crate::app::model::Model;
 use crate::app::msg::{GeoResult, Msg};
+use crate::app::update::update;
 use crate::process_handle::ProcessHandle;
 use crate::services::LogTailer;
-use crate::app::update::update;
 
 /// Run the TUI main loop until the user requests quit.
 pub fn run(mut model: Model) -> Result<()> {

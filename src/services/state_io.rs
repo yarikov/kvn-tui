@@ -213,8 +213,8 @@ mod tests {
 
     #[test]
     fn build_state_connected() {
-        use crate::config::profile::{Config, Profile, Protocol};
         use crate::app::model::{ConnectionState, Model};
+        use crate::config::profile::{Config, Profile, Protocol};
         let mut model = Model::test_new(Config::default());
         model.connection = ConnectionState::Connected;
         let profile = Profile::new(
@@ -238,8 +238,8 @@ mod tests {
 
     #[test]
     fn build_state_idle() {
-        use crate::config::profile::Config;
         use crate::app::model::Model;
+        use crate::config::profile::Config;
         let model = Model::test_new(Config::default());
         let state = build_state(&model);
         assert!(!state.connected);

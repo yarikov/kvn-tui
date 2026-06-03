@@ -1,7 +1,7 @@
-use crate::config::profile::{Profile, Protocol, RoutingMode};
 use crate::app::effect::Effect;
 use crate::app::model::{ConnectionState, InputField, Model, Overlay};
 use crate::app::msg::{GeoResult, Msg};
+use crate::config::profile::{Profile, Protocol, RoutingMode};
 use crossterm::event::{KeyCode, KeyEvent};
 
 /// Maximum number of log lines kept in the UI buffer.
@@ -55,13 +55,15 @@ pub fn update(model: &mut Model, msg: Msg) -> Vec<Effect> {
         Msg::ConnectFailed(err) => {
             model.connection = ConnectionState::Idle;
             model.overlay = Overlay::Error;
-            model.status = crate::app::model::AppStatus::Error(format!("Connection failed: {}", err));
+            model.status =
+                crate::app::model::AppStatus::Error(format!("Connection failed: {}", err));
             vec![]
         }
         Msg::ClipboardRead(result) => match result {
             Ok(text) => handle_clipboard_text(model, &text),
             Err(e) => {
-                model.status = crate::app::model::AppStatus::Error(format!("Clipboard error: {}", e));
+                model.status =
+                    crate::app::model::AppStatus::Error(format!("Clipboard error: {}", e));
                 vec![]
             }
         },
@@ -76,7 +78,8 @@ pub fn update(model: &mut Model, msg: Msg) -> Vec<Effect> {
                     vec![]
                 }
                 Err(e) => {
-                    model.status = crate::app::model::AppStatus::Error(format!("Editor failed: {}", e));
+                    model.status =
+                        crate::app::model::AppStatus::Error(format!("Editor failed: {}", e));
                     vec![]
                 }
             }
@@ -174,7 +177,8 @@ fn handle_main(model: &mut Model, key: KeyEvent) -> Vec<Effect> {
         }
         KeyCode::Char('u') if !model.geo_updating => {
             model.geo_updating = true;
-            model.status = crate::app::model::AppStatus::Info("Checking for geo updates...".to_string());
+            model.status =
+                crate::app::model::AppStatus::Info("Checking for geo updates...".to_string());
             return vec![Effect::DownloadGeo];
         }
         KeyCode::Char('e') => {
@@ -369,7 +373,8 @@ fn handle_geo_result(model: &mut Model, result: GeoResult) -> Vec<Effect> {
             vec![]
         }
         GeoResult::UpToDate => {
-            model.status = crate::app::model::AppStatus::Info("Geo databases are up to date".into());
+            model.status =
+                crate::app::model::AppStatus::Info("Geo databases are up to date".into());
             vec![]
         }
         GeoResult::Error(err) => {

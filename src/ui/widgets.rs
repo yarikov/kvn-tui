@@ -136,8 +136,8 @@ impl<'a> Widget for StatusBar<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::profile::{Profile, Protocol};
     use crate::app::model::ConnectionState;
+    use crate::config::profile::{Profile, Protocol};
     use crate::test_helpers::{buffer_to_string, ensure_fixed_geo, model_with_profiles};
     use ratatui::buffer::Buffer;
     use ratatui::layout::Rect;
