@@ -1,6 +1,6 @@
 use serde_json::{Value, json};
 
-use super::profile::{DnsStrategy, Profile, RoutingMode, Settings, TransportType};
+use crate::config::profile::{DnsStrategy, Profile, RoutingMode, Settings, TransportType};
 
 /// Generate a complete sing-box JSON configuration from a profile.
 /// Uses the modern sing-box 1.12+ format.
@@ -11,7 +11,7 @@ pub fn generate_config(profile: &Profile, settings: &Settings) -> anyhow::Result
     let mut config = json!({
         "log": {
             "level": "debug",
-            "output": crate::paths::singbox_log_path().to_string_lossy(),
+            "output": crate::infra::paths::singbox_log_path().to_string_lossy(),
             "timestamp": true
         },
         "dns": {
@@ -98,7 +98,7 @@ fn build_route(routing_mode: &RoutingMode, dns_strategy: DnsStrategy) -> (Value,
                 "ip_is_private": true,
                 "outbound": "direct"
             }));
-            if let Ok(geo) = crate::geo::GeoManager::new() {
+            if let Ok(geo) = crate::infra::geo::GeoManager::new() {
                 let (geoip_ru, geosite_ru) = geo.local_paths();
                 if geosite_ru.exists() {
                     rules.push(json!({
@@ -131,7 +131,7 @@ fn build_route(routing_mode: &RoutingMode, dns_strategy: DnsStrategy) -> (Value,
                 "ip_is_private": true,
                 "outbound": "direct"
             }));
-            if let Ok(geo) = crate::geo::GeoManager::new() {
+            if let Ok(geo) = crate::infra::geo::GeoManager::new() {
                 let (geoip_ru, geosite_ru) = geo.local_paths();
                 if geosite_ru.exists() {
                     rules.push(json!({

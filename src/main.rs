@@ -1,16 +1,11 @@
 mod app;
 mod cli;
-mod clipboard;
 mod config;
-mod editor;
-mod geo;
-mod paths;
-mod process_handle;
+mod infra;
 mod runtime;
 mod services;
 mod singbox;
 mod ui;
-mod user_env;
 
 #[cfg(test)]
 mod test_helpers;
@@ -19,7 +14,7 @@ use anyhow::Result;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 use crate::app::model::Model;
-use crate::paths::ensure_config_dirs;
+use crate::infra::paths::ensure_config_dirs;
 
 /// Entry point for the TUI VPN client.
 fn main() -> Result<()> {

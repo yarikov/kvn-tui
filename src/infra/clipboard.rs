@@ -21,9 +21,9 @@ fn read_clipboard_command(cmd: &str, args: &[&str]) -> Result<String> {
     let mut command = Command::new(cmd);
     command.args(args);
 
-    if crate::user_env::is_elevated() {
-        if let Some(runtime_dir) = crate::user_env::runtime_dir() {
-            if let Some(display) = crate::user_env::wayland_display(&runtime_dir) {
+    if crate::infra::user_env::is_elevated() {
+        if let Some(runtime_dir) = crate::infra::user_env::runtime_dir() {
+            if let Some(display) = crate::infra::user_env::wayland_display(&runtime_dir) {
                 command.env("XDG_RUNTIME_DIR", runtime_dir);
                 command.env("WAYLAND_DISPLAY", display);
             }

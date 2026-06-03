@@ -1,7 +1,7 @@
 use anyhow::Result;
 use clap::Parser;
 
-use crate::services::state_io;
+use crate::services::waybar;
 
 #[derive(Parser)]
 #[command(version, about)]
@@ -40,7 +40,7 @@ pub fn try_run() -> Option<Result<()>> {
         return Some(install_omarchy());
     }
     if cli.waybar_status {
-        state_io::print_waybar_status();
+        waybar::print_status();
         return Some(Ok(()));
     }
 

@@ -34,7 +34,7 @@ pub struct GeoManager {
 impl GeoManager {
     /// Create a new GeoManager, ensuring the geo directory exists.
     pub fn new() -> Result<Self> {
-        let geo_dir = crate::paths::geo_dir();
+        let geo_dir = crate::infra::paths::geo_dir();
 
         fs::create_dir_all(&geo_dir)
             .with_context(|| format!("Failed to create geo dir {:?}", geo_dir))?;

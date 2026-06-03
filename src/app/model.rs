@@ -114,7 +114,7 @@ impl Model {
         let selected = config.resolve_selected();
 
         // Reset state to disconnected on startup in case of previous crash.
-        crate::services::state_io::clear_state();
+        crate::services::waybar::clear_state();
 
         Ok(Self {
             overlay: Overlay::None,
@@ -475,6 +475,6 @@ mod tests {
         )]);
         // Save should not panic and must write into the temp directory.
         let _ = model.save();
-        assert!(crate::paths::profiles_path().unwrap().exists());
+        assert!(crate::infra::paths::profiles_path().unwrap().exists());
     }
 }

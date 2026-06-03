@@ -343,7 +343,7 @@ fn commit_profile(model: &mut Model) {
 }
 
 fn handle_clipboard_text(model: &mut Model, text: &str) -> Vec<Effect> {
-    match crate::clipboard::parse_share_link(text) {
+    match crate::infra::clipboard::parse_share_link(text) {
         Ok(profile) => {
             let name = profile.name.clone();
             model.add_profile(profile);

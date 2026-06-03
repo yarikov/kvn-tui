@@ -108,7 +108,7 @@ impl<'a> Widget for StatusBar<'a> {
         let geo_info = if self.model.geo_updating {
             "[Geo: updating...]".to_string()
         } else {
-            match crate::geo::GeoManager::new()
+            match crate::infra::geo::GeoManager::new()
                 .ok()
                 .and_then(|g| g.last_updated())
             {

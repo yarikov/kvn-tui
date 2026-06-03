@@ -18,7 +18,7 @@ use crate::app::effect::Effect;
 use crate::app::model::Model;
 use crate::app::msg::{GeoResult, Msg};
 use crate::app::update::update;
-use crate::process_handle::ProcessHandle;
+use crate::infra::process_handle::ProcessHandle;
 use crate::services::LogTailer;
 
 /// Run the TUI main loop until the user requests quit.
@@ -36,7 +36,7 @@ pub fn run(mut model: Model) -> Result<()> {
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    let mut log_tailer = LogTailer::new(crate::paths::singbox_log_path());
+    let mut log_tailer = LogTailer::new(crate::infra::paths::singbox_log_path());
 
     let process_slot = Arc::new(Mutex::new(None));
 
@@ -147,13 +147,13 @@ fn execute_effect(
             model.singbox_pid = None;
             model.status = crate::app::model::AppStatus::Info("Disconnected".into());
             model.overlay = crate::app::model::Overlay::None;
-            crate::services::state_io::write_state(model);
+            crate::services::waybar::write_state(model);
         }
         Effect::DownloadGeo => {
             model.geo_updating = true;
             let tx = tx.clone();
             thread::spawn(move || {
-                let result = match crate::geo::GeoManager::new() {
+                let result = match crate::infra::geo::GeoManager::new() {
                     Ok(gm) => match gm.update_if_needed() {
                         Ok(geo_result) => geo_result,
                         Err(e) => GeoResult::Error(e.to_string()),
@@ -169,7 +169,7 @@ fn execute_effect(
             }
         }
         Effect::WriteState => {
-            crate::services::state_io::write_state(model);
+            crate::services::waybar::write_state(model);
         }
         Effect::SaveConfig => {
             if let Err(e) = model.save() {
@@ -180,7 +180,7 @@ fn execute_effect(
             event_reading_enabled.store(false, Ordering::Relaxed);
             disable_raw_mode()?;
             terminal.backend_mut().execute(LeaveAlternateScreen)?;
-            let result = crate::editor::open_profiles_editor(idx).map_err(|e| e.to_string());
+            let result = crate::infra::editor::open_profiles_editor(idx).map_err(|e| e.to_string());
             enable_raw_mode()?;
             terminal.backend_mut().execute(EnterAlternateScreen)?;
             terminal.clear()?;
@@ -201,7 +201,8 @@ fn execute_effect(
         Effect::PasteClipboard => {
             let tx = tx.clone();
             thread::spawn(move || {
-                let result = crate::clipboard::read_clipboard_text().map_err(|e| e.to_string());
+                let result =
+                    crate::infra::clipboard::read_clipboard_text().map_err(|e| e.to_string());
                 let _ = tx.send(Msg::ClipboardRead(result));
             });
         }

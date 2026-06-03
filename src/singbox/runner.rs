@@ -9,8 +9,8 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 
 use crate::config::profile::{Profile, Settings};
-use crate::config::singbox::generate_config;
-use crate::process_handle::ProcessHandle;
+use crate::infra::process_handle::ProcessHandle;
+use crate::singbox::config::generate_config;
 
 fn resolve_singbox_binary() -> String {
     std::env::var("SING_BOX_PATH").unwrap_or_else(|_| "sing-box".to_string())
@@ -27,7 +27,7 @@ fn singbox_binary() -> &'static str {
 fn write_config(profile: &Profile, settings: &Settings) -> Result<PathBuf> {
     let config =
         generate_config(profile, settings).context("Failed to generate sing-box config")?;
-    let path = crate::paths::temp_singbox_config_path();
+    let path = crate::infra::paths::temp_singbox_config_path();
 
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;

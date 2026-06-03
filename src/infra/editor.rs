@@ -11,7 +11,7 @@ use crossterm::terminal::{
 };
 
 use crate::config::profile::Config;
-use crate::paths::profiles_path;
+use crate::infra::paths::profiles_path;
 
 /// Detect the user's preferred editor using $VISUAL, $EDITOR, or a fallback chain.
 fn detect_editor() -> String {
@@ -219,7 +219,7 @@ pub fn open_profiles_editor(profile_index: usize) -> Result<Config> {
         vec![path.display().to_string()]
     };
 
-    let status = crate::user_env::command_as_user(&editor)
+    let status = crate::infra::user_env::command_as_user(&editor)
         .args(&args)
         .status()
         .with_context(|| format!("Failed to launch editor: {}", editor))?;
