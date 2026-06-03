@@ -94,7 +94,7 @@ This automatically:
 
 - Adds a `custom/kvn-tui` module to Waybar (shows connected/disconnected status, clicks open the TUI)
 - Installs a `.desktop` entry so the app appears in Walker (`Super + Space`)
-- Pulls accent colors from the current Omarchy theme for the Waybar icon
+- Backs up your Waybar config and style before modifying them
 - Restarts Waybar to apply changes
 
 > The installer is idempotent — running it again will skip already-applied changes.
