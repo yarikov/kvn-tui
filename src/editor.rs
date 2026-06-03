@@ -219,10 +219,19 @@ pub fn open_profiles_editor(profile_index: usize) -> Result<Config> {
         vec![path.display().to_string()]
     };
 
-    let status = Command::new(&editor)
-        .args(&args)
-        .status()
-        .with_context(|| format!("Failed to launch editor: {}", editor))?;
+    let status = if let Ok(sudo_user) = env::var("SUDO_USER") {
+        let mut cmd = Command::new("sudo");
+        cmd.arg("-u").arg(&sudo_user);
+        // Preserve TERM so the editor renders correctly under the user's config.
+        if let Ok(term) = env::var("TERM") {
+            cmd.env("TERM", term);
+        }
+        cmd.arg(&editor).args(&args);
+        cmd.status()
+    } else {
+        Command::new(&editor).args(&args).status()
+    }
+    .with_context(|| format!("Failed to launch editor: {}", editor))?;
 
     if !status.success() {
         anyhow::bail!("Editor exited with non-zero status");
