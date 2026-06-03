@@ -6,28 +6,12 @@ use std::path::PathBuf;
 /// instead of `/root/.config`, so that different users on the same system
 /// do not share profiles.
 pub fn config_dir() -> Option<PathBuf> {
-    if let Ok(sudo_user) = std::env::var("SUDO_USER") {
-        if !sudo_user.is_empty() {
-            if let Some(home) = home_dir_from_passwd(&sudo_user) {
-                return Some(home.join(".config").join("kvn-tui"));
-            }
+    if let Some(user) = crate::user_env::sudo_user() {
+        if let Some(home) = crate::user_env::home_dir(&user) {
+            return Some(home.join(".config").join("kvn-tui"));
         }
     }
     dirs::config_dir().map(|d| d.join("kvn-tui"))
-}
-
-/// Look up a user's home directory via `getent passwd`.
-fn home_dir_from_passwd(username: &str) -> Option<PathBuf> {
-    let output = std::process::Command::new("getent")
-        .args(["passwd", username])
-        .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    let line = String::from_utf8(output.stdout).ok()?;
-    let home = line.trim().split(':').nth(5)?;
-    Some(PathBuf::from(home))
 }
 
 /// Return the path to `profiles.json`.

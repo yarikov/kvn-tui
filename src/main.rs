@@ -10,6 +10,7 @@ mod runtime;
 mod services;
 mod singbox;
 mod ui;
+mod user_env;
 
 #[cfg(test)]
 mod test_helpers;
