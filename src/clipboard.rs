@@ -15,15 +15,64 @@ pub fn read_clipboard_text() -> Result<String> {
     }
 }
 
+/// Return the original user's UID when elevated via sudo.
+fn sudo_user_uid() -> Option<u32> {
+    if let Ok(uid_str) = std::env::var("SUDO_UID") {
+        if let Ok(uid) = uid_str.parse::<u32>() {
+            return Some(uid);
+        }
+    }
+    None
+}
+
+/// Find a Wayland display socket (wayland-N) in the given runtime directory.
+fn detect_wayland_display(runtime_dir: &str) -> Option<String> {
+    let entries = std::fs::read_dir(runtime_dir).ok()?;
+    for entry in entries {
+        let entry = entry.ok()?;
+        let name = entry.file_name().into_string().ok()?;
+        if name.starts_with("wayland-")
+            && name
+                .strip_prefix("wayland-")
+                .and_then(|s| s.parse::<u32>().ok())
+                .is_some()
+        {
+            return Some(name);
+        }
+    }
+    None
+}
+
 /// Read clipboard via an external command.
+/// When running as root under sudo, always uses the original user's Wayland session.
 fn read_clipboard_command(cmd: &str, args: &[&str]) -> Result<String> {
-    let output = Command::new(cmd)
-        .args(args)
+    let mut command = Command::new(cmd);
+    command.args(args);
+
+    if std::env::var("USER").ok() == Some("root".to_string()) {
+        if let Some(uid) = sudo_user_uid() {
+            let runtime_dir = format!("/run/user/{}", uid);
+            if std::path::Path::new(&runtime_dir).exists() {
+                if let Some(display) = detect_wayland_display(&runtime_dir) {
+                    command.env("XDG_RUNTIME_DIR", runtime_dir);
+                    command.env("WAYLAND_DISPLAY", display);
+                }
+            }
+        }
+    }
+
+    let output = command
         .output()
         .with_context(|| format!("Failed to execute {}", cmd))?;
 
     if !output.status.success() {
-        anyhow::bail!("{} exited with non-zero status", cmd);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!(
+            "{} failed: {} (stderr: {})",
+            cmd,
+            output.status,
+            stderr.trim()
+        );
     }
 
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
