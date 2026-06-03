@@ -6,10 +6,13 @@ use crate::services::state_io;
 #[derive(Parser)]
 #[command(version, about)]
 pub struct Cli {
-    #[arg(long)]
+    #[arg(long, help = "Print connection status as JSON for Waybar integration")]
     waybar_status: bool,
 
-    #[arg(long)]
+    #[arg(
+        long,
+        help = "Install Omarchy integration (Waybar module and desktop entry for Walker)"
+    )]
     install_omarchy: bool,
 }
 
