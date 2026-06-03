@@ -23,17 +23,18 @@ The app does **not** implement VPN protocols itself. It is a configuration gener
 | `update` | `src/app/update.rs` | Pure `update(model, msg) -> Vec<Effect>` — business logic, input routing, mode transitions |
 | `effect` | `src/app/effect.rs` | Effect enum — declarative description of side effects to be executed by runtime |
 | `runtime` | `src/runtime.rs` | TUI main loop: owns `mpsc` channel, spawns threads, renders UI, executes effects |
-| `process_handle` | `src/process_handle.rs` | Wrapper around `std::process::Child` for sing-box lifecycle |
+| `process_handle` | `src/infra/process_handle.rs` | Wrapper around `std::process::Child` for sing-box lifecycle |
 | `ui` | `src/ui.rs`, `src/ui/layout.rs`, `src/ui/widgets.rs`, `src/ui/styles.rs`, `src/ui/nav.rs` | ratatui rendering, layout splits, widget definitions, color theme, navigation helpers |
-| `config` | `src/config.rs`, `src/config/profile.rs`, `src/config/singbox.rs` | JSON config I/O, profile struct definitions, sing-box JSON config generation |
-| `singbox` | `src/singbox.rs`, `src/singbox/runner.rs` | Process lifecycle: write temp config, run `sing-box check`, spawn `sing-box run`, kill on disconnect |
-| `clipboard` | `src/clipboard.rs` | Wayland clipboard integration (`wl-paste`), VLESS share link parsing (`vless://`) |
-| `geo` | `src/geo.rs` | Download and cache geoip/geosite rule-sets for sing-box routing |
-| `editor` | `src/editor.rs` | Launch `$EDITOR` / `$VISUAL` on `profiles.json`, temporarily restore terminal |
-| `paths` | `src/paths.rs` | XDG directory resolution (`~/.config/kvn-tui/`), atomic path construction |
-| `state_io` | `src/services/state_io.rs` | Read/write `state.json` for waybar integration and crash recovery |
+| `config` | `src/config.rs`, `src/config/profile.rs` | JSON config I/O, profile struct definitions |
+| `singbox` | `src/singbox.rs`, `src/singbox/config.rs`, `src/singbox/runner.rs` | Process lifecycle: write temp config, run `sing-box check`, spawn `sing-box run`, kill on disconnect |
+| `clipboard` | `src/infra/clipboard.rs` | Wayland clipboard integration (`wl-paste`), VLESS share link parsing (`vless://`) |
+| `geo` | `src/infra/geo.rs` | Download and cache geoip/geosite rule-sets for sing-box routing |
+| `editor` | `src/infra/editor.rs` | Launch `$EDITOR` / `$VISUAL` on `profiles.json`, temporarily restore terminal |
+| `paths` | `src/infra/paths.rs` | XDG directory resolution (`~/.config/kvn-tui/`), atomic path construction |
+| `waybar` | `src/services/waybar.rs` | Read/write `state.json` for waybar integration and crash recovery |
 | `suspend` | `src/services/suspend.rs` | D-Bus listener for `systemd-logind` `PrepareForSleep` signals (zbus) |
-| `services` | `src/services.rs`, `src/services/log_tailer.rs`, `src/services/state_io.rs`, `src/services/suspend.rs` | Background services: log tailer, state I/O, suspend watcher |
+| `services` | `src/services.rs`, `src/services/log_tailer.rs`, `src/services/waybar.rs`, `src/services/suspend.rs` | Background services: log tailer, waybar state I/O, suspend watcher |
+| `infra` | `src/infra.rs`, `src/infra/clipboard.rs`, `src/infra/editor.rs`, `src/infra/geo.rs`, `src/infra/paths.rs`, `src/infra/process_handle.rs`, `src/infra/user_env.rs` | Infrastructure utilities: clipboard, editor, geo, paths, process handle, user env |
 
 ---
 
@@ -122,10 +123,10 @@ Background work is executed in dedicated threads spawned by `runtime.rs`:
 - **Suspend watcher** — `services/suspend.rs` runs a blocking zbus listener that sends `Msg::SystemResumed`.
 - **Effects** — `Connect` (with optional `force_restart`), `DownloadGeo`, and `PasteClipboard` each spawn a short-lived thread that sends the result back via the same channel.
 - **Log tailer** — `LogTailer` (`services/log_tailer.rs`) reads new lines from the sing-box log file on every `Tick`.
-- **State I/O** — `services/state_io.rs` writes `state.json` on connect/disconnect for waybar integration.
+- **State I/O** — `services/waybar.rs` writes `state.json` on connect/disconnect for waybar integration.
 
 ### sing-box Config Generation
-- `config::singbox::generate_config` builds a complete sing-box 1.12+ JSON object from a `Profile` and `Settings`.
+- `singbox::config::generate_config` builds a complete sing-box 1.12+ JSON object from a `Profile` and `Settings`.
 - The config is written to a temp file (`/tmp/kvn-tui-singbox.json` or `$XDG_RUNTIME_DIR`), validated with `sing-box check`, and only then is `sing-box run` spawned.
 - If the process exits immediately, stderr is captured and surfaced to the user.
 
@@ -143,7 +144,7 @@ Background work is executed in dedicated threads spawned by `runtime.rs`:
 - `services/suspend.rs` runs a blocking zbus listener in a dedicated thread. On resume (`PrepareForSleep` with `false`), it sends `Msg::SystemResumed` through the `mpsc` channel so `update.rs` can schedule a reconnect effect.
 
 ### State I/O
-- `services/state_io.rs` writes a small JSON file (`state.json`) on every connect/disconnect. It stores connection status, active profile name, and sing-box PID.
+- `services/waybar.rs` writes a small JSON file (`state.json`) on every connect/disconnect. It stores connection status, active profile name, and sing-box PID.
 - Used by the `--waybar-status` CLI flag and for crash recovery (state is cleared on startup).
 
 ---
