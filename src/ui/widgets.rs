@@ -117,6 +117,12 @@ impl<'a> Widget for StatusBar<'a> {
             }
         };
 
+        let auto_connect = if self.model.config.settings.auto_connect {
+            "[AUTO] "
+        } else {
+            ""
+        };
+
         let text = Line::from(vec![
             Span::styled(status, style),
             Span::raw(" "),
@@ -124,6 +130,7 @@ impl<'a> Widget for StatusBar<'a> {
             Span::raw(" "),
             Span::styled(geo_info, Theme::accent()),
             Span::raw(" "),
+            Span::styled(auto_connect, Theme::accent()),
             Span::styled(self.model.status.text(), Theme::normal()),
         ]);
 

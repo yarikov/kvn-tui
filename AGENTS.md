@@ -147,6 +147,12 @@ Background work is executed in dedicated threads spawned by `runtime.rs`:
 - `services/waybar.rs` writes a small JSON file (`state.json`) on every connect/disconnect. It stores connection status, active profile name, and sing-box PID.
 - Used by the `--waybar-status` CLI flag and for crash recovery (state is cleared on startup).
 
+### Auto-Connect
+- `settings.auto_connect` (persisted in `profiles.json`) controls whether the app reconnects to the last used profile on startup.
+- `settings.last_connected_profile` stores the UUID of the most recently connected profile. It is updated in `update.rs` on `Msg::Connected` and saved via `Effect::SaveConfig`.
+- `Model::new()` calls `resolve_startup_state()` to check `auto_connect` + `last_connected_profile`. If both are set and the profile exists, the model starts in `ConnectionState::Connecting` with that profile pre-selected, and the status bar shows `Auto-connecting to {name}…`.
+- The user can toggle `auto_connect` at runtime with the `a` keybinding, which triggers `Effect::SaveConfig` immediately.
+
 ---
 
 ## Configuration Paths

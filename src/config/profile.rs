@@ -171,6 +171,10 @@ pub struct Settings {
     pub dns_strategy: DnsStrategy,
     #[serde(default)]
     pub routing_mode: RoutingMode,
+    #[serde(default)]
+    pub auto_connect: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_connected_profile: Option<Uuid>,
 }
 
 fn default_tun_interface() -> String {
@@ -188,6 +192,8 @@ impl Default for Settings {
             tun_interface: default_tun_interface(),
             dns_strategy: default_dns_strategy(),
             routing_mode: RoutingMode::default(),
+            auto_connect: false,
+            last_connected_profile: None,
         }
     }
 }
@@ -298,6 +304,8 @@ mod tests {
         assert_eq!(s.dns_strategy, DnsStrategy::PreferIpv4);
         assert_eq!(s.routing_mode, RoutingMode::Global);
         assert!(s.default_profile.is_none());
+        assert!(!s.auto_connect);
+        assert!(s.last_connected_profile.is_none());
     }
 
     #[test]

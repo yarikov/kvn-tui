@@ -100,6 +100,7 @@ fn draw_help(frame: &mut Frame, area: Rect) {
         Row::new(vec!["m", "Routing mode (popup list)"]),
         Row::new(vec!["u", "Update geoip/geosite databases"]),
         Row::new(vec!["e", "Open profiles.json in $EDITOR"]),
+        Row::new(vec!["a", "Toggle auto-connect"]),
         Row::new(vec!["r", "Reconnect"]),
         Row::new(vec!["s", "Stop / disconnect"]),
         Row::new(vec!["q / Esc", "Quit"]),

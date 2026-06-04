@@ -116,12 +116,14 @@ impl Model {
         // Reset state to disconnected on startup in case of previous crash.
         crate::services::waybar::clear_state();
 
+        let (connection, selected, status) = Self::resolve_startup_state(&config, selected);
+
         Ok(Self {
             overlay: Overlay::None,
-            connection: ConnectionState::Idle,
+            connection,
             config,
             selected,
-            status: AppStatus::Info("Press ? for help".to_string()),
+            status,
             singbox_pid: None,
             active_profile_id: None,
             routing_selected: 0,
@@ -132,6 +134,34 @@ impl Model {
             needs_redraw: false,
             should_quit: false,
         })
+    }
+
+    /// Determine connection state, selection and status on startup.
+    /// If auto-connect is enabled and the last connected profile exists,
+    /// returns `Connecting` state targeted at that profile.
+    fn resolve_startup_state(
+        config: &Config,
+        default_selected: usize,
+    ) -> (ConnectionState, usize, AppStatus) {
+        if config.settings.auto_connect {
+            if let Some(idx) = config
+                .settings
+                .last_connected_profile
+                .and_then(|id| config.profiles.iter().position(|p| p.id == id))
+            {
+                let status = if let Some(profile) = config.profiles.get(idx) {
+                    AppStatus::Info(format!("Auto-connecting to {}…", profile.name))
+                } else {
+                    AppStatus::Info("Press ? for help".to_string())
+                };
+                return (ConnectionState::Connecting, idx, status);
+            }
+        }
+        (
+            ConnectionState::Idle,
+            default_selected,
+            AppStatus::Info("Press ? for help".to_string()),
+        )
     }
 
     /// Save current configuration to disk.
@@ -459,6 +489,55 @@ mod tests {
         assert_eq!(InputField::Uuid.default_buffer(&draft), "u");
         assert_eq!(InputField::Protocol.default_buffer(&draft), "vless");
         assert_eq!(InputField::None.default_buffer(&draft), "");
+    }
+
+    #[test]
+    fn resolve_startup_state_auto_connect() {
+        let mut config = Config::default();
+        let profile = Profile::new(
+            "Auto".to_string(),
+            Protocol::Vless,
+            "1.1.1.1".to_string(),
+            443,
+            "u1".to_string(),
+        );
+        let id = profile.id;
+        config.profiles.push(profile);
+        config.settings.auto_connect = true;
+        config.settings.last_connected_profile = Some(id);
+
+        let (state, selected, status) = Model::resolve_startup_state(&config, 0);
+        assert_eq!(state, ConnectionState::Connecting);
+        assert_eq!(selected, 0);
+        assert!(status.text().contains("Auto-connecting"));
+    }
+
+    #[test]
+    fn resolve_startup_state_auto_connect_missing_profile() {
+        let mut config = Config::default();
+        config.settings.auto_connect = true;
+        config.settings.last_connected_profile = Some(Uuid::new_v4());
+        config.profiles.push(Profile::new(
+            "A".to_string(),
+            Protocol::Vless,
+            "1.1.1.1".to_string(),
+            443,
+            "u1".to_string(),
+        ));
+
+        let (state, selected, status) = Model::resolve_startup_state(&config, 0);
+        assert_eq!(state, ConnectionState::Idle);
+        assert_eq!(selected, 0);
+        assert_eq!(status.text(), "Press ? for help");
+    }
+
+    #[test]
+    fn resolve_startup_state_no_auto_connect() {
+        let config = Config::default();
+        let (state, selected, status) = Model::resolve_startup_state(&config, 0);
+        assert_eq!(state, ConnectionState::Idle);
+        assert_eq!(selected, 0);
+        assert_eq!(status.text(), "Press ? for help");
     }
 
     #[test]

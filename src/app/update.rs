@@ -43,14 +43,20 @@ pub fn update(model: &mut Model, msg: Msg) -> Vec<Effect> {
             model.singbox_pid = Some(pid);
             model.connection = ConnectionState::Connected;
             model.overlay = Overlay::None;
+            let mut effects = vec![Effect::WriteState];
             if let Some(profile) = model.selected_profile() {
                 let profile_id = profile.id;
                 let profile_name = profile.name.clone();
                 model.active_profile_id = Some(profile_id);
                 model.status =
                     crate::app::model::AppStatus::Info(format!("Connected to {}", profile_name));
+                // Persist last connected profile for auto-connect on next startup.
+                if model.config.settings.last_connected_profile != Some(profile_id) {
+                    model.config.settings.last_connected_profile = Some(profile_id);
+                    effects.push(Effect::SaveConfig);
+                }
             }
-            vec![Effect::WriteState]
+            effects
         }
         Msg::ConnectFailed(err) => {
             model.connection = ConnectionState::Idle;
@@ -189,6 +195,15 @@ fn handle_main(model: &mut Model, key: KeyEvent) -> Vec<Effect> {
         }
         KeyCode::Char('s') if model.connection == ConnectionState::Connected => {
             return vec![Effect::Disconnect];
+        }
+        KeyCode::Char('a') => {
+            let new_val = !model.config.settings.auto_connect;
+            model.config.settings.auto_connect = new_val;
+            model.status = crate::app::model::AppStatus::Info(format!(
+                "Auto-connect {}",
+                if new_val { "enabled" } else { "disabled" }
+            ));
+            return vec![Effect::SaveConfig];
         }
 
         // Help and quit
@@ -826,6 +841,40 @@ mod tests {
         assert_eq!(model.connection, ConnectionState::Connected);
         assert_eq!(model.overlay, Overlay::None);
         assert_eq!(effects, vec![Effect::WriteState]);
+    }
+
+    #[test]
+    fn connected_saves_last_profile() {
+        let mut model = model_with_profiles(vec![Profile::new(
+            "A".to_string(),
+            Protocol::Vless,
+            "1.1.1.1".to_string(),
+            443,
+            "u1".to_string(),
+        )]);
+        model.connection = ConnectionState::ConnectPending;
+        let effects = update(&mut model, Msg::Connected { pid: 12345 });
+        assert_eq!(model.connection, ConnectionState::Connected);
+        assert_eq!(
+            model.config.settings.last_connected_profile,
+            Some(model.config.profiles[0].id)
+        );
+        assert_eq!(effects, vec![Effect::WriteState, Effect::SaveConfig]);
+    }
+
+    #[test]
+    fn toggle_auto_connect() {
+        let mut model = model_with_profiles(vec![]);
+        assert!(!model.config.settings.auto_connect);
+        let effects = handle_main(&mut model, key('a'));
+        assert!(model.config.settings.auto_connect);
+        assert!(model.status.text().contains("enabled"));
+        assert_eq!(effects, vec![Effect::SaveConfig]);
+
+        let effects = handle_main(&mut model, key('a'));
+        assert!(!model.config.settings.auto_connect);
+        assert!(model.status.text().contains("disabled"));
+        assert_eq!(effects, vec![Effect::SaveConfig]);
     }
 
     #[test]

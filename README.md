@@ -22,6 +22,7 @@
 - **Routing modes** — Global, Bypass RU, or Only RU (powered by geoip/geosite rule-sets)
 - **Geo database updates** — download and update rule-sets from within the app
 - **External editor support** — open `profiles.json` in `$EDITOR` without leaving the TUI
+- **Auto-connect** — automatically reconnect to the last used profile on startup
 - **Suspend/resume awareness** — automatically detects system resume via D-Bus and reconnects
 - **Live logs** — tail sing-box output in a split-pane view
 
@@ -192,6 +193,7 @@ sudo kvn-tui
 | `m` | Change routing mode |
 | `u` | Update geoip/geosite databases |
 | `e` | Open `profiles.json` in `$EDITOR` |
+| `a` | Toggle auto-connect |
 | `r` | Reconnect |
 | `s` | Stop / disconnect |
 | `q` / `Esc` | Quit (confirms if connected) |
@@ -207,7 +209,9 @@ Configuration is stored in:
 ~/.config/kvn-tui/profiles.json
 ```
 
-The file contains your profile list and application settings (default profile, TUN interface name, DNS strategy, routing mode). You can edit it manually with the `e` keybinding or any text editor.
+The file contains your profile list and application settings (default profile, TUN interface name, DNS strategy, routing mode, auto-connect). You can edit it manually with the `e` keybinding or any text editor.
+
+When `auto_connect` is enabled, the application stores `last_connected_profile` and automatically connects to that profile on the next startup.
 
 Geo rule-set databases are cached in:
 
