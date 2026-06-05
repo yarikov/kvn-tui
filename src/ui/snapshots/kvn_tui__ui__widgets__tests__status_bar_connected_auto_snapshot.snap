@@ -1,0 +1,5 @@
+---
+source: src/ui/widgets.rs
+expression: buffer_to_string(&buf)
+---
+[CONNECTED] [AUTO] [Global] [Geo: 2026-05-31 13:41]

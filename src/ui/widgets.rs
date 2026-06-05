@@ -117,22 +117,23 @@ impl<'a> Widget for StatusBar<'a> {
             }
         };
 
-        let auto_connect = if self.model.config.settings.auto_connect {
-            "[AUTO] "
-        } else {
-            ""
-        };
+        let mut spans = vec![Span::styled(status, style)];
 
-        let text = Line::from(vec![
-            Span::styled(status, style),
+        if self.model.config.settings.auto_connect {
+            spans.push(Span::raw(" "));
+            spans.push(Span::styled("[AUTO]", Theme::accent()));
+        }
+
+        spans.extend([
             Span::raw(" "),
             Span::styled(routing, Theme::accent()),
             Span::raw(" "),
             Span::styled(geo_info, Theme::accent()),
             Span::raw(" "),
-            Span::styled(auto_connect, Theme::accent()),
             Span::styled(self.model.status.text(), Theme::normal()),
         ]);
+
+        let text = Line::from(spans);
 
         let paragraph = ratatui::widgets::Paragraph::new(text).alignment(Alignment::Left);
 
@@ -265,6 +266,23 @@ mod tests {
             "u1".to_string(),
         )]);
         model.connection = ConnectionState::Connected;
+        let mut buf = Buffer::empty(Rect::new(0, 0, 80, 1));
+        StatusBar::new(&model).render(Rect::new(0, 0, 80, 1), &mut buf);
+        insta::assert_snapshot!(buffer_to_string(&buf));
+    }
+
+    #[test]
+    fn status_bar_connected_auto_snapshot() {
+        ensure_fixed_geo();
+        let mut model = model_with_profiles(vec![Profile::new(
+            "Alpha".to_string(),
+            Protocol::Vless,
+            "1.1.1.1".to_string(),
+            443,
+            "u1".to_string(),
+        )]);
+        model.connection = ConnectionState::Connected;
+        model.config.settings.auto_connect = true;
         let mut buf = Buffer::empty(Rect::new(0, 0, 80, 1));
         StatusBar::new(&model).render(Rect::new(0, 0, 80, 1), &mut buf);
         insta::assert_snapshot!(buffer_to_string(&buf));
