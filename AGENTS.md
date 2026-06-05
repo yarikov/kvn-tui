@@ -58,6 +58,12 @@ sudo ./target/release/kvn-tui
 
 ---
 
+## Release Process
+
+See the `release` skill in `.agents/skills/release/SKILL.md` for the full version-bump and tagging workflow. Supports auto-bump by semver level (major / minor / patch) or explicit version.
+
+---
+
 ## Platform Constraints
 
 **Arch Linux on Wayland only.** Do not add X11-specific clipboard tools or generic Linux abstractions without explicit user request.
