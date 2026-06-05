@@ -3,6 +3,7 @@ set -e
 
 WAYBAR_CONFIG="${HOME}/.config/waybar/config.jsonc"
 WAYBAR_STYLE="${HOME}/.config/waybar/style.css"
+HYPR_AUTOSTART="${HOME}/.config/hypr/autostart.conf"
 
 backup_file() {
   local file="$1"
@@ -20,9 +21,10 @@ restore_file() {
 
 echo "Installing kvn-tui Omarchy integration..."
 
-# ── Backup waybar files ──
+# ── Backup waybar & hyprland files ──
 backup_file "$WAYBAR_CONFIG"
 backup_file "$WAYBAR_STYLE"
+backup_file "$HYPR_AUTOSTART"
 
 # ── Waybar module ──
 if [ -f "$WAYBAR_CONFIG" ]; then
@@ -99,6 +101,43 @@ Icon=network-vpn-symbolic
 EOF
 else
   echo "Desktop entry already present."
+fi
+
+# ── Hyprland autostart ──
+echo
+read -r -p "Enable kvn-tui autostart on login? [y/N] " autostart_answer
+if [[ "$autostart_answer" =~ ^[Yy]$ ]]; then
+  echo
+  echo "Choose workspace:"
+  echo "  1-5  — regular workspace number"
+  echo "  s    — special:scratchpad (default)"
+  read -r -p "Workspace [s]: " workspace_answer
+  workspace_answer=${workspace_answer:-s}
+
+  case "$workspace_answer" in
+    1|2|3|4|5)
+      exec_line="exec-once = [workspace $workspace_answer silent] omarchy-launch-or-focus-tui sudo kvn-tui"
+      ;;
+    s|S|scratchpad|"")
+      exec_line="exec-once = [workspace special:scratchpad silent] omarchy-launch-or-focus-tui sudo kvn-tui"
+      ;;
+    *)
+      echo "Invalid choice. Skipping autostart."
+      exec_line=""
+      ;;
+  esac
+
+  if [ -n "$exec_line" ]; then
+    if [ -f "$HYPR_AUTOSTART" ] && grep -q "omarchy-launch-or-focus-tui sudo kvn-tui" "$HYPR_AUTOSTART"; then
+      echo "Hyprland autostart entry already present."
+    else
+      echo "Adding kvn-tui to hyprland autostart..."
+      mkdir -p "$(dirname "$HYPR_AUTOSTART")"
+      printf '\n%s\n' "$exec_line" >> "$HYPR_AUTOSTART"
+    fi
+  fi
+else
+  echo "Skipping autostart."
 fi
 
 # ── Restart waybar ──
