@@ -210,6 +210,11 @@ impl Model {
         self.config.profiles.push(profile);
         self.selected = self.config.profiles.len().saturating_sub(1);
     }
+
+    /// Check whether a profile with the same UUID already exists.
+    pub fn has_duplicate(&self, profile: &Profile) -> bool {
+        self.config.profiles.iter().any(|p| p.uuid == profile.uuid)
+    }
 }
 
 impl InputField {

@@ -360,6 +360,10 @@ fn commit_profile(model: &mut Model) {
 fn handle_clipboard_text(model: &mut Model, text: &str) -> Vec<Effect> {
     match crate::infra::clipboard::parse_share_link(text) {
         Ok(profile) => {
+            if model.has_duplicate(&profile) {
+                model.status = crate::app::model::AppStatus::Error("Profile already exists".into());
+                return vec![];
+            }
             let name = profile.name.clone();
             model.add_profile(profile);
             model.status = crate::app::model::AppStatus::Info(format!("Pasted profile: {}", name));
@@ -875,6 +879,25 @@ mod tests {
         assert!(!model.config.settings.auto_connect);
         assert!(model.status.text().contains("disabled"));
         assert_eq!(effects, vec![Effect::SaveConfig]);
+    }
+
+    #[test]
+    fn paste_duplicate_profile_shows_error() {
+        let mut model = model_with_profiles(vec![]);
+        let uri = "vless://671c62c7-6768-4b98-ac6b-572c9c707be0@203.0.113.42:443#Test";
+
+        // First paste succeeds
+        let effects = handle_clipboard_text(&mut model, uri);
+        assert_eq!(model.config.profiles.len(), 1);
+        assert_eq!(effects, vec![Effect::SaveConfig]);
+        assert!(model.status.text().contains("Pasted profile"));
+
+        // Second paste with same UUID fails
+        let effects = handle_clipboard_text(&mut model, uri);
+        assert_eq!(model.config.profiles.len(), 1);
+        assert!(effects.is_empty());
+        assert!(model.status.is_error());
+        assert!(model.status.text().contains("already exists"));
     }
 
     #[test]
