@@ -4,6 +4,7 @@ set -e
 WAYBAR_CONFIG="${HOME}/.config/waybar/config.jsonc"
 WAYBAR_STYLE="${HOME}/.config/waybar/style.css"
 HYPR_AUTOSTART="${HOME}/.config/hypr/autostart.conf"
+HYPR_BINDINGS="${HOME}/.config/hypr/bindings.conf"
 
 backup_file() {
   local file="$1"
@@ -25,6 +26,7 @@ echo "Installing kvn-tui Omarchy integration..."
 backup_file "$WAYBAR_CONFIG"
 backup_file "$WAYBAR_STYLE"
 backup_file "$HYPR_AUTOSTART"
+backup_file "$HYPR_BINDINGS"
 
 # ── Waybar module ──
 if [ -f "$WAYBAR_CONFIG" ]; then
@@ -104,40 +106,75 @@ else
 fi
 
 # ── Hyprland autostart ──
-echo
-read -r -p "Enable kvn-tui autostart on login? [y/N] " autostart_answer
-if [[ "$autostart_answer" =~ ^[Yy]$ ]]; then
+autostart_already=false
+is_special_workspace=false
+
+if [ -f "$HYPR_AUTOSTART" ] && grep -q "omarchy-launch-or-focus-tui sudo kvn-tui" "$HYPR_AUTOSTART"; then
+  autostart_already=true
+  echo "Hyprland autostart already configured."
+  if grep -q "special:kvn-tui" "$HYPR_AUTOSTART"; then
+    is_special_workspace=true
+  fi
+fi
+
+if [ "$autostart_already" = false ]; then
   echo
-  echo "Choose workspace:"
-  echo "  1-5  — regular workspace number"
-  echo "  s    — special:scratchpad (default)"
-  read -r -p "Workspace [s]: " workspace_answer
-  workspace_answer=${workspace_answer:-s}
+  read -r -p "Enable kvn-tui autostart on login? [y/N] " autostart_answer
+  if [[ "$autostart_answer" =~ ^[Yy]$ ]]; then
+    echo
+    echo "Choose workspace:"
+    echo "  1-5  — regular workspace number"
+    echo "  s    — special:kvn-tui (default)"
+    read -r -p "Workspace [s]: " workspace_answer
+    workspace_answer=${workspace_answer:-s}
 
-  case "$workspace_answer" in
-    1|2|3|4|5)
-      exec_line="exec-once = [workspace $workspace_answer silent] omarchy-launch-or-focus-tui sudo kvn-tui"
-      ;;
-    s|S|scratchpad|"")
-      exec_line="exec-once = [workspace special:scratchpad silent] omarchy-launch-or-focus-tui sudo kvn-tui"
-      ;;
-    *)
-      echo "Invalid choice. Skipping autostart."
-      exec_line=""
-      ;;
-  esac
+    case "$workspace_answer" in
+      1|2|3|4|5)
+        exec_line="exec-once = [workspace $workspace_answer silent] omarchy-launch-or-focus-tui sudo kvn-tui"
+        ;;
+      s|S|kvn-tui|"")
+        exec_line="exec-once = [workspace special:kvn-tui silent] omarchy-launch-or-focus-tui sudo kvn-tui"
+        is_special_workspace=true
+        ;;
+      *)
+        echo "Invalid choice. Skipping autostart."
+        exec_line=""
+        ;;
+    esac
 
-  if [ -n "$exec_line" ]; then
-    if [ -f "$HYPR_AUTOSTART" ] && grep -q "omarchy-launch-or-focus-tui sudo kvn-tui" "$HYPR_AUTOSTART"; then
-      echo "Hyprland autostart entry already present."
-    else
+    if [ -n "$exec_line" ]; then
       echo "Adding kvn-tui to hyprland autostart..."
       mkdir -p "$(dirname "$HYPR_AUTOSTART")"
       printf '\n%s\n' "$exec_line" >> "$HYPR_AUTOSTART"
     fi
+  else
+    echo "Skipping autostart."
   fi
-else
-  echo "Skipping autostart."
+fi
+
+# ── Hyprland keybinding (only relevant for special workspace) ──
+if [ "$is_special_workspace" = true ]; then
+  if [ -f "$HYPR_BINDINGS" ] && grep -q "togglespecialworkspace, kvn-tui" "$HYPR_BINDINGS"; then
+    echo "Hyprland keybinding already configured."
+  else
+    echo
+    read -r -p "Add Hyprland keybinding to toggle kvn-tui workspace? [y/N] " binding_answer
+    if [[ "$binding_answer" =~ ^[Yy]$ ]]; then
+      echo
+      echo "Press Enter to accept the default, or type a custom Hyprland keybinding."
+      echo "Examples: SUPER CTRL, K    SUPER SHIFT, V    SUPER ALT, K"
+      read -r -p "Keybinding (default: SUPER CTRL, K): " binding_input
+      binding_input=${binding_input:-SUPER CTRL, K}
+
+      binding_line="bind = ${binding_input}, togglespecialworkspace, kvn-tui"
+
+      echo "Adding Hyprland keybinding ($binding_input)..."
+      mkdir -p "$(dirname "$HYPR_BINDINGS")"
+      printf '\n%s\n' "$binding_line" >> "$HYPR_BINDINGS"
+    else
+      echo "Skipping keybinding."
+    fi
+  fi
 fi
 
 # ── Restart waybar ──

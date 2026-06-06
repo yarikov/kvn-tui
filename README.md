@@ -95,7 +95,8 @@ This automatically:
 
 - Adds a `custom/kvn-tui` module to Waybar (shows connected/disconnected status, clicks open the TUI)
 - Installs a `.desktop` entry so the app appears in Walker (`Super + Space`)
-- Optionally adds `kvn-tui` to Hyprland autostart (`~/.config/hypr/autostart.conf`) — choose a regular workspace (1–5) or `special:scratchpad`
+- Optionally adds `kvn-tui` to Hyprland autostart (`~/.config/hypr/autostart.conf`) — choose a regular workspace (1–5) or `special:kvn-tui`
+- Optionally adds a Hyprland keybinding to toggle the `special:kvn-tui` workspace (default: `Super + Ctrl + K`)
 - Backs up your Waybar and Hyprland configs before modifying them
 - Restarts Waybar to apply changes
 
