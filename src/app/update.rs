@@ -1,7 +1,9 @@
 use crate::app::effect::Effect;
-use crate::app::model::{ConnectionState, InputField, Model, Overlay};
+use crate::app::model::{ConnectionState, Model, Overlay};
 use crate::app::msg::{GeoResult, Msg};
-use crate::config::profile::{Profile, Protocol, RoutingMode};
+use crate::config::profile::RoutingMode;
+#[cfg(test)]
+use crate::config::profile::{Profile, Protocol};
 use crossterm::event::{KeyCode, KeyEvent};
 
 /// Maximum number of log lines kept in the UI buffer.
@@ -130,7 +132,6 @@ fn handle_key(model: &mut Model, key: KeyEvent) -> Vec<Effect> {
         Overlay::ConfirmDelete => handle_confirm_delete(model, key),
         Overlay::ConfirmQuit => handle_confirm_quit(model, key),
         Overlay::RoutingMode => handle_routing_mode(model, key),
-        Overlay::CreateProfile | Overlay::PasteUri => handle_input_mode(model, key),
         Overlay::Error => {
             model.overlay = Overlay::None;
             vec![]
@@ -161,19 +162,6 @@ fn handle_main(model: &mut Model, key: KeyEvent) -> Vec<Effect> {
         KeyCode::Char('p') => {
             return vec![Effect::PasteClipboard];
         }
-        KeyCode::Char('n') => {
-            model.overlay = Overlay::CreateProfile;
-            model.input.field = InputField::Name;
-            model.input.buffer.clear();
-            model.input.draft = Some(Profile::new(
-                String::new(),
-                Protocol::Vless,
-                String::new(),
-                443,
-                String::new(),
-            ));
-        }
-
         KeyCode::Char('d') if model.selected_profile().is_some() => {
             model.overlay = Overlay::ConfirmDelete;
         }
@@ -289,74 +277,6 @@ fn handle_routing_mode(model: &mut Model, key: KeyEvent) -> Vec<Effect> {
     vec![]
 }
 
-fn handle_input_mode(model: &mut Model, key: KeyEvent) -> Vec<Effect> {
-    match key.code {
-        KeyCode::Enter => {
-            if model.overlay == Overlay::PasteUri {
-                let text = model.input.buffer.trim().to_string();
-                model.input.buffer.clear();
-                model.overlay = Overlay::None;
-                if !text.is_empty() {
-                    return handle_clipboard_text(model, &text);
-                }
-            } else {
-                advance_input_field(model);
-            }
-        }
-        KeyCode::Esc => {
-            model.overlay = Overlay::None;
-            model.input.buffer.clear();
-            model.input.field = InputField::None;
-            model.input.draft = None;
-        }
-        KeyCode::Backspace => {
-            model.input.buffer.pop();
-        }
-        KeyCode::Char(c) => {
-            model.input.buffer.push(c);
-        }
-        _ => {}
-    }
-    vec![]
-}
-
-fn advance_input_field(model: &mut Model) {
-    let draft = match model.input.draft.as_mut() {
-        Some(d) => d,
-        None => return,
-    };
-
-    if let Some(_current) = model.input.field.next() {
-        let old = model.input.field;
-        old.apply(draft, &model.input.buffer);
-
-        if let Some(next) = old.next() {
-            model.input.field = next;
-            model.input.buffer = next.default_buffer(draft);
-        } else {
-            commit_profile(model);
-        }
-    } else {
-        commit_profile(model);
-    }
-}
-
-fn commit_profile(model: &mut Model) {
-    if let Some(draft) = model.input.draft.as_mut() {
-        model.input.field.apply(draft, &model.input.buffer);
-    }
-
-    if model.overlay == Overlay::CreateProfile {
-        let profile = model.input.draft.take().unwrap();
-        model.add_profile(profile);
-        model.status = crate::app::model::AppStatus::Info("Profile created".into());
-    }
-
-    model.overlay = Overlay::None;
-    model.input.field = InputField::None;
-    model.input.buffer.clear();
-}
-
 fn handle_clipboard_text(model: &mut Model, text: &str) -> Vec<Effect> {
     match crate::infra::clipboard::parse_share_link(text) {
         Ok(profile) => {
@@ -465,16 +385,6 @@ mod tests {
         let mut model = model_with_profiles(vec![]);
         let effects = handle_main(&mut model, KeyEvent::from(KeyCode::Enter));
         assert_eq!(model.overlay, Overlay::None);
-        assert!(effects.is_empty());
-    }
-
-    #[test]
-    fn normal_mode_n_creates_profile() {
-        let mut model = model_with_profiles(vec![]);
-        let effects = handle_main(&mut model, key('n'));
-        assert_eq!(model.overlay, Overlay::CreateProfile);
-        assert_eq!(model.input.field, InputField::Name);
-        assert!(model.input.draft.is_some());
         assert!(effects.is_empty());
     }
 
@@ -619,107 +529,6 @@ mod tests {
         let effects = handle_routing_mode(&mut model, KeyEvent::from(KeyCode::Esc));
         assert_eq!(model.overlay, Overlay::None);
         assert!(effects.is_empty());
-    }
-
-    #[test]
-    fn input_mode_advances_fields_and_creates_profile() {
-        let mut model = model_with_profiles(vec![]);
-        model.overlay = Overlay::CreateProfile;
-        model.input.field = InputField::Name;
-        model.input.draft = Some(Profile::new(
-            String::new(),
-            Protocol::Vless,
-            String::new(),
-            443,
-            String::new(),
-        ));
-
-        // Name
-        model.input.buffer = "MyProfile".to_string();
-        advance_input_field(&mut model);
-        assert_eq!(model.input.field, InputField::Address);
-        assert_eq!(model.input.draft.as_ref().unwrap().name, "MyProfile");
-
-        // Address
-        model.input.buffer = "1.2.3.4".to_string();
-        advance_input_field(&mut model);
-        assert_eq!(model.input.field, InputField::Port);
-        assert_eq!(model.input.draft.as_ref().unwrap().address, "1.2.3.4");
-
-        // Port
-        model.input.buffer = "8080".to_string();
-        advance_input_field(&mut model);
-        assert_eq!(model.input.field, InputField::Uuid);
-        assert_eq!(model.input.draft.as_ref().unwrap().port, 8080);
-
-        // UUID
-        model.input.buffer = "uuid-here".to_string();
-        advance_input_field(&mut model);
-        assert_eq!(model.input.field, InputField::Protocol);
-        assert_eq!(model.input.draft.as_ref().unwrap().uuid, "uuid-here");
-
-        // Protocol -> commit
-        model.input.buffer = "vless".to_string();
-        advance_input_field(&mut model);
-        assert_eq!(model.overlay, Overlay::None);
-        assert_eq!(model.config.profiles.len(), 1);
-        assert_eq!(model.config.profiles[0].name, "MyProfile");
-        assert_eq!(model.config.profiles[0].protocol, Protocol::Vless);
-    }
-
-    #[test]
-    fn input_mode_invalid_port_ignored() {
-        let mut model = model_with_profiles(vec![]);
-        model.overlay = Overlay::CreateProfile;
-        model.input.field = InputField::Port;
-        model.input.draft = Some(Profile::new(
-            String::new(),
-            Protocol::Vless,
-            String::new(),
-            443,
-            String::new(),
-        ));
-
-        model.input.buffer = "not_a_port".to_string();
-        advance_input_field(&mut model);
-        assert_eq!(model.input.draft.as_ref().unwrap().port, 443); // unchanged
-        assert_eq!(model.input.field, InputField::Uuid);
-    }
-
-    #[test]
-    fn input_mode_esc_cancels() {
-        let mut model = model_with_profiles(vec![]);
-        model.overlay = Overlay::CreateProfile;
-        model.input.field = InputField::Name;
-        model.input.buffer = "text".to_string();
-        model.input.draft = Some(Profile::new(
-            String::new(),
-            Protocol::Vless,
-            String::new(),
-            443,
-            String::new(),
-        ));
-
-        let effects = handle_input_mode(&mut model, KeyEvent::from(KeyCode::Esc));
-        assert_eq!(model.overlay, Overlay::None);
-        assert!(model.input.buffer.is_empty());
-        assert_eq!(model.input.field, InputField::None);
-        assert!(model.input.draft.is_none());
-        assert!(effects.is_empty());
-    }
-
-    #[test]
-    fn input_mode_backspace_and_char() {
-        let mut model = model_with_profiles(vec![]);
-        model.overlay = Overlay::CreateProfile;
-        model.input.field = InputField::Name;
-        model.input.buffer.clear();
-
-        let _ = handle_input_mode(&mut model, key('a'));
-        let _ = handle_input_mode(&mut model, key('b'));
-        assert_eq!(model.input.buffer, "ab");
-        let _ = handle_input_mode(&mut model, KeyEvent::from(KeyCode::Backspace));
-        assert_eq!(model.input.buffer, "a");
     }
 
     #[test]

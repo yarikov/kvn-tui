@@ -17,7 +17,7 @@
 ## Features
 
 - **Vim-style navigation** — `j`/`k` to move, `g`/`G` to jump, `?` for help
-- **Profile management** — create, edit via `$EDITOR`, delete, and organize server profiles
+- **Profile management** — edit via `$EDITOR`, delete, and organize server profiles
 - **One-click paste** — import `vless://` share links directly from the Wayland clipboard
 - **Routing modes** — Global, Bypass RU, or Only RU (powered by geoip/geosite rule-sets)
 - **Geo database updates** — download and update rule-sets from within the app
@@ -190,7 +190,6 @@ sudo kvn-tui
 | `G` | Go to last profile |
 | `Enter` | Connect to selected profile |
 | `p` | Paste `vless://` link from clipboard |
-| `n` | New profile |
 | `d` | Delete selected profile |
 | `m` | Change routing mode |
 | `u` | Update geoip/geosite databases |

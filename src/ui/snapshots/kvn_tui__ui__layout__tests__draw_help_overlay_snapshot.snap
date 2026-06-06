@@ -1,6 +1,6 @@
 ---
 source: src/ui/layout.rs
-assertion_line: 389
+assertion_line: 382
 expression: "snapshot_terminal(&model, 80, 40)"
 ---
 ┌ Profiles ────────────────────────────┐┌ Logs ────────────────────────────────┐
@@ -21,7 +21,6 @@ expression: "snapshot_terminal(&model, 80, 40)"
 │               │G            Go to last                       │               │
 │               │Enter        Connect to selected              │               │
 │               │p            Paste from clipboard             │               │
-│               │n            New profile                      │               │
 │               │d            Delete profile                   │               │
 │               │m            Routing mode (popup list)        │               │
 │               │u            Update geoip/geosite databases   │               │
@@ -31,6 +30,7 @@ expression: "snapshot_terminal(&model, 80, 40)"
 │               │s            Stop / disconnect                │               │
 │               │q / Esc      Quit                             │               │
 │               │?            Show this help                   │               │
+│               │                                              │               │
 │               │                                              │               │
 │               └──────────────────────────────────────────────┘               │
 │                                      ││                                      │

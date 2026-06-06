@@ -26,8 +26,6 @@ pub fn draw(frame: &mut Frame, model: &Model) {
         Overlay::ConfirmDelete => draw_confirm_delete(frame, area),
         Overlay::ConfirmQuit => draw_confirm_quit(frame, area),
         Overlay::Error => draw_error(frame, area, model.status.text()),
-        Overlay::CreateProfile => draw_input_modal(frame, model, area),
-        Overlay::PasteUri => draw_paste_uri(frame, model, area),
         Overlay::RoutingMode => draw_routing_mode(frame, model, area),
         Overlay::None => {}
     }
@@ -95,7 +93,6 @@ fn draw_help(frame: &mut Frame, area: Rect) {
         Row::new(vec!["G", "Go to last"]),
         Row::new(vec!["Enter", "Connect to selected"]),
         Row::new(vec!["p", "Paste from clipboard"]),
-        Row::new(vec!["n", "New profile"]),
         Row::new(vec!["d", "Delete profile"]),
         Row::new(vec!["m", "Routing mode (popup list)"]),
         Row::new(vec!["u", "Update geoip/geosite databases"]),
@@ -156,46 +153,6 @@ fn draw_error(frame: &mut Frame, area: Rect, message: &str) {
             Line::from(message),
             Line::from(""),
             Line::from("Press any key to dismiss"),
-        ],
-    );
-}
-
-/// Draw the input modal for pasting a URI manually.
-fn draw_paste_uri(frame: &mut Frame, model: &Model, area: Rect) {
-    draw_modal(
-        frame,
-        area,
-        " Paste URI ",
-        vec![
-            Line::from(Span::styled("Paste VPN URI", Theme::accent())),
-            Line::from(""),
-            Line::from(model.input.buffer.as_str()),
-            Line::from(""),
-            Line::from("Enter to confirm, Esc to cancel"),
-        ],
-    );
-}
-
-/// Draw the input modal for creating or editing a profile.
-fn draw_input_modal(frame: &mut Frame, model: &Model, area: Rect) {
-    let label = model.input.field.label();
-
-    let title = if model.overlay == Overlay::CreateProfile {
-        " New Profile "
-    } else {
-        " Edit Profile "
-    };
-
-    draw_modal(
-        frame,
-        area,
-        title,
-        vec![
-            Line::from(Span::styled(label, Theme::accent())),
-            Line::from(""),
-            Line::from(model.input.buffer.as_str()),
-            Line::from(""),
-            Line::from("Enter to confirm, Esc to cancel"),
         ],
     );
 }
@@ -280,7 +237,7 @@ fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::model::{ConnectionState, InputField, Overlay};
+    use crate::app::model::{ConnectionState, Overlay};
     use crate::config::profile::{Profile, Protocol};
     use crate::test_helpers::{buffer_to_string, ensure_fixed_geo, model_with_profiles};
     use ratatui::Terminal;
@@ -343,7 +300,6 @@ mod tests {
             ("G", "Go to last"),
             ("Enter", "Connect to selected"),
             ("p", "Paste from clipboard"),
-            ("n", "New profile"),
             ("d", "Delete profile"),
             ("m", "Routing mode (popup list)"),
             ("u", "Update geoip/geosite databases"),
@@ -418,25 +374,6 @@ mod tests {
         let mut model = model_with_profiles(vec![]);
         model.overlay = Overlay::Error;
         model.status = crate::app::model::AppStatus::Error("something went wrong".to_string());
-        insta::assert_snapshot!(snapshot_terminal(&model, 80, 20));
-    }
-
-    #[test]
-    fn draw_paste_uri_overlay_snapshot() {
-        ensure_fixed_geo();
-        let mut model = model_with_profiles(vec![]);
-        model.overlay = Overlay::PasteUri;
-        model.input.buffer = "vless://uuid@1.2.3.4#name".to_string();
-        insta::assert_snapshot!(snapshot_terminal(&model, 80, 20));
-    }
-
-    #[test]
-    fn draw_input_modal_overlay_snapshot() {
-        ensure_fixed_geo();
-        let mut model = model_with_profiles(vec![]);
-        model.overlay = Overlay::CreateProfile;
-        model.input.field = InputField::Name;
-        model.input.buffer = "My Profile".to_string();
         insta::assert_snapshot!(snapshot_terminal(&model, 80, 20));
     }
 

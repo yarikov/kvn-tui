@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 use uuid::Uuid;
 
-use crate::config::profile::{Config, Profile, Protocol};
+use crate::config::profile::{Config, Profile};
 use crate::config::{load_config, save_config};
 
 /// UI overlay shown on top of the main screen.
@@ -13,8 +13,6 @@ pub enum Overlay {
     Help,
     ConfirmDelete,
     ConfirmQuit,
-    CreateProfile,
-    PasteUri,
     Error,
     RoutingMode,
 }
@@ -72,39 +70,9 @@ pub struct Model {
     pub routing_selected: usize,
     pub logs: VecDeque<String>,
     pub log_scroll: usize,
-    pub input: InputState,
     pub geo_updating: bool,
     pub needs_redraw: bool,
     pub should_quit: bool,
-}
-
-/// Which input field is currently being edited.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum InputField {
-    None,
-    Name,
-    Address,
-    Port,
-    Uuid,
-    Protocol,
-}
-
-/// State for text input in creation/editing modes.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct InputState {
-    pub buffer: String,
-    pub field: InputField,
-    pub draft: Option<Profile>,
-}
-
-impl Default for InputState {
-    fn default() -> Self {
-        Self {
-            buffer: String::new(),
-            field: InputField::None,
-            draft: None,
-        }
-    }
 }
 
 impl Model {
@@ -129,7 +97,6 @@ impl Model {
             routing_selected: 0,
             logs: VecDeque::new(),
             log_scroll: 0,
-            input: InputState::default(),
             geo_updating: false,
             needs_redraw: false,
             should_quit: false,
@@ -217,62 +184,6 @@ impl Model {
     }
 }
 
-impl InputField {
-    /// Human-readable label for the field.
-    pub fn label(self) -> &'static str {
-        match self {
-            InputField::Name => "Profile Name",
-            InputField::Address => "Server Address",
-            InputField::Port => "Server Port",
-            InputField::Uuid => "UUID / Password",
-            InputField::Protocol => "Protocol (vless)",
-            InputField::None => "Input",
-        }
-    }
-
-    /// Apply the buffered input to the draft profile.
-    pub fn apply(self, draft: &mut Profile, buffer: &str) {
-        let trimmed = buffer.trim();
-        match self {
-            InputField::Name => draft.name = trimmed.to_string(),
-            InputField::Address => draft.address = trimmed.to_string(),
-            InputField::Port => {
-                if let Ok(port) = trimmed.parse::<u16>() {
-                    draft.port = port;
-                }
-            }
-            InputField::Uuid => draft.uuid = trimmed.to_string(),
-            InputField::Protocol => {
-                draft.protocol = Protocol::Vless;
-            }
-            InputField::None => {}
-        }
-    }
-
-    /// Return the next field in the creation/editing sequence.
-    pub fn next(self) -> Option<Self> {
-        match self {
-            InputField::Name => Some(InputField::Address),
-            InputField::Address => Some(InputField::Port),
-            InputField::Port => Some(InputField::Uuid),
-            InputField::Uuid => Some(InputField::Protocol),
-            InputField::Protocol | InputField::None => None,
-        }
-    }
-
-    /// Return a default buffer value from the draft profile for this field.
-    pub fn default_buffer(self, draft: &Profile) -> String {
-        match self {
-            InputField::Name => draft.name.clone(),
-            InputField::Address => draft.address.clone(),
-            InputField::Port => draft.port.to_string(),
-            InputField::Uuid => draft.uuid.clone(),
-            InputField::Protocol => draft.protocol.to_string(),
-            InputField::None => String::new(),
-        }
-    }
-}
-
 #[cfg(test)]
 impl Model {
     /// Create a Model instance for testing with a given config.
@@ -289,7 +200,6 @@ impl Model {
             routing_selected: 0,
             logs: VecDeque::new(),
             log_scroll: 0,
-            input: InputState::default(),
             geo_updating: false,
             needs_redraw: false,
             should_quit: false,
@@ -300,6 +210,7 @@ impl Model {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::profile::Protocol;
     use crate::test_helpers::*;
 
     #[test]
@@ -422,78 +333,6 @@ mod tests {
         assert_eq!(model.status.text(), "fail");
         assert!(model.status.is_error());
         assert_eq!(model.overlay, Overlay::Error);
-    }
-
-    #[test]
-    fn input_field_labels() {
-        assert_eq!(InputField::Name.label(), "Profile Name");
-        assert_eq!(InputField::Address.label(), "Server Address");
-        assert_eq!(InputField::Port.label(), "Server Port");
-        assert_eq!(InputField::Uuid.label(), "UUID / Password");
-        assert_eq!(InputField::Protocol.label(), "Protocol (vless)");
-        assert_eq!(InputField::None.label(), "Input");
-    }
-
-    #[test]
-    fn input_field_next_sequence() {
-        assert_eq!(InputField::Name.next(), Some(InputField::Address));
-        assert_eq!(InputField::Address.next(), Some(InputField::Port));
-        assert_eq!(InputField::Port.next(), Some(InputField::Uuid));
-        assert_eq!(InputField::Uuid.next(), Some(InputField::Protocol));
-        assert_eq!(InputField::Protocol.next(), None);
-        assert_eq!(InputField::None.next(), None);
-    }
-
-    #[test]
-    fn input_field_apply_to_draft() {
-        use crate::config::profile::{Profile, Protocol};
-        let mut draft = Profile::new(
-            "Old".to_string(),
-            Protocol::Vless,
-            "0.0.0.0".to_string(),
-            80,
-            "old-uuid".to_string(),
-        );
-
-        InputField::Name.apply(&mut draft, "  NewName  ");
-        assert_eq!(draft.name, "NewName");
-
-        InputField::Address.apply(&mut draft, "1.2.3.4");
-        assert_eq!(draft.address, "1.2.3.4");
-
-        InputField::Port.apply(&mut draft, "443");
-        assert_eq!(draft.port, 443);
-
-        // Invalid port should be ignored
-        InputField::Port.apply(&mut draft, "abc");
-        assert_eq!(draft.port, 443);
-
-        InputField::Uuid.apply(&mut draft, "new-uuid");
-        assert_eq!(draft.uuid, "new-uuid");
-
-        InputField::Protocol.apply(&mut draft, "anything");
-        assert_eq!(draft.protocol, Protocol::Vless);
-
-        InputField::None.apply(&mut draft, "ignored");
-        // no change expected
-    }
-
-    #[test]
-    fn input_field_default_buffer() {
-        use crate::config::profile::{Profile, Protocol};
-        let draft = Profile::new(
-            "N".to_string(),
-            Protocol::Vless,
-            "1.1.1.1".to_string(),
-            443,
-            "u".to_string(),
-        );
-        assert_eq!(InputField::Name.default_buffer(&draft), "N");
-        assert_eq!(InputField::Address.default_buffer(&draft), "1.1.1.1");
-        assert_eq!(InputField::Port.default_buffer(&draft), "443");
-        assert_eq!(InputField::Uuid.default_buffer(&draft), "u");
-        assert_eq!(InputField::Protocol.default_buffer(&draft), "vless");
-        assert_eq!(InputField::None.default_buffer(&draft), "");
     }
 
     #[test]
