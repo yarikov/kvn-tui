@@ -16,6 +16,25 @@ impl std::fmt::Display for Protocol {
     }
 }
 
+/// Selected geo region for rule-set downloads and routing mode availability.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum GeoRegion {
+    Other,
+    Ru,
+    Cn,
+}
+
+impl GeoRegion {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            GeoRegion::Other => "other",
+            GeoRegion::Ru => "ru",
+            GeoRegion::Cn => "cn",
+        }
+    }
+}
+
 /// Routing mode for geoip/geosite rules.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
@@ -24,37 +43,35 @@ pub enum RoutingMode {
     Global,
     BypassRu,
     OnlyRu,
+    BypassCn,
+    OnlyCn,
 }
 
 impl RoutingMode {
-    pub const ALL: &'static [RoutingMode] = &[
-        RoutingMode::Global,
-        RoutingMode::BypassRu,
-        RoutingMode::OnlyRu,
-    ];
+    /// Return the list of routing modes available for the given geo region.
+    pub fn available(region: Option<GeoRegion>) -> Vec<RoutingMode> {
+        match region {
+            Some(GeoRegion::Ru) => vec![
+                RoutingMode::Global,
+                RoutingMode::BypassRu,
+                RoutingMode::OnlyRu,
+            ],
+            Some(GeoRegion::Cn) => vec![
+                RoutingMode::Global,
+                RoutingMode::BypassCn,
+                RoutingMode::OnlyCn,
+            ],
+            Some(GeoRegion::Other) | None => vec![RoutingMode::Global],
+        }
+    }
 
     pub fn as_str(&self) -> &'static str {
         match self {
             RoutingMode::Global => "Global",
             RoutingMode::BypassRu => "Bypass RU",
             RoutingMode::OnlyRu => "Only RU",
-        }
-    }
-
-    pub fn index(&self) -> usize {
-        match self {
-            RoutingMode::Global => 0,
-            RoutingMode::BypassRu => 1,
-            RoutingMode::OnlyRu => 2,
-        }
-    }
-
-    pub fn from_index(index: usize) -> Option<Self> {
-        match index {
-            0 => Some(RoutingMode::Global),
-            1 => Some(RoutingMode::BypassRu),
-            2 => Some(RoutingMode::OnlyRu),
-            _ => None,
+            RoutingMode::BypassCn => "Bypass CN",
+            RoutingMode::OnlyCn => "Only CN",
         }
     }
 }
@@ -175,6 +192,8 @@ pub struct Settings {
     pub auto_connect: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_connected_profile: Option<Uuid>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub geo_region: Option<GeoRegion>,
 }
 
 fn default_tun_interface() -> String {
@@ -194,6 +213,7 @@ impl Default for Settings {
             routing_mode: RoutingMode::default(),
             auto_connect: false,
             last_connected_profile: None,
+            geo_region: None,
         }
     }
 }
@@ -261,15 +281,33 @@ mod tests {
         assert_eq!(RoutingMode::Global.as_str(), "Global");
         assert_eq!(RoutingMode::BypassRu.as_str(), "Bypass RU");
         assert_eq!(RoutingMode::OnlyRu.as_str(), "Only RU");
+        assert_eq!(RoutingMode::BypassCn.as_str(), "Bypass CN");
+        assert_eq!(RoutingMode::OnlyCn.as_str(), "Only CN");
     }
 
     #[test]
-    fn routing_mode_index_roundtrip() {
-        for mode in RoutingMode::ALL {
-            assert_eq!(RoutingMode::from_index(mode.index()), Some(*mode));
-        }
-        assert_eq!(RoutingMode::from_index(3), None);
-        assert_eq!(RoutingMode::from_index(100), None);
+    fn routing_mode_available() {
+        assert_eq!(RoutingMode::available(None), vec![RoutingMode::Global]);
+        assert_eq!(
+            RoutingMode::available(Some(GeoRegion::Ru)),
+            vec![
+                RoutingMode::Global,
+                RoutingMode::BypassRu,
+                RoutingMode::OnlyRu
+            ]
+        );
+        assert_eq!(
+            RoutingMode::available(Some(GeoRegion::Cn)),
+            vec![
+                RoutingMode::Global,
+                RoutingMode::BypassCn,
+                RoutingMode::OnlyCn
+            ]
+        );
+        assert_eq!(
+            RoutingMode::available(Some(GeoRegion::Other)),
+            vec![RoutingMode::Global]
+        );
     }
 
     #[test]
@@ -306,6 +344,7 @@ mod tests {
         assert!(s.default_profile.is_none());
         assert!(!s.auto_connect);
         assert!(s.last_connected_profile.is_none());
+        assert!(s.geo_region.is_none());
     }
 
     #[test]

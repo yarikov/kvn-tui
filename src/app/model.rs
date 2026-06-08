@@ -15,6 +15,7 @@ pub enum Overlay {
     ConfirmQuit,
     Error,
     RoutingMode,
+    GeoRegions,
 }
 
 /// VPN connection state.
@@ -71,6 +72,7 @@ pub struct Model {
     pub singbox_pid: Option<u32>,
     pub active_profile_id: Option<Uuid>,
     pub routing_selected: usize,
+    pub geo_region_selected: usize,
     pub logs: VecDeque<String>,
     pub log_scroll: usize,
     pub geo_updating: bool,
@@ -109,7 +111,13 @@ impl Model {
         // Reset state to disconnected on startup in case of previous crash.
         crate::services::waybar::clear_state();
 
-        let (connection, selected, status) = Self::resolve_startup_state(&config, selected);
+        let (mut connection, selected, mut status) = Self::resolve_startup_state(&config, selected);
+
+        // Block auto-connect until the user has picked a geo region.
+        if config.settings.geo_region.is_none() {
+            connection = ConnectionState::Idle;
+            status = AppStatus::Info("Press ? for help".to_string());
+        }
 
         let mut model = Self {
             overlay: Overlay::None,
@@ -120,12 +128,16 @@ impl Model {
             singbox_pid: None,
             active_profile_id: None,
             routing_selected: 0,
+            geo_region_selected: 0,
             logs: VecDeque::new(),
             log_scroll: 0,
             geo_updating: false,
             needs_redraw: false,
             should_quit: false,
         };
+        if model.config.settings.geo_region.is_none() {
+            model.overlay = Overlay::GeoRegions;
+        }
         if status.text() == "Press ? for help" {
             model.status = status;
         } else {
@@ -229,6 +241,7 @@ impl Model {
             singbox_pid: None,
             active_profile_id: None,
             routing_selected: 0,
+            geo_region_selected: 0,
             logs: VecDeque::new(),
             log_scroll: 0,
             geo_updating: false,
@@ -413,6 +426,32 @@ mod tests {
         assert_eq!(state, ConnectionState::Idle);
         assert_eq!(selected, 0);
         assert_eq!(status.text(), "Press ? for help");
+    }
+
+    #[test]
+    fn new_blocks_auto_connect_when_geo_region_none() {
+        let dir = tempfile::tempdir().unwrap();
+        unsafe { std::env::set_var("XDG_CONFIG_HOME", dir.path()) };
+
+        let mut config = Config::default();
+        let profile = Profile::new(
+            "Auto".to_string(),
+            Protocol::Vless,
+            "1.1.1.1".to_string(),
+            443,
+            "u1".to_string(),
+        );
+        let id = profile.id;
+        config.profiles.push(profile);
+        config.settings.auto_connect = true;
+        config.settings.last_connected_profile = Some(id);
+        // geo_region is None → overlay must be shown and auto-connect blocked
+
+        crate::config::save_config(&config).unwrap();
+
+        let model = Model::new().unwrap();
+        assert_eq!(model.connection, ConnectionState::Idle);
+        assert_eq!(model.overlay, Overlay::GeoRegions);
     }
 
     #[test]

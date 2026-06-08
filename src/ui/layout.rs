@@ -27,6 +27,7 @@ pub fn draw(frame: &mut Frame, model: &Model) {
         Overlay::ConfirmQuit => draw_confirm_quit(frame, area),
         Overlay::Error => draw_error(frame, area, model.status.text()),
         Overlay::RoutingMode => draw_routing_mode(frame, model, area),
+        Overlay::GeoRegions => draw_geo_region(frame, model, area),
         Overlay::None => {}
     }
 }
@@ -102,6 +103,7 @@ fn draw_help(frame: &mut Frame, area: Rect) {
         Row::new(vec!["p", "Paste from clipboard"]),
         Row::new(vec!["d", "Delete profile"]),
         Row::new(vec!["m", "Routing mode (popup list)"]),
+        Row::new(vec!["o", "Geo region"]),
         Row::new(vec!["u", "Update geoip/geosite databases"]),
         Row::new(vec!["e", "Open profiles.json in $EDITOR"]),
         Row::new(vec!["a", "Toggle auto-connect"]),
@@ -193,7 +195,7 @@ fn draw_routing_mode(frame: &mut Frame, model: &Model, area: Rect) {
     use ratatui::style::Modifier;
     use ratatui::text::Span;
 
-    let modes = RoutingMode::ALL;
+    let modes = RoutingMode::available(model.config.settings.geo_region);
     let mut lines: Vec<Line> = vec![
         Line::from(Span::styled("Select routing mode", Theme::accent())),
         Line::from(""),
@@ -218,6 +220,40 @@ fn draw_routing_mode(frame: &mut Frame, model: &Model, area: Rect) {
     lines.push(Line::from("j/k navigate, Enter confirm, Esc cancel"));
 
     draw_modal(frame, area, " Routing Mode ", lines);
+}
+
+/// Draw the geo region selection modal.
+fn draw_geo_region(frame: &mut Frame, model: &Model, area: Rect) {
+    use crate::config::profile::GeoRegion;
+    use ratatui::style::Modifier;
+    use ratatui::text::Span;
+
+    let regions = [GeoRegion::Ru, GeoRegion::Cn, GeoRegion::Other];
+    let labels = ["Russia", "China", "Other (Global only)"];
+    let mut lines: Vec<Line> = vec![
+        Line::from(Span::styled("Select geo region", Theme::accent())),
+        Line::from(""),
+    ];
+
+    for (i, (&_region, label)) in regions.iter().zip(labels.iter()).enumerate() {
+        let marker = if i == model.geo_region_selected {
+            "> "
+        } else {
+            "  "
+        };
+        let text = format!("{}{}", marker, label);
+        let style = if i == model.geo_region_selected {
+            Theme::accent().add_modifier(Modifier::BOLD)
+        } else {
+            Theme::normal()
+        };
+        lines.push(Line::from(Span::styled(text, style)));
+    }
+
+    lines.push(Line::from(""));
+    lines.push(Line::from("j/k navigate, Enter confirm, Esc cancel"));
+
+    draw_modal(frame, area, " Geo Region ", lines);
 }
 
 /// Compute a centered rectangle with given percentage sizes.
@@ -388,8 +424,18 @@ mod tests {
     fn draw_routing_mode_overlay_snapshot() {
         ensure_fixed_geo();
         let mut model = model_with_profiles(vec![]);
+        model.config.settings.geo_region = Some(crate::config::profile::GeoRegion::Ru);
         model.overlay = Overlay::RoutingMode;
         model.routing_selected = 2;
+        insta::assert_snapshot!(snapshot_terminal(&model, 80, 20));
+    }
+
+    #[test]
+    fn draw_geo_region_overlay_snapshot() {
+        ensure_fixed_geo();
+        let mut model = model_with_profiles(vec![]);
+        model.overlay = Overlay::GeoRegions;
+        model.geo_region_selected = 1;
         insta::assert_snapshot!(snapshot_terminal(&model, 80, 20));
     }
 }

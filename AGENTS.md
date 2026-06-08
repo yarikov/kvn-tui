@@ -140,6 +140,9 @@ Background work is executed in dedicated threads spawned by `runtime.rs`:
 - `RoutingMode::Global` — all traffic through VPN.
 - `RoutingMode::BypassRu` — RU IPs/domains bypass VPN (direct).
 - `RoutingMode::OnlyRu` — only RU IPs/domains go through VPN; everything else is direct.
+- `RoutingMode::BypassCn` — CN IPs/domains bypass VPN (direct).
+- `RoutingMode::OnlyCn` — only CN IPs/domains go through VPN; everything else is direct.
+- The available routing modes depend on the selected **geo region** (`Ru`, `Cn`, or `Other`). `RoutingMode::available(region)` returns the list dynamically.
 - Rule-sets are local `.srs` binary files downloaded to `~/.config/kvn-tui/geo/`.
 
 ### Clipboard Parsing
@@ -152,6 +155,14 @@ Background work is executed in dedicated threads spawned by `runtime.rs`:
 ### State I/O
 - `services/waybar.rs` writes a small JSON file (`state.json`) on every connect/disconnect. It stores connection status, active profile name, and sing-box PID.
 - Used by the `--waybar-status` CLI flag and for crash recovery (state is cleared on startup).
+
+### Geo Region Selection
+- `settings.geo_region` (`Option<GeoRegion>`) controls which country rule-sets are downloaded and which routing modes are shown.
+- `GeoRegion::Ru` — download RU geoip/geosite, enable `Global` / `BypassRu` / `OnlyRu`.
+- `GeoRegion::Cn` — download CN geoip/geosite, enable `Global` / `BypassCn` / `OnlyCn`.
+- `GeoRegion::Other` — skip geo downloads, only `Global` mode is available.
+- On first launch (when `geo_region` is `None`), a modal overlay forces the user to pick a region before the main UI is usable.
+- The region can be changed at runtime with the `o` keybinding.
 
 ### Auto-Connect
 - `settings.auto_connect` (persisted in `profiles.json`) controls whether the app reconnects to the last used profile on startup.

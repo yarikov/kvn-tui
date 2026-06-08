@@ -152,9 +152,14 @@ fn execute_effect(
         Effect::DownloadGeo => {
             model.geo_updating = true;
             let tx = tx.clone();
+            let region = model
+                .config
+                .settings
+                .geo_region
+                .unwrap_or(crate::config::profile::GeoRegion::Other);
             thread::spawn(move || {
                 let result = match crate::infra::geo::GeoManager::new() {
-                    Ok(gm) => match gm.update_if_needed() {
+                    Ok(gm) => match gm.update_if_needed(region) {
                         Ok(geo_result) => geo_result,
                         Err(e) => GeoResult::Error(e.to_string()),
                     },

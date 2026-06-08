@@ -159,10 +159,76 @@ fn build_route(routing_mode: &RoutingMode, dns_strategy: DnsStrategy) -> (Value,
                 }
             }
         }
+        RoutingMode::BypassCn => {
+            rules.push(json!({
+                "ip_is_private": true,
+                "outbound": "direct"
+            }));
+            if let Ok(geo) = crate::infra::geo::GeoManager::new() {
+                let (geoip_cn, geosite_cn) = geo.local_paths_cn();
+                if geosite_cn.exists() {
+                    rules.push(json!({
+                        "rule_set": ["geosite-cn"],
+                        "outbound": "direct"
+                    }));
+                    rule_sets.push(json!({
+                        "tag": "geosite-cn",
+                        "type": "local",
+                        "format": "binary",
+                        "path": geosite_cn
+                    }));
+                }
+                if geoip_cn.exists() {
+                    rules.push(json!({
+                        "rule_set": ["geoip-cn"],
+                        "outbound": "direct"
+                    }));
+                    rule_sets.push(json!({
+                        "tag": "geoip-cn",
+                        "type": "local",
+                        "format": "binary",
+                        "path": geoip_cn
+                    }));
+                }
+            }
+        }
+        RoutingMode::OnlyCn => {
+            rules.push(json!({
+                "ip_is_private": true,
+                "outbound": "direct"
+            }));
+            if let Ok(geo) = crate::infra::geo::GeoManager::new() {
+                let (geoip_cn, geosite_cn) = geo.local_paths_cn();
+                if geosite_cn.exists() {
+                    rules.push(json!({
+                        "rule_set": ["geosite-cn"],
+                        "outbound": "proxy"
+                    }));
+                    rule_sets.push(json!({
+                        "tag": "geosite-cn",
+                        "type": "local",
+                        "format": "binary",
+                        "path": geosite_cn
+                    }));
+                }
+                if geoip_cn.exists() {
+                    rules.push(json!({
+                        "rule_set": ["geoip-cn"],
+                        "outbound": "proxy"
+                    }));
+                    rule_sets.push(json!({
+                        "tag": "geoip-cn",
+                        "type": "local",
+                        "format": "binary",
+                        "path": geoip_cn
+                    }));
+                }
+            }
+        }
     }
 
     let final_outbound = match routing_mode {
-        RoutingMode::OnlyRu => "direct",
+        RoutingMode::OnlyRu | RoutingMode::OnlyCn => "direct",
         _ => "proxy",
     };
 
@@ -390,6 +456,34 @@ mod tests {
     #[test]
     fn build_route_only_ru_has_private_rule_and_final_direct() {
         let (route, _rule_sets) = build_route(&RoutingMode::OnlyRu, DnsStrategy::PreferIpv4);
+        let rules = route["rules"].as_array().unwrap();
+        assert!(rules.len() >= 4); // basic 3 + ip_is_private
+        assert_eq!(route["final"], "direct");
+    }
+
+    #[test]
+    fn generated_config_only_cn_final_is_direct() {
+        let profile = test_profile();
+        let settings = Settings {
+            routing_mode: RoutingMode::OnlyCn,
+            ..Default::default()
+        };
+        let config = generate_config(&profile, &settings).unwrap();
+        let route = config.get("route").unwrap();
+        assert_eq!(route["final"].as_str().unwrap(), "direct");
+    }
+
+    #[test]
+    fn build_route_bypass_cn_has_private_rule() {
+        let (route, _rule_sets) = build_route(&RoutingMode::BypassCn, DnsStrategy::PreferIpv4);
+        let rules = route["rules"].as_array().unwrap();
+        assert!(rules.len() >= 4); // basic 3 + ip_is_private
+        assert_eq!(route["final"], "proxy");
+    }
+
+    #[test]
+    fn build_route_only_cn_has_private_rule_and_final_direct() {
+        let (route, _rule_sets) = build_route(&RoutingMode::OnlyCn, DnsStrategy::PreferIpv4);
         let rules = route["rules"].as_array().unwrap();
         assert!(rules.len() >= 4); // basic 3 + ip_is_private
         assert_eq!(route["final"], "direct");

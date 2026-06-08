@@ -7,11 +7,16 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use crate::app::msg::GeoResult;
+use crate::config::profile::GeoRegion;
 
 const GEOIP_RU_URL: &str =
     "https://raw.githubusercontent.com/SagerNet/sing-geoip/rule-set/geoip-ru.srs";
 const GEOSITE_RU_URL: &str =
     "https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-category-ru.srs";
+const GEOIP_CN_URL: &str =
+    "https://raw.githubusercontent.com/SagerNet/sing-geoip/rule-set/geoip-cn.srs";
+const GEOSITE_CN_URL: &str =
+    "https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-cn.srs";
 
 /// Metadata tracking ETags and update time for geo rule-sets.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -20,6 +25,10 @@ struct GeoMetadata {
     geoip_ru_etag: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     geosite_ru_etag: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    geoip_cn_etag: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    geosite_cn_etag: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     updated_at: Option<DateTime<Utc>>,
 }
@@ -49,11 +58,18 @@ impl GeoManager {
         })
     }
 
-    /// Return paths to local rule-set files.
+    /// Return paths to local RU rule-set files.
     pub fn local_paths(&self) -> (PathBuf, PathBuf) {
         let geoip_ru = self.geo_dir.join("geoip-ru.srs");
         let geosite_ru = self.geo_dir.join("geosite-category-ru.srs");
         (geoip_ru, geosite_ru)
+    }
+
+    /// Return paths to local CN rule-set files.
+    pub fn local_paths_cn(&self) -> (PathBuf, PathBuf) {
+        let geoip_cn = self.geo_dir.join("geoip-cn.srs");
+        let geosite_cn = self.geo_dir.join("geosite-cn.srs");
+        (geoip_cn, geosite_cn)
     }
 
     /// Return a human-readable string of the last update time, or None.
@@ -69,47 +85,94 @@ impl GeoManager {
             .map(|dt| dt.format("%Y-%m-%d %H:%M").to_string())
     }
 
-    /// Check whether rule-sets have updates available.
-    /// Returns (geoip_ru_has_update, geosite_ru_has_update).
-    pub fn check_update_available(&self) -> Result<(bool, bool)> {
+    /// Check whether rule-sets have updates available for the given region.
+    /// Returns (geoip_has_update, geosite_has_update).
+    pub fn check_update_available(&self, region: GeoRegion) -> Result<(bool, bool)> {
         let meta = self.load_metadata().unwrap_or_default();
-        let (geoip_ru, geosite_ru) = self.local_paths();
 
-        let geoip_missing = !geoip_ru.exists();
-        let geosite_missing = !geosite_ru.exists();
+        match region {
+            GeoRegion::Other => Ok((false, false)),
+            GeoRegion::Ru => {
+                let (geoip_ru, geosite_ru) = self.local_paths();
+                let geoip_missing = !geoip_ru.exists();
+                let geosite_missing = !geosite_ru.exists();
 
-        let geoip_update = if geoip_missing {
-            true
-        } else {
-            self.check_single(GEOIP_RU_URL, meta.geoip_ru_etag.as_deref())?
-        };
+                let geoip_update = if geoip_missing {
+                    true
+                } else {
+                    self.check_single(GEOIP_RU_URL, meta.geoip_ru_etag.as_deref())?
+                };
 
-        let geosite_update = if geosite_missing {
-            true
-        } else {
-            self.check_single(GEOSITE_RU_URL, meta.geosite_ru_etag.as_deref())?
-        };
+                let geosite_update = if geosite_missing {
+                    true
+                } else {
+                    self.check_single(GEOSITE_RU_URL, meta.geosite_ru_etag.as_deref())?
+                };
 
-        Ok((geoip_update, geosite_update))
+                Ok((geoip_update, geosite_update))
+            }
+            GeoRegion::Cn => {
+                let (geoip_cn, geosite_cn) = self.local_paths_cn();
+                let geoip_missing = !geoip_cn.exists();
+                let geosite_missing = !geosite_cn.exists();
+
+                let geoip_update = if geoip_missing {
+                    true
+                } else {
+                    self.check_single(GEOIP_CN_URL, meta.geoip_cn_etag.as_deref())?
+                };
+
+                let geosite_update = if geosite_missing {
+                    true
+                } else {
+                    self.check_single(GEOSITE_CN_URL, meta.geosite_cn_etag.as_deref())?
+                };
+
+                Ok((geoip_update, geosite_update))
+            }
+        }
     }
 
-    /// Download both rule-sets and update metadata atomically.
-    pub fn download_databases(&self) -> Result<bool> {
+    /// Download rule-sets for the given region and update metadata atomically.
+    pub fn download_databases(&self, region: GeoRegion) -> Result<bool> {
         let mut meta = self.load_metadata().unwrap_or_default();
-        let (geoip_ru, geosite_ru) = self.local_paths();
 
-        match self.download_file(GEOIP_RU_URL, &geoip_ru) {
-            Ok(etag) => {
-                meta.geoip_ru_etag = etag;
-            }
-            Err(e) => return Err(e).context("Failed to download geoip-ru.srs"),
-        }
+        match region {
+            GeoRegion::Other => return Ok(false),
+            GeoRegion::Ru => {
+                let (geoip_ru, geosite_ru) = self.local_paths();
 
-        match self.download_file(GEOSITE_RU_URL, &geosite_ru) {
-            Ok(etag) => {
-                meta.geosite_ru_etag = etag;
+                match self.download_file(GEOIP_RU_URL, &geoip_ru) {
+                    Ok(etag) => {
+                        meta.geoip_ru_etag = etag;
+                    }
+                    Err(e) => return Err(e).context("Failed to download geoip-ru.srs"),
+                }
+
+                match self.download_file(GEOSITE_RU_URL, &geosite_ru) {
+                    Ok(etag) => {
+                        meta.geosite_ru_etag = etag;
+                    }
+                    Err(e) => return Err(e).context("Failed to download geosite-category-ru.srs"),
+                }
             }
-            Err(e) => return Err(e).context("Failed to download geosite-category-ru.srs"),
+            GeoRegion::Cn => {
+                let (geoip_cn, geosite_cn) = self.local_paths_cn();
+
+                match self.download_file(GEOIP_CN_URL, &geoip_cn) {
+                    Ok(etag) => {
+                        meta.geoip_cn_etag = etag;
+                    }
+                    Err(e) => return Err(e).context("Failed to download geoip-cn.srs"),
+                }
+
+                match self.download_file(GEOSITE_CN_URL, &geosite_cn) {
+                    Ok(etag) => {
+                        meta.geosite_cn_etag = etag;
+                    }
+                    Err(e) => return Err(e).context("Failed to download geosite-cn.srs"),
+                }
+            }
         }
 
         meta.updated_at = Some(Utc::now());
@@ -120,21 +183,25 @@ impl GeoManager {
 
     /// Full update flow: check then download if needed.
     /// Returns typed result describing what happened.
-    pub fn update_if_needed(&self) -> Result<GeoResult> {
-        let (geoip_need, geosite_need) = self.check_update_available()?;
+    pub fn update_if_needed(&self, region: GeoRegion) -> Result<GeoResult> {
+        if matches!(region, GeoRegion::Other) {
+            return Ok(GeoResult::UpToDate);
+        }
+
+        let (geoip_need, geosite_need) = self.check_update_available(region)?;
 
         if !geoip_need && !geosite_need {
             return Ok(GeoResult::UpToDate);
         }
 
-        let updated = self.download_databases()?;
+        let updated = self.download_databases(region)?;
         if updated {
             let mut parts = Vec::new();
             if geoip_need {
-                parts.push("geoip-ru".to_string());
+                parts.push(format!("geoip-{}", region.as_str()));
             }
             if geosite_need {
-                parts.push("geosite-category-ru".to_string());
+                parts.push(format!("geosite-{}", region.as_str()));
             }
             Ok(GeoResult::Updated(parts))
         } else {
@@ -242,6 +309,9 @@ mod tests {
         let (geoip_ru, geosite_ru) = gm.local_paths();
         assert!(geoip_ru.file_name().unwrap() == "geoip-ru.srs");
         assert!(geosite_ru.file_name().unwrap() == "geosite-category-ru.srs");
+        let (geoip_cn, geosite_cn) = gm.local_paths_cn();
+        assert!(geoip_cn.file_name().unwrap() == "geoip-cn.srs");
+        assert!(geosite_cn.file_name().unwrap() == "geosite-cn.srs");
     }
 
     #[test]
@@ -250,12 +320,16 @@ mod tests {
         let meta = GeoMetadata {
             geoip_ru_etag: Some("etag1".to_string()),
             geosite_ru_etag: Some("etag2".to_string()),
+            geoip_cn_etag: Some("etag3".to_string()),
+            geosite_cn_etag: Some("etag4".to_string()),
             updated_at: Some(Utc::now()),
         };
         gm.save_metadata(&meta).unwrap();
         let loaded = gm.load_metadata().unwrap();
         assert_eq!(loaded.geoip_ru_etag, Some("etag1".to_string()));
         assert_eq!(loaded.geosite_ru_etag, Some("etag2".to_string()));
+        assert_eq!(loaded.geoip_cn_etag, Some("etag3".to_string()));
+        assert_eq!(loaded.geosite_cn_etag, Some("etag4".to_string()));
         assert!(loaded.updated_at.is_some());
     }
 
@@ -263,13 +337,18 @@ mod tests {
     fn load_metadata_missing_returns_default() {
         let gm = GeoManager::new().unwrap();
         let (geoip_ru, geosite_ru) = gm.local_paths();
+        let (geoip_cn, geosite_cn) = gm.local_paths_cn();
         let _ = fs::remove_file(&gm.metadata_path);
         let meta = gm.load_metadata().unwrap();
         assert!(meta.geoip_ru_etag.is_none());
         assert!(meta.geosite_ru_etag.is_none());
+        assert!(meta.geoip_cn_etag.is_none());
+        assert!(meta.geosite_cn_etag.is_none());
         assert!(meta.updated_at.is_none());
         let _ = fs::remove_file(&geoip_ru);
         let _ = fs::remove_file(&geosite_ru);
+        let _ = fs::remove_file(&geoip_cn);
+        let _ = fs::remove_file(&geosite_cn);
     }
 
     #[test]
@@ -306,7 +385,7 @@ mod tests {
         let _ = fs::remove_file(&geoip_ru);
         let _ = fs::remove_file(&geosite_ru);
 
-        let result = gm.download_databases();
+        let result = gm.download_databases(crate::config::profile::GeoRegion::Ru);
         assert!(result.is_ok(), "download failed: {:?}", result);
         assert!(result.unwrap(), "expected updated=true");
 
@@ -316,7 +395,9 @@ mod tests {
         let updated = gm.last_updated();
         assert!(updated.is_some(), "last_updated should be set");
 
-        let result = gm.update_if_needed().unwrap();
+        let result = gm
+            .update_if_needed(crate::config::profile::GeoRegion::Ru)
+            .unwrap();
         assert!(
             matches!(result, GeoResult::UpToDate),
             "unexpected result: {:?}",
