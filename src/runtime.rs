@@ -145,7 +145,7 @@ fn execute_effect(
             model.connection = crate::app::model::ConnectionState::Idle;
             model.active_profile_id = None;
             model.singbox_pid = None;
-            model.status = crate::app::model::AppStatus::Info("Disconnected".into());
+            model.set_status_and_log(crate::app::model::AppStatus::Info("Disconnected".into()));
             model.overlay = crate::app::model::Overlay::None;
             crate::services::waybar::write_state(model);
         }
@@ -173,7 +173,10 @@ fn execute_effect(
         }
         Effect::SaveConfig => {
             if let Err(e) = model.save() {
-                tracing::warn!("Failed to save config: {}", e);
+                model.set_status_and_log(crate::app::model::AppStatus::Error(format!(
+                    "Failed to save config: {}",
+                    e
+                )));
             }
         }
         Effect::OpenEditor(idx) => {

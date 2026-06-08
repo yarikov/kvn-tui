@@ -6,9 +6,6 @@ use crate::config::profile::RoutingMode;
 use crate::config::profile::{Profile, Protocol};
 use crossterm::event::{KeyCode, KeyEvent};
 
-/// Maximum number of log lines kept in the UI buffer.
-const MAX_LOG_LINES: usize = 1000;
-
 /// Pure function: Model + Msg → updated Model + list of Effects.
 /// No I/O, no threads, no system calls.
 pub fn update(model: &mut Model, msg: Msg) -> Vec<Effect> {
@@ -16,17 +13,15 @@ pub fn update(model: &mut Model, msg: Msg) -> Vec<Effect> {
         Msg::Key(key) => handle_key(model, key),
         Msg::Tick => handle_tick(model),
         Msg::LogLine(line) => {
-            model.logs.push_back(line);
-            if model.logs.len() > MAX_LOG_LINES {
-                model.logs.pop_front();
-            }
-            model.log_scroll = model.logs.len().saturating_sub(1);
+            model.push_log(line);
             vec![]
         }
         Msg::GeoUpdated(result) => handle_geo_result(model, result),
         Msg::SystemResumed => {
             if model.connection == ConnectionState::Connected {
-                model.status = crate::app::model::AppStatus::Info("Resumed — reconnecting…".into());
+                model.set_status_and_log(crate::app::model::AppStatus::Info(
+                    "Resumed — reconnecting…".into(),
+                ));
                 let profile = model.selected_profile().cloned();
                 let settings = model.config.settings.clone();
                 profile
@@ -50,8 +45,10 @@ pub fn update(model: &mut Model, msg: Msg) -> Vec<Effect> {
                 let profile_id = profile.id;
                 let profile_name = profile.name.clone();
                 model.active_profile_id = Some(profile_id);
-                model.status =
-                    crate::app::model::AppStatus::Info(format!("Connected to {}", profile_name));
+                model.set_status_and_log(crate::app::model::AppStatus::Info(format!(
+                    "Connected to {}",
+                    profile_name
+                )));
                 // Persist last connected profile for auto-connect on next startup.
                 if model.config.settings.last_connected_profile != Some(profile_id) {
                     model.config.settings.last_connected_profile = Some(profile_id);
@@ -63,15 +60,19 @@ pub fn update(model: &mut Model, msg: Msg) -> Vec<Effect> {
         Msg::ConnectFailed(err) => {
             model.connection = ConnectionState::Idle;
             model.overlay = Overlay::Error;
-            model.status =
-                crate::app::model::AppStatus::Error(format!("Connection failed: {}", err));
+            model.set_status_and_log(crate::app::model::AppStatus::Error(format!(
+                "Connection failed: {}",
+                err
+            )));
             vec![]
         }
         Msg::ClipboardRead(result) => match result {
             Ok(text) => handle_clipboard_text(model, &text),
             Err(e) => {
-                model.status =
-                    crate::app::model::AppStatus::Error(format!("Clipboard error: {}", e));
+                model.set_status_and_log(crate::app::model::AppStatus::Error(format!(
+                    "Clipboard error: {}",
+                    e
+                )));
                 vec![]
             }
         },
@@ -81,13 +82,16 @@ pub fn update(model: &mut Model, msg: Msg) -> Vec<Effect> {
                 Ok(config) => {
                     model.config = config;
                     model.selected = model.config.resolve_selected();
-                    model.status =
-                        crate::app::model::AppStatus::Info("Profiles updated from editor".into());
+                    model.set_status_and_log(crate::app::model::AppStatus::Info(
+                        "Profiles updated from editor".into(),
+                    ));
                     vec![]
                 }
                 Err(e) => {
-                    model.status =
-                        crate::app::model::AppStatus::Error(format!("Editor failed: {}", e));
+                    model.set_status_and_log(crate::app::model::AppStatus::Error(format!(
+                        "Editor failed: {}",
+                        e
+                    )));
                     vec![]
                 }
             }
@@ -156,8 +160,18 @@ fn handle_main(model: &mut Model, key: KeyEvent) -> Vec<Effect> {
         }
 
         // Actions
-        KeyCode::Enter if model.selected_profile().is_some() => {
-            model.connection = ConnectionState::Connecting;
+        KeyCode::Enter => {
+            if let Some(profile) = model.selected_profile() {
+                model.set_status_and_log(crate::app::model::AppStatus::Info(format!(
+                    "Connecting to {}…",
+                    profile.name
+                )));
+                model.connection = ConnectionState::Connecting;
+            } else {
+                model.set_status_and_log(crate::app::model::AppStatus::Info(
+                    "No profiles. Press p to paste or e to edit.".into(),
+                ));
+            }
         }
         KeyCode::Char('p') => {
             return vec![Effect::PasteClipboard];
@@ -171,14 +185,21 @@ fn handle_main(model: &mut Model, key: KeyEvent) -> Vec<Effect> {
         }
         KeyCode::Char('u') if !model.geo_updating => {
             model.geo_updating = true;
-            model.status =
-                crate::app::model::AppStatus::Info("Checking for geo updates...".to_string());
+            model.set_status_and_log(crate::app::model::AppStatus::Info(
+                "Checking for geo updates...".to_string(),
+            ));
             return vec![Effect::DownloadGeo];
         }
         KeyCode::Char('e') => {
             return vec![Effect::OpenEditor(model.selected)];
         }
         KeyCode::Char('r') if model.connection == ConnectionState::Connected => {
+            if let Some(profile) = model.selected_profile() {
+                model.set_status_and_log(crate::app::model::AppStatus::Info(format!(
+                    "Reconnecting to {}…",
+                    profile.name
+                )));
+            }
             model.connection = ConnectionState::Connecting;
         }
         KeyCode::Char('s') if model.connection == ConnectionState::Connected => {
@@ -187,10 +208,10 @@ fn handle_main(model: &mut Model, key: KeyEvent) -> Vec<Effect> {
         KeyCode::Char('a') => {
             let new_val = !model.config.settings.auto_connect;
             model.config.settings.auto_connect = new_val;
-            model.status = crate::app::model::AppStatus::Info(format!(
+            model.set_status_and_log(crate::app::model::AppStatus::Info(format!(
                 "Auto-connect {}",
                 if new_val { "enabled" } else { "disabled" }
-            ));
+            )));
             return vec![Effect::SaveConfig];
         }
 
@@ -212,7 +233,14 @@ fn handle_main(model: &mut Model, key: KeyEvent) -> Vec<Effect> {
 fn handle_confirm_delete(model: &mut Model, key: KeyEvent) -> Vec<Effect> {
     match key.code {
         KeyCode::Char('y') | KeyCode::Enter => {
+            let name = model.selected_profile().map(|p| p.name.clone());
             model.delete_selected();
+            if let Some(name) = name {
+                model.set_status_and_log(crate::app::model::AppStatus::Info(format!(
+                    "Profile '{}' deleted",
+                    name
+                )));
+            }
             return vec![Effect::SaveConfig];
         }
         KeyCode::Char('n') | KeyCode::Esc => {
@@ -255,8 +283,10 @@ fn handle_routing_mode(model: &mut Model, key: KeyEvent) -> Vec<Effect> {
                 let changed = model.config.settings.routing_mode != mode;
                 model.config.settings.routing_mode = mode;
                 model.overlay = Overlay::None;
-                model.status =
-                    crate::app::model::AppStatus::Info(format!("Routing mode: {}", mode.as_str()));
+                model.set_status_and_log(crate::app::model::AppStatus::Info(format!(
+                    "Routing mode: {}",
+                    mode.as_str()
+                )));
 
                 let effects = vec![Effect::SaveConfig];
                 if changed && model.connection == ConnectionState::Connected {
@@ -281,16 +311,24 @@ fn handle_clipboard_text(model: &mut Model, text: &str) -> Vec<Effect> {
     match crate::infra::clipboard::parse_share_link(text) {
         Ok(profile) => {
             if model.has_duplicate(&profile) {
-                model.status = crate::app::model::AppStatus::Error("Profile already exists".into());
+                model.set_status_and_log(crate::app::model::AppStatus::Error(
+                    "Profile already exists".into(),
+                ));
                 return vec![];
             }
             let name = profile.name.clone();
             model.add_profile(profile);
-            model.status = crate::app::model::AppStatus::Info(format!("Pasted profile: {}", name));
+            model.set_status_and_log(crate::app::model::AppStatus::Info(format!(
+                "Pasted profile: {}",
+                name
+            )));
             vec![Effect::SaveConfig]
         }
         Err(e) => {
-            model.status = crate::app::model::AppStatus::Error(format!("Invalid URI: {}", e));
+            model.set_status_and_log(crate::app::model::AppStatus::Error(format!(
+                "Invalid URI: {}",
+                e
+            )));
             vec![]
         }
     }
@@ -303,6 +341,9 @@ fn handle_geo_result(model: &mut Model, result: GeoResult) -> Vec<Effect> {
             for part in &parts {
                 model.logs.push_back(format!("[geo] Updated: {}", part));
             }
+            model.set_status_and_log(crate::app::model::AppStatus::Info(
+                "Geo databases updated".into(),
+            ));
             if model.connection == ConnectionState::Connected {
                 model
                     .logs
@@ -312,12 +353,16 @@ fn handle_geo_result(model: &mut Model, result: GeoResult) -> Vec<Effect> {
             vec![]
         }
         GeoResult::UpToDate => {
-            model.status =
-                crate::app::model::AppStatus::Info("Geo databases are up to date".into());
+            model.set_status_and_log(crate::app::model::AppStatus::Info(
+                "Geo databases are up to date".into(),
+            ));
             vec![]
         }
         GeoResult::Error(err) => {
-            model.status = crate::app::model::AppStatus::Error(format!("[geo] {}", err));
+            model.set_status_and_log(crate::app::model::AppStatus::Error(format!(
+                "[geo] {}",
+                err
+            )));
             vec![]
         }
     }

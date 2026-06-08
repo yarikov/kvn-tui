@@ -89,18 +89,28 @@ impl<'a> StatusBar<'a> {
     }
 }
 
+/// Truncate a string to fit within a visual width, appending "..." if truncated.
+fn truncate_to_width(s: &str, max_width: usize) -> String {
+    if max_width <= 3 {
+        return ".".repeat(max_width);
+    }
+    let mut result = String::with_capacity(max_width);
+    for (len, ch) in s.chars().enumerate() {
+        if len + 1 > max_width.saturating_sub(3) {
+            result.push_str("...");
+            return result;
+        }
+        result.push(ch);
+    }
+    result
+}
+
 impl<'a> Widget for StatusBar<'a> {
     fn render(self, area: Rect, buf: &mut Buffer) {
-        let style = if self.model.connection == crate::app::model::ConnectionState::Connected {
-            Theme::success()
-        } else {
-            Theme::status()
-        };
-
-        let status = if self.model.connection == crate::app::model::ConnectionState::Connected {
-            "[CONNECTED]"
-        } else {
-            "[DISCONNECTED]"
+        let (status, style) = match self.model.connection {
+            crate::app::model::ConnectionState::Connected => ("[CONNECTED]", Theme::success()),
+            crate::app::model::ConnectionState::ConnectPending => ("[CONNECTING]", Theme::status()),
+            _ => ("[DISCONNECTED]", Theme::error()),
         };
 
         let routing = format!("[{}]", self.model.config.settings.routing_mode.as_str());
@@ -130,8 +140,15 @@ impl<'a> Widget for StatusBar<'a> {
             Span::raw(" "),
             Span::styled(geo_info, Theme::accent()),
             Span::raw(" "),
-            Span::styled(self.model.status.text(), Theme::normal()),
         ]);
+
+        let fixed_width: usize = spans.iter().map(|s| s.content.len()).sum();
+        let available = area.width as usize;
+        let status_text = self.model.status.text();
+        let max_status = available.saturating_sub(fixed_width);
+        let truncated = truncate_to_width(status_text, max_status);
+
+        spans.push(Span::styled(truncated, Theme::normal()));
 
         let text = Line::from(spans);
 
@@ -253,6 +270,29 @@ mod tests {
         let content: String = buf.content.iter().map(|c| c.symbol()).collect();
         assert!(content.contains("[DISCONNECTED]"));
         assert!(content.contains("[Global]"));
+        // Verify red color for disconnected
+        let idx = content.find('[').unwrap();
+        assert_eq!(
+            buf.content[idx].style().fg,
+            Some(ratatui::style::Color::Red)
+        );
+    }
+
+    #[test]
+    fn status_bar_connect_pending_shows_connecting() {
+        use crate::app::model::ConnectionState;
+        let mut model = model_with_profiles(vec![]);
+        model.connection = ConnectionState::ConnectPending;
+        let mut buf = Buffer::empty(Rect::new(0, 0, 80, 1));
+        StatusBar::new(&model).render(Rect::new(0, 0, 80, 1), &mut buf);
+        let content: String = buf.content.iter().map(|c| c.symbol()).collect();
+        assert!(content.contains("[CONNECTING]"));
+        // Verify yellow color for connecting
+        let idx = content.find('[').unwrap();
+        assert_eq!(
+            buf.content[idx].style().fg,
+            Some(ratatui::style::Color::Yellow)
+        );
     }
 
     #[test]
@@ -293,6 +333,18 @@ mod tests {
         ensure_fixed_geo();
         let mut model = model_with_profiles(vec![]);
         model.geo_updating = true;
+        let mut buf = Buffer::empty(Rect::new(0, 0, 80, 1));
+        StatusBar::new(&model).render(Rect::new(0, 0, 80, 1), &mut buf);
+        insta::assert_snapshot!(buffer_to_string(&buf));
+    }
+
+    #[test]
+    fn status_bar_long_message_truncated_snapshot() {
+        ensure_fixed_geo();
+        let mut model = model_with_profiles(vec![]);
+        model.status = crate::app::model::AppStatus::Error(
+            "Connection failed: sing-box exited immediately (code: Some(1)). stderr: FATAL[0000] create service: parse outbound[0].server_settings.address: lookup example.com: no such host".to_string(),
+        );
         let mut buf = Buffer::empty(Rect::new(0, 0, 80, 1));
         StatusBar::new(&model).render(Rect::new(0, 0, 80, 1), &mut buf);
         insta::assert_snapshot!(buffer_to_string(&buf));

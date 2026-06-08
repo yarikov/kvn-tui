@@ -1,0 +1,6 @@
+---
+source: src/ui/widgets.rs
+assertion_line: 335
+expression: buffer_to_string(&buf)
+---
+[DISCONNECTED] [Global] [Geo: 2026-05-31 13:41] Connection failed: sing-box e...

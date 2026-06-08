@@ -53,7 +53,14 @@ fn draw_main(frame: &mut Frame, model: &Model, area: Rect) {
         .logs
         .iter()
         .skip(start)
-        .map(|l| Line::from(Span::styled(l.as_str(), Theme::normal())))
+        .map(|l| {
+            let style = if l.starts_with("[error]") {
+                Theme::error()
+            } else {
+                Theme::normal()
+            };
+            Line::from(Span::styled(l.as_str(), style))
+        })
         .collect();
 
     let logs = Paragraph::new(log_text)

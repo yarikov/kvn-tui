@@ -58,6 +58,9 @@ pub struct AppState {
     pub singbox_pid: Option<u32>,
 }
 
+/// Maximum number of log lines kept in the UI buffer.
+pub(crate) const MAX_LOG_LINES: usize = 1000;
+
 /// Application data model — no side effects.
 pub struct Model {
     pub overlay: Overlay,
@@ -76,6 +79,28 @@ pub struct Model {
 }
 
 impl Model {
+    /// Push a line to the log buffer, truncating if needed.
+    pub fn push_log(&mut self, line: String) {
+        self.logs.push_back(line);
+        if self.logs.len() > MAX_LOG_LINES {
+            self.logs.pop_front();
+        }
+        self.log_scroll = self.logs.len().saturating_sub(1);
+    }
+
+    /// Set application status and also log it to the logs panel.
+    pub fn set_status_and_log(&mut self, status: AppStatus) {
+        let text = status.text();
+        if !text.is_empty() {
+            let prefix = match &status {
+                AppStatus::Info(_) => "[app]",
+                AppStatus::Error(_) => "[error]",
+            };
+            self.push_log(format!("{} {}", prefix, text));
+        }
+        self.status = status;
+    }
+
     /// Initialize application state and load persisted configuration.
     pub fn new() -> anyhow::Result<Self> {
         let config = load_config().unwrap_or_default();
@@ -86,12 +111,12 @@ impl Model {
 
         let (connection, selected, status) = Self::resolve_startup_state(&config, selected);
 
-        Ok(Self {
+        let mut model = Self {
             overlay: Overlay::None,
             connection,
             config,
             selected,
-            status,
+            status: AppStatus::Info(String::new()),
             singbox_pid: None,
             active_profile_id: None,
             routing_selected: 0,
@@ -100,7 +125,13 @@ impl Model {
             geo_updating: false,
             needs_redraw: false,
             should_quit: false,
-        })
+        };
+        if status.text() == "Press ? for help" {
+            model.status = status;
+        } else {
+            model.set_status_and_log(status);
+        }
+        Ok(model)
     }
 
     /// Determine connection state, selection and status on startup.
@@ -314,7 +345,7 @@ mod tests {
     }
 
     #[test]
-    fn set_status_clears_error_and_mode() {
+    fn set_status_and_log_clears_error_and_mode() {
         let mut model = model_with_profiles(vec![]);
         model.overlay = Overlay::Error;
         model.status = AppStatus::Error("oops".into());
@@ -399,5 +430,36 @@ mod tests {
         // Save should not panic and must write into the temp directory.
         let _ = model.save();
         assert!(crate::infra::paths::profiles_path().unwrap().exists());
+    }
+
+    #[test]
+    fn push_log_truncates_and_updates_scroll() {
+        let mut model = Model::test_new(Config::default());
+        for i in 0..1005 {
+            model.push_log(format!("line {}", i));
+        }
+        assert_eq!(model.logs.len(), 1000);
+        assert_eq!(model.logs[0], "line 5");
+        assert_eq!(model.logs[999], "line 1004");
+        assert_eq!(model.log_scroll, 999);
+    }
+
+    #[test]
+    fn set_status_and_log_logs_with_prefix() {
+        let mut model = Model::test_new(Config::default());
+        model.set_status_and_log(AppStatus::Info("hello".into()));
+        assert_eq!(model.status.text(), "hello");
+        assert_eq!(model.logs.back().unwrap(), "[app] hello");
+
+        model.set_status_and_log(AppStatus::Error("oops".into()));
+        assert_eq!(model.status.text(), "oops");
+        assert_eq!(model.logs.back().unwrap(), "[error] oops");
+    }
+
+    #[test]
+    fn set_status_and_log_does_not_log_empty() {
+        let mut model = Model::test_new(Config::default());
+        model.set_status_and_log(AppStatus::Info("".into()));
+        assert!(model.logs.is_empty());
     }
 }
