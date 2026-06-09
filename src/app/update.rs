@@ -174,7 +174,7 @@ fn handle_main(model: &mut Model, key: KeyEvent) -> Vec<Effect> {
                 Some(GeoRegion::Ru) => 0,
                 Some(GeoRegion::Cn) => 1,
                 Some(GeoRegion::Ir) => 2,
-                Some(GeoRegion::Other) => 3,
+                Some(GeoRegion::Global) => 3,
                 None => 0,
             };
         }
@@ -340,7 +340,7 @@ fn handle_geo_region(model: &mut Model, key: KeyEvent) -> Vec<Effect> {
         GeoRegion::Ru,
         GeoRegion::Cn,
         GeoRegion::Ir,
-        GeoRegion::Other,
+        GeoRegion::Global,
     ];
     match key.code {
         KeyCode::Char('j') | KeyCode::Down => {
@@ -770,7 +770,7 @@ mod tests {
         model.geo_region_selected = 3; // Other
 
         let effects = handle_geo_region(&mut model, KeyEvent::from(KeyCode::Enter));
-        assert_eq!(model.config.settings.geo_region, Some(GeoRegion::Other));
+        assert_eq!(model.config.settings.geo_region, Some(GeoRegion::Global));
         assert_eq!(model.config.settings.routing_mode, RoutingMode::Global);
         assert_eq!(effects, vec![Effect::SaveConfig]);
     }

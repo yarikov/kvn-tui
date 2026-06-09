@@ -147,7 +147,7 @@ fn execute_daemon_effect(
                 .config
                 .settings
                 .geo_region
-                .unwrap_or(crate::config::profile::GeoRegion::Other);
+                .unwrap_or(crate::config::profile::GeoRegion::Global);
             thread::spawn(move || {
                 let result = match crate::infra::geo::GeoManager::new() {
                     Ok(gm) => match gm.update_if_needed(region) {

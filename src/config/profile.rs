@@ -20,7 +20,8 @@ impl std::fmt::Display for Protocol {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum GeoRegion {
-    Other,
+    #[serde(alias = "other")]
+    Global,
     Ru,
     Cn,
     Ir,
@@ -29,7 +30,7 @@ pub enum GeoRegion {
 impl GeoRegion {
     pub fn as_str(&self) -> &'static str {
         match self {
-            GeoRegion::Other => "other",
+            GeoRegion::Global => "global",
             GeoRegion::Ru => "ru",
             GeoRegion::Cn => "cn",
             GeoRegion::Ir => "ir",
@@ -70,7 +71,7 @@ impl RoutingMode {
                 RoutingMode::BypassIr,
                 RoutingMode::OnlyIr,
             ],
-            Some(GeoRegion::Other) | None => vec![RoutingMode::Global],
+            Some(GeoRegion::Global) | None => vec![RoutingMode::Global],
         }
     }
 
@@ -299,6 +300,19 @@ mod tests {
     }
 
     #[test]
+    fn geo_region_deserializes_old_other_alias() {
+        let json = r#""other""#;
+        let region: GeoRegion = serde_json::from_str(json).unwrap();
+        assert_eq!(region, GeoRegion::Global);
+    }
+
+    #[test]
+    fn geo_region_serializes_to_global() {
+        let json = serde_json::to_string(&GeoRegion::Global).unwrap();
+        assert_eq!(json, r#""global""#);
+    }
+
+    #[test]
     fn routing_mode_available() {
         assert_eq!(RoutingMode::available(None), vec![RoutingMode::Global]);
         assert_eq!(
@@ -326,7 +340,7 @@ mod tests {
             ]
         );
         assert_eq!(
-            RoutingMode::available(Some(GeoRegion::Other)),
+            RoutingMode::available(Some(GeoRegion::Global)),
             vec![RoutingMode::Global]
         );
     }

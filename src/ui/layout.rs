@@ -216,9 +216,14 @@ fn draw_geo_region(frame: &mut Frame, model: &Model, area: Rect) {
         GeoRegion::Ru,
         GeoRegion::Cn,
         GeoRegion::Ir,
-        GeoRegion::Other,
+        GeoRegion::Global,
     ];
-    let labels = ["Russia", "China", "Iran", "Other (Global only)"];
+    let labels = [
+        "🇷🇺 Russia",
+        "🇨🇳 China",
+        "🇮🇷 Iran",
+        "🌍 Global (no geo rules)",
+    ];
     let mut lines: Vec<Line> = vec![
         Line::from(Span::styled("Select geo region", Theme::accent())),
         Line::from(""),

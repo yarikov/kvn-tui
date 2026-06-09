@@ -152,7 +152,7 @@ The **TUI client** (`tui_client.rs`) additionally spawns:
 - `RoutingMode::OnlyRu` — only RU IPs/domains go through VPN; everything else is direct.
 - `RoutingMode::BypassCn` — CN IPs/domains bypass VPN (direct).
 - `RoutingMode::OnlyCn` — only CN IPs/domains go through VPN; everything else is direct.
-- The available routing modes depend on the selected **geo region** (`Ru`, `Cn`, or `Other`). `RoutingMode::available(region)` returns the list dynamically.
+- The available routing modes depend on the selected **geo region** (`Ru`, `Cn`, `Ir`, or `Global`). `RoutingMode::available(region)` returns the list dynamically.
 - Rule-sets are local `.srs` binary files downloaded to `~/.config/kvn-tui/geo/`.
 
 ### Clipboard Parsing
@@ -180,7 +180,7 @@ The **TUI client** (`tui_client.rs`) additionally spawns:
 - `settings.geo_region` (`Option<GeoRegion>`) controls which country rule-sets are downloaded and which routing modes are shown.
 - `GeoRegion::Ru` — download RU geoip/geosite, enable `Global` / `BypassRu` / `OnlyRu`.
 - `GeoRegion::Cn` — download CN geoip/geosite, enable `Global` / `BypassCn` / `OnlyCn`.
-- `GeoRegion::Other` — skip geo downloads, only `Global` mode is available.
+- `GeoRegion::Global` — skip geo downloads, only `Global` mode is available.
 - On first launch (when `geo_region` is `None`), a modal overlay forces the user to pick a region before the main UI is usable.
 - The region can be changed at runtime with the `o` keybinding.
 

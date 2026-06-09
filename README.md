@@ -19,7 +19,7 @@
 - **Vim-style navigation** — `j`/`k` to move, `g`/`G` to jump, `?` for help
 - **Profile management** — edit via `$EDITOR`, delete, and organize server profiles
 - **One-click paste** — import `vless://` share links directly from the Wayland clipboard
-- **Geo region selection** — choose Russia, China, or Other on first launch; only relevant routing modes and geo databases are shown/downloaded
+- **Geo region selection** — choose Russia, China, Iran, or Global on first launch; only relevant routing modes and geo databases are shown/downloaded
 - **Routing modes** — Global, Bypass RU, Only RU, Bypass CN, Only CN (powered by geoip/geosite rule-sets)
 - **Geo database updates** — download and update rule-sets from within the app
 - **External editor support** — open `profiles.json` in `$EDITOR` without leaving the TUI
@@ -221,10 +221,10 @@ The file contains your profile list and application settings (default profile, T
 
 When `auto_connect` is enabled, the application stores `last_connected_profile` and automatically connects to that profile on the next startup.
 
-`settings.geo_region` controls which country rule-sets are downloaded and which routing modes are available. Valid values: `ru`, `cn`, or `other`.
+`settings.geo_region` controls which country rule-sets are downloaded and which routing modes are available. Valid values: `ru`, `cn`, `ir`, or `global`.
 - `ru` — download RU geoip/geosite, enable Global / Bypass RU / Only RU
 - `cn` — download CN geoip/geosite, enable Global / Bypass CN / Only CN
-- `other` — skip geo downloads, only Global mode is available
+- `global` — skip geo downloads, only Global mode is available
 
 On the very first launch (or after upgrading from an older version without `geo_region`), a modal overlay forces you to pick a region before the main UI becomes usable.
 

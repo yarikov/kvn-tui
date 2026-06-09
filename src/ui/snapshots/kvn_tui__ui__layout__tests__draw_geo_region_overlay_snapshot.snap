@@ -10,10 +10,10 @@ expression: "snapshot_terminal(&model, 80, 20)"
 │               ┌ Geo Region ──────────────────────────────────┐               │
 │               │               Select geo region              │               │
 │               │                                              │               │
-│               │                    Russia                    │               │
-│               │                    > China                   │               │
-│               │                     Iran                     │               │
-│               │              Other (Global only)             │               │
+│               │                   🇷🇺  Russia                  │               │
+│               │                  > 🇨🇳  China                  │               │
+│               │                    🇮🇷  Iran                   │               │
+│               │           🌍  Global (no geo rules)           │               │
 │               │                                              │               │
 │               │    j/k navigate, Enter confirm, Esc cancel   │               │
 │               └──────────────────────────────────────────────┘               │

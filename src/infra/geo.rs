@@ -106,7 +106,7 @@ impl GeoManager {
         let meta = self.load_metadata().unwrap_or_default();
 
         match region {
-            GeoRegion::Other => Ok((false, false)),
+            GeoRegion::Global => Ok((false, false)),
             GeoRegion::Ru => {
                 let (geoip_ru, geosite_ru) = self.local_paths();
                 let geoip_missing = !geoip_ru.exists();
@@ -172,7 +172,7 @@ impl GeoManager {
         let mut meta = self.load_metadata().unwrap_or_default();
 
         match region {
-            GeoRegion::Other => return Ok(false),
+            GeoRegion::Global => return Ok(false),
             GeoRegion::Ru => {
                 let (geoip_ru, geosite_ru) = self.local_paths();
 
@@ -235,7 +235,7 @@ impl GeoManager {
     /// Full update flow: check then download if needed.
     /// Returns typed result describing what happened.
     pub fn update_if_needed(&self, region: GeoRegion) -> Result<GeoResult> {
-        if matches!(region, GeoRegion::Other) {
+        if matches!(region, GeoRegion::Global) {
             return Ok(GeoResult::UpToDate);
         }
 
