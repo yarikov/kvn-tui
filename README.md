@@ -242,6 +242,16 @@ Logs (both sing-box output and app status messages) are written to:
 
 ---
 
+## Roadmap to v1.0.0
+
+- **Kill switch support** — block all outbound traffic if the VPN connection drops unexpectedly
+- **All sing-box protocols** — extend beyond VLESS to support Shadowsocks, Trojan, VMess, Hysteria 2, and any other protocol sing-box supports
+- **DNS configuration** — custom DNS servers, routing rules, and strategy settings (e.g., DoH, DoT, fake-ip)
+- **Traffic statistics** — live bandwidth and connection stats in the TUI
+- **Import/Export profiles** — bulk import from subscription links and export profiles to shareable links
+
+---
+
 ## Author
 
 Created and maintained by [Dmitry Yarikov](https://github.com/yarikov) — <dmitry@yarikov.com>.
