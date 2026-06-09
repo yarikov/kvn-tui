@@ -6,7 +6,7 @@ This document contains project-specific context and conventions for AI coding ag
 
 ## Project Overview
 
-`kvn-tui` (v0.9.0) is a **terminal VPN client** for Arch Linux + Wayland. It is a Rust TUI application that manages VPN profiles, generates sing-box configurations, and orchestrates the `sing-box` binary as a child process. Navigation is vim-style (`j`/`k`/`g`/`G`).
+`kvn-tui` (v0.10.0) is a **terminal VPN client** for Arch Linux + Wayland. It is a Rust TUI application that manages VPN profiles, generates sing-box configurations, and orchestrates the `sing-box` binary as a child process. Navigation is vim-style (`j`/`k`/`g`/`G`).
 
 The app does **not** implement VPN protocols itself. It is a configuration generator and process manager around the external `sing-box` binary.
 
