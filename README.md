@@ -87,7 +87,7 @@ yay -S kvn-tui-bin
 
 ### Omarchy Setup
 
-If you use [Omarchy](https://omarchy.org/), run this after installation to enable Waybar and Walker integration:
+If you use [Omarchy](https://omarchy.org/), run this after installation to enable Waybar integration:
 
 ```bash
 kvn-tui --install-omarchy
@@ -95,14 +95,17 @@ kvn-tui --install-omarchy
 
 This automatically:
 
+- Installs the `omarchy-launch-kvn-tui` launcher script to `~/.local/bin/`
 - Adds a `custom/kvn-tui` module to Waybar (shows connected/disconnected status, clicks open the TUI)
-- Installs a `.desktop` entry so the app appears in Walker (`Super + Space`)
-- Optionally adds `kvn-tui` to Hyprland autostart (`~/.config/hypr/autostart.conf`) — choose a regular workspace (1–5) or `special:kvn-tui`
-- Optionally adds a Hyprland keybinding to toggle the `special:kvn-tui` workspace (default: `Super + Ctrl + K`)
+- Optionally adds the kvn-tui **daemon** to Hyprland autostart (`~/.config/hypr/autostart.conf`) — runs headlessly on login
+- Optionally adds a Hyprland keybinding to open the TUI (default: `Super + Ctrl + K`)
+- Configures the TUI window to open centered and floating
 - Backs up your Waybar and Hyprland configs before modifying them
 - Restarts Waybar to apply changes
 
 > The installer is idempotent — running it again will skip already-applied changes.
+
+After installation, the daemon starts automatically on login. Open the TUI on demand via the Waybar module, the keybinding, or by running `omarchy-launch-kvn-tui`.
 
 ### Build & Install from Source
 

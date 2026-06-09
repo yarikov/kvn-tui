@@ -5,6 +5,7 @@ WAYBAR_CONFIG="${HOME}/.config/waybar/config.jsonc"
 WAYBAR_STYLE="${HOME}/.config/waybar/style.css"
 HYPR_AUTOSTART="${HOME}/.config/hypr/autostart.conf"
 HYPR_BINDINGS="${HOME}/.config/hypr/bindings.conf"
+HYPR_MAIN="${HOME}/.config/hypr/hyprland.conf"
 
 backup_file() {
   local file="$1"
@@ -27,6 +28,7 @@ backup_file "$WAYBAR_CONFIG"
 backup_file "$WAYBAR_STYLE"
 backup_file "$HYPR_AUTOSTART"
 backup_file "$HYPR_BINDINGS"
+backup_file "$HYPR_MAIN"
 
 # ── Waybar module ──
 if [ -f "$WAYBAR_CONFIG" ]; then
@@ -51,7 +53,7 @@ if [ -f "$WAYBAR_CONFIG" ]; then
     "exec": "sudo kvn-tui --waybar-status",
     "return-type": "json",
     "interval": 5,
-    "on-click": "omarchy-launch-or-focus-tui sudo kvn-tui",
+    "on-click": "omarchy-launch-kvn-tui",
     "tooltip-format": "kvn-tui VPN client"
   }
 }
@@ -85,96 +87,69 @@ else
   echo "Warning: waybar style not found at $WAYBAR_STYLE"
 fi
 
-# ── Desktop entry for Walker / Super+Space ──
-DESKTOP_FILE="${HOME}/.local/share/applications/kvn-tui.desktop"
-if [ ! -f "$DESKTOP_FILE" ]; then
-  echo "Installing desktop entry..."
-  mkdir -p "$(dirname "$DESKTOP_FILE")"
-  cat > "$DESKTOP_FILE" <<'EOF'
-[Desktop Entry]
-Name=kvn-tui
-Comment=Terminal VPN client
-Exec=omarchy-launch-or-focus-tui sudo kvn-tui
-Type=Application
-Terminal=false
-Categories=Network;VPN;
-Keywords=vpn;network;sing-box;vless;
-Icon=network-vpn-symbolic
+# ── Launcher script ──
+LAUNCHER_SCRIPT="${HOME}/.local/bin/omarchy-launch-kvn-tui"
+if [ ! -f "$LAUNCHER_SCRIPT" ]; then
+  echo "Installing launcher script..."
+  mkdir -p "$(dirname "$LAUNCHER_SCRIPT")"
+  cat > "$LAUNCHER_SCRIPT" <<'EOF'
+#!/bin/bash
+exec omarchy-launch-or-focus "org.omarchy.kvn-tui" \
+  "uwsm-app -- xdg-terminal-exec --app-id=org.omarchy.kvn-tui -e sudo kvn-tui"
 EOF
+  chmod +x "$LAUNCHER_SCRIPT"
 else
-  echo "Desktop entry already present."
+  echo "Launcher script already present."
 fi
 
-# ── Hyprland autostart ──
+# ── Hyprland autostart (daemon) ──
 autostart_already=false
-is_special_workspace=false
 
-if [ -f "$HYPR_AUTOSTART" ] && grep -q "omarchy-launch-or-focus-tui sudo kvn-tui" "$HYPR_AUTOSTART"; then
+if [ -f "$HYPR_AUTOSTART" ] && grep -q "kvn-tui --daemon" "$HYPR_AUTOSTART"; then
   autostart_already=true
   echo "Hyprland autostart already configured."
-  if grep -q "special:kvn-tui" "$HYPR_AUTOSTART"; then
-    is_special_workspace=true
-  fi
 fi
 
 if [ "$autostart_already" = false ]; then
   echo
-  read -r -p "Enable kvn-tui autostart on login? [y/N] " autostart_answer
+  read -r -p "Enable kvn-tui daemon autostart on login? [y/N] " autostart_answer
   if [[ "$autostart_answer" =~ ^[Yy]$ ]]; then
-    echo
-    echo "Choose workspace:"
-    echo "  1-5  — regular workspace number"
-    echo "  s    — special:kvn-tui (default)"
-    read -r -p "Workspace [s]: " workspace_answer
-    workspace_answer=${workspace_answer:-s}
-
-    case "$workspace_answer" in
-      1|2|3|4|5)
-        exec_line="exec-once = [workspace $workspace_answer silent] omarchy-launch-or-focus-tui sudo kvn-tui"
-        ;;
-      s|S|kvn-tui|"")
-        exec_line="exec-once = [workspace special:kvn-tui silent] omarchy-launch-or-focus-tui sudo kvn-tui"
-        is_special_workspace=true
-        ;;
-      *)
-        echo "Invalid choice. Skipping autostart."
-        exec_line=""
-        ;;
-    esac
-
-    if [ -n "$exec_line" ]; then
-      echo "Adding kvn-tui to hyprland autostart..."
-      mkdir -p "$(dirname "$HYPR_AUTOSTART")"
-      printf '\n%s\n' "$exec_line" >> "$HYPR_AUTOSTART"
-    fi
+    echo "Adding kvn-tui daemon to hyprland autostart..."
+    mkdir -p "$(dirname "$HYPR_AUTOSTART")"
+    printf '\n%s\n' "exec-once = sudo kvn-tui --daemon" >> "$HYPR_AUTOSTART"
   else
     echo "Skipping autostart."
   fi
 fi
 
-# ── Hyprland keybinding (only relevant for special workspace) ──
-if [ "$is_special_workspace" = true ]; then
-  if [ -f "$HYPR_BINDINGS" ] && grep -q "togglespecialworkspace, kvn-tui" "$HYPR_BINDINGS"; then
-    echo "Hyprland keybinding already configured."
-  else
+# ── Hyprland keybinding ──
+if [ -f "$HYPR_BINDINGS" ] && grep -q "omarchy-launch-kvn-tui" "$HYPR_BINDINGS"; then
+  echo "Hyprland keybinding already configured."
+else
+  echo
+  read -r -p "Add Hyprland keybinding to launch kvn-tui? [y/N] " binding_answer
+  if [[ "$binding_answer" =~ ^[Yy]$ ]]; then
     echo
-    read -r -p "Add Hyprland keybinding to toggle kvn-tui workspace? [y/N] " binding_answer
-    if [[ "$binding_answer" =~ ^[Yy]$ ]]; then
-      echo
-      echo "Press Enter to accept the default, or type a custom Hyprland keybinding."
-      echo "Examples: SUPER CTRL, K    SUPER SHIFT, V    SUPER ALT, K"
-      read -r -p "Keybinding (default: SUPER CTRL, K): " binding_input
-      binding_input=${binding_input:-SUPER CTRL, K}
+    echo "Press Enter to accept the default, or type a custom Hyprland keybinding."
+    echo "Examples: SUPER CTRL, K    SUPER SHIFT, V    SUPER ALT, K"
+    read -r -p "Keybinding (default: SUPER CTRL, K): " binding_input
+    binding_input=${binding_input:-SUPER CTRL, K}
 
-      binding_line="bind = ${binding_input}, togglespecialworkspace, kvn-tui"
+    binding_line="bind = ${binding_input}, exec, omarchy-launch-kvn-tui"
 
-      echo "Adding Hyprland keybinding ($binding_input)..."
-      mkdir -p "$(dirname "$HYPR_BINDINGS")"
-      printf '\n%s\n' "$binding_line" >> "$HYPR_BINDINGS"
-    else
-      echo "Skipping keybinding."
-    fi
+    echo "Adding Hyprland keybinding ($binding_input)..."
+    mkdir -p "$(dirname "$HYPR_BINDINGS")"
+    printf '\n%s\n' "$binding_line" >> "$HYPR_BINDINGS"
+  else
+    echo "Skipping keybinding."
   fi
+fi
+
+# ── Hyprland window rule ──
+HYPR_MAIN="${HOME}/.config/hypr/hyprland.conf"
+if [ -f "$HYPR_MAIN" ] && ! grep -q "org.omarchy.kvn-tui" "$HYPR_MAIN"; then
+  echo "Adding Hyprland window rule for kvn-tui..."
+  printf '\n# kvn-tui: float, center, and size like other Omarchy TUIs\nwindowrule = tag +floating-window, match:class org.omarchy.kvn-tui\n' >> "$HYPR_MAIN"
 fi
 
 # ── Restart waybar ──
