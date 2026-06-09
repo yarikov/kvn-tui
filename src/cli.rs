@@ -14,6 +14,9 @@ pub struct Cli {
         help = "Install Omarchy integration (Waybar module and desktop entry for Walker)"
     )]
     install_omarchy: bool,
+
+    #[arg(long, help = "Run the headless daemon that manages sing-box")]
+    pub daemon: bool,
 }
 
 /// Run the embedded Omarchy integration installer script.
@@ -33,9 +36,14 @@ fn install_omarchy() -> Result<()> {
 ///
 /// Returns `Some(Ok(()))` or `Some(Err(_))` if a CLI action was handled
 /// and the application should exit. Returns `None` if the TUI should start.
+#[allow(dead_code)]
 pub fn try_run() -> Option<Result<()>> {
     let cli = Cli::parse();
+    try_run_from_parsed(&cli)
+}
 
+/// Same as `try_run` but takes an already-parsed `Cli`.
+pub fn try_run_from_parsed(cli: &Cli) -> Option<Result<()>> {
     if cli.install_omarchy {
         return Some(install_omarchy());
     }
@@ -68,5 +76,11 @@ mod tests {
     fn install_omarchy_flag_detected() {
         let cli = Cli::parse_from(["kvn-tui", "--install-omarchy"]);
         assert!(cli.install_omarchy);
+    }
+
+    #[test]
+    fn daemon_flag_detected() {
+        let cli = Cli::parse_from(["kvn-tui", "--daemon"]);
+        assert!(cli.daemon);
     }
 }

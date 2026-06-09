@@ -1,117 +1,100 @@
-use std::io;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Sender, channel};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
 use anyhow::Result;
-use crossterm::ExecutableCommand;
-use crossterm::event;
-use crossterm::terminal::{
-    EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
-};
-use ratatui::Terminal;
-use ratatui::backend::CrosstermBackend;
 
 use crate::app::effect::Effect;
-use crate::app::model::Model;
-use crate::app::msg::{GeoResult, Msg};
+use crate::app::model::{AppStatus, ConnectionState, Model, Overlay};
+use crate::app::msg::{GeoResult, Msg, StateSnapshot};
 use crate::app::update::update;
 use crate::infra::process_handle::ProcessHandle;
+use crate::ipc::{IpcServer, cleanup_socket};
 use crate::services::LogTailer;
 
-/// Run the TUI main loop until the user requests quit.
+/// Run the daemon main loop.
 pub fn run(mut model: Model) -> Result<()> {
     let (tx, rx) = channel::<Msg>();
-    let event_reading_enabled = Arc::new(AtomicBool::new(true));
+    let ipc_server = IpcServer::bind(tx.clone())?;
 
-    spawn_event_reader(tx.clone(), event_reading_enabled.clone());
     spawn_ticker(tx.clone());
     spawn_suspend_watcher(tx.clone());
-
-    enable_raw_mode()?;
-    let mut stdout = io::stdout();
-    stdout.execute(EnterAlternateScreen)?;
-    let backend = CrosstermBackend::new(stdout);
-    let mut terminal = Terminal::new(backend)?;
 
     let mut log_tailer = LogTailer::new(crate::infra::paths::singbox_log_path());
 
     let process_slot = Arc::new(Mutex::new(None));
 
     let result = run_loop(
-        &mut terminal,
         &mut model,
         rx,
         &tx,
         &mut log_tailer,
         process_slot.clone(),
-        event_reading_enabled,
+        &ipc_server,
     );
 
-    // Ensure sing-box is stopped before exiting.
+    // Cleanup
     if let Some(mut handle) = process_slot.lock().unwrap().take() {
         if let Err(e) = handle.kill_and_wait() {
             tracing::warn!("Failed to stop sing-box on exit: {}", e);
         }
     }
-
-    disable_raw_mode()?;
-    terminal.backend_mut().execute(LeaveAlternateScreen)?;
+    cleanup_socket();
 
     result
 }
 
 fn run_loop(
-    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     model: &mut Model,
     rx: std::sync::mpsc::Receiver<Msg>,
     tx: &Sender<Msg>,
     log_tailer: &mut LogTailer,
     process_slot: Arc<Mutex<Option<ProcessHandle>>>,
-    event_reading_enabled: Arc<AtomicBool>,
+    ipc_server: &IpcServer,
 ) -> Result<()> {
     loop {
-        if model.needs_redraw {
-            terminal.clear()?;
-            model.needs_redraw = false;
-        }
-        terminal.draw(|f| crate::ui::draw(f, model))?;
-
         let msg = rx.recv()?;
         let effects = update(model, msg);
+        let mut should_broadcast = false;
+
+        for effect in &effects {
+            if matches!(
+                effect,
+                Effect::Connect { .. }
+                    | Effect::Disconnect
+                    | Effect::DownloadGeo
+                    | Effect::WriteState
+                    | Effect::SaveConfig
+                    | Effect::PasteClipboard
+                    | Effect::BroadcastState
+            ) {
+                should_broadcast = true;
+            }
+        }
 
         for effect in effects {
-            execute_effect(
-                effect,
-                &rx,
-                tx,
-                model,
-                terminal,
-                log_tailer,
-                &process_slot,
-                &event_reading_enabled,
-            )?;
+            execute_daemon_effect(effect, tx, model, log_tailer, &process_slot)?;
         }
 
         if model.should_quit {
             break;
+        }
+
+        if should_broadcast {
+            ipc_server.broadcast(&build_snapshot(model));
         }
     }
     Ok(())
 }
 
 #[allow(clippy::too_many_arguments)]
-fn execute_effect(
+fn execute_daemon_effect(
     effect: Effect,
-    rx: &std::sync::mpsc::Receiver<Msg>,
     tx: &Sender<Msg>,
     model: &mut Model,
-    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     log_tailer: &mut LogTailer,
     process_slot: &Arc<Mutex<Option<ProcessHandle>>>,
-    event_reading_enabled: &Arc<AtomicBool>,
 ) -> Result<()> {
     match effect {
         Effect::Connect { profile, settings } => {
@@ -119,8 +102,12 @@ fn execute_effect(
                 if let Err(e) = handle.kill_and_wait() {
                     tracing::warn!("Failed to stop sing-box process: {}", e);
                 }
+            } else if let Some(pid) = model.singbox_pid {
+                unsafe {
+                    let _ = libc::kill(pid as i32, libc::SIGTERM);
+                }
             }
-            model.connection = crate::app::model::ConnectionState::ConnectPending;
+            model.connection = ConnectionState::ConnectPending;
             let tx = tx.clone();
             let slot = process_slot.clone();
             thread::spawn(
@@ -141,12 +128,16 @@ fn execute_effect(
                 if let Err(e) = handle.kill_and_wait() {
                     tracing::warn!("Failed to stop sing-box process: {}", e);
                 }
+            } else if let Some(pid) = model.singbox_pid {
+                unsafe {
+                    let _ = libc::kill(pid as i32, libc::SIGTERM);
+                }
             }
-            model.connection = crate::app::model::ConnectionState::Idle;
+            model.connection = ConnectionState::Idle;
             model.active_profile_id = None;
             model.singbox_pid = None;
-            model.set_status_and_log(crate::app::model::AppStatus::Info("Disconnected".into()));
-            model.overlay = crate::app::model::Overlay::None;
+            model.set_status_and_log(AppStatus::Info("Disconnected".into()));
+            model.overlay = Overlay::None;
             crate::services::waybar::write_state(model);
         }
         Effect::DownloadGeo => {
@@ -178,76 +169,39 @@ fn execute_effect(
         }
         Effect::SaveConfig => {
             if let Err(e) = model.save() {
-                model.set_status_and_log(crate::app::model::AppStatus::Error(format!(
-                    "Failed to save config: {}",
-                    e
-                )));
+                model.set_status_and_log(AppStatus::Error(format!("Failed to save config: {}", e)));
             }
-        }
-        Effect::OpenEditor(idx) => {
-            event_reading_enabled.store(false, Ordering::Relaxed);
-            disable_raw_mode()?;
-            terminal.backend_mut().execute(LeaveAlternateScreen)?;
-            let result = crate::infra::editor::open_profiles_editor(idx).map_err(|e| e.to_string());
-            enable_raw_mode()?;
-            terminal.backend_mut().execute(EnterAlternateScreen)?;
-            terminal.clear()?;
-            event_reading_enabled.store(true, Ordering::Relaxed);
-            // Drain leaked input events but preserve state messages.
-            let mut to_requeue = Vec::new();
-            while let Ok(msg) = rx.try_recv() {
-                match msg {
-                    Msg::Key(_) | Msg::Resize => {}
-                    other => to_requeue.push(other),
-                }
-            }
-            for msg in to_requeue {
-                let _ = tx.send(msg);
-            }
-            let _ = tx.send(Msg::EditorClosed(result));
         }
         Effect::PasteClipboard => {
-            let tx = tx.clone();
-            thread::spawn(move || {
-                let result =
-                    crate::infra::clipboard::read_clipboard_text().map_err(|e| e.to_string());
-                let _ = tx.send(Msg::ClipboardRead(result));
-            });
+            // In daemon mode paste is handled via IpcCommand::Paste directly;
+            // this variant should not normally reach the daemon.
         }
+        Effect::BroadcastState => {}
         Effect::Quit => {
             model.should_quit = true;
+        }
+        Effect::OpenEditor(_) => {
+            // Editor is a TUI-local operation; daemon ignores it.
         }
     }
     Ok(())
 }
 
-fn spawn_event_reader(tx: Sender<Msg>, reading_enabled: Arc<AtomicBool>) {
-    thread::spawn(move || {
-        loop {
-            if !reading_enabled.load(Ordering::Relaxed) {
-                thread::sleep(Duration::from_millis(50));
-                continue;
-            }
-            match event::poll(Duration::from_millis(100)) {
-                Ok(true) => match event::read() {
-                    Ok(event::Event::Key(key)) => {
-                        if tx.send(Msg::Key(key)).is_err() {
-                            break;
-                        }
-                    }
-                    Ok(event::Event::Resize(_, _)) => {
-                        if tx.send(Msg::Resize).is_err() {
-                            break;
-                        }
-                    }
-                    Ok(_) => {}
-                    Err(_) => break,
-                },
-                Ok(false) => {}
-                Err(_) => break,
-            }
-        }
-    });
+fn build_snapshot(model: &Model) -> StateSnapshot {
+    StateSnapshot {
+        connection: model.connection,
+        status: model.status.text().to_string(),
+        status_is_error: matches!(model.status, AppStatus::Error(_)),
+        singbox_pid: model.singbox_pid,
+        active_profile_id: model.active_profile_id.map(|id| id.to_string()),
+        selected: model.selected,
+        routing_selected: model.routing_selected,
+        geo_region_selected: model.geo_region_selected,
+        geo_updating: model.geo_updating,
+        overlay: model.overlay,
+        profiles: model.config.profiles.clone(),
+        settings: model.config.settings.clone(),
+    }
 }
 
 fn spawn_ticker(tx: Sender<Msg>) {

@@ -14,5 +14,6 @@ pub enum Effect {
     SaveConfig,
     OpenEditor(usize),
     PasteClipboard,
+    BroadcastState,
     Quit,
 }

@@ -58,9 +58,10 @@ Under the hood, `kvn-tui` is built entirely in **Rust** and leverages the follow
 
 ### Architecture Highlights
 
-- **TEA (The Elm Architecture)** — the application is split into pure `Model` / `update` / `Effect` / `Runtime` layers. Business logic in `update.rs` is fully synchronous and side-effect-free, making it easy to unit-test.
+- **Daemon + TUI client** — the application splits into a headless daemon (owns sing-box, config, and state) and a TUI client (renders UI and forwards input). They communicate over a Unix domain socket via NDJSON. Running `sudo kvn-tui` auto-starts the daemon in the background if it is not already running.
+- **TEA (The Elm Architecture)** — the daemon's business logic is split into pure `Model` / `update` / `Effect` layers. `update.rs` is fully synchronous and side-effect-free, making it easy to unit-test.
 - **sing-box runner** — dynamically generates valid sing-box 1.12+ JSON configurations from profile data, validates them with `sing-box check`, and spawns the process with automatic crash detection.
-- **Background services** — event reader, ticker, suspend watcher, and effect workers run in dedicated threads communicating through an `mpsc` channel. Log tailing and geo updates are driven by messages, not shared mutable state.
+- **Background services** — event reader, ticker, suspend watcher, IPC server, and effect workers run in dedicated threads inside the daemon communicating through an `mpsc` channel. Log tailing and geo updates are driven by messages, not shared mutable state.
 - **Atomic config writes** — `profiles.json` is written to a temporary file and renamed to prevent corruption.
 - **State I/O** — connection status and active profile are persisted to `state.json` for waybar integration and crash recovery.
 
@@ -199,7 +200,8 @@ sudo kvn-tui
 | `a` | Toggle auto-connect |
 | `r` | Reconnect |
 | `s` | Stop / disconnect |
-| `q` / `Esc` | Quit (confirms if connected) |
+| `q` / `Esc` | Detach TUI — daemon and sing-box keep running. If an overlay is open, closes the overlay first |
+| `Ctrl+C` | Quit — stop daemon and sing-box, then exit |
 | `?` | Show help |
 
 ---
@@ -229,7 +231,7 @@ Geo rule-set databases are cached in:
 ~/.config/kvn-tui/geo/
 ```
 
-Logs are written to:
+Logs (both sing-box output and app status messages) are written to:
 
 ```
 ~/.config/kvn-tui/logs/sing-box.log

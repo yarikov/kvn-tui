@@ -1,6 +1,14 @@
-use std::fs::File;
-use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
+use std::fs::{File, OpenOptions};
+use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::path::PathBuf;
+
+/// Append an app-generated log line to the shared log file.
+pub fn append_app_log(line: &str) {
+    let path = crate::infra::paths::singbox_log_path();
+    if let Ok(mut file) = OpenOptions::new().append(true).create(true).open(&path) {
+        let _ = writeln!(file, "{}", line);
+    }
+}
 
 /// Tails the sing-box log file and returns new lines.
 pub struct LogTailer {
@@ -37,7 +45,12 @@ impl LogTailer {
         if file.seek(SeekFrom::Start(self.pos)).is_ok() {
             let mut reader = BufReader::new(file);
             for line in reader.by_ref().lines().map_while(Result::ok) {
-                if !line.trim().is_empty() {
+                if line.trim().is_empty() {
+                    continue;
+                }
+                if line.starts_with('[') {
+                    lines.push(line);
+                } else {
                     lines.push(format!("[sing-box] {}", line));
                 }
             }
@@ -68,6 +81,22 @@ mod tests {
         assert_eq!(lines.len(), 2);
         assert!(lines[0].contains("log line 1"));
         assert!(lines[1].contains("log line 2"));
+    }
+
+    #[test]
+    fn tail_preserves_app_prefix() {
+        let mut temp = tempfile::NamedTempFile::new().unwrap();
+        writeln!(temp, "[app] hello").unwrap();
+        writeln!(temp, "[geo] updated").unwrap();
+        writeln!(temp, "plain sing-box line").unwrap();
+        let path = temp.path().to_path_buf();
+
+        let mut tailer = LogTailer::test_new(path);
+        let lines = tailer.tail();
+        assert_eq!(lines.len(), 3);
+        assert_eq!(lines[0], "[app] hello");
+        assert_eq!(lines[1], "[geo] updated");
+        assert_eq!(lines[2], "[sing-box] plain sing-box line");
     }
 
     #[test]

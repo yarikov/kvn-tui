@@ -6,20 +6,19 @@ use crate::config::profile::{Config, Profile};
 use crate::config::{load_config, save_config};
 
 /// UI overlay shown on top of the main screen.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum Overlay {
     #[default]
     None,
     Help,
     ConfirmDelete,
-    ConfirmQuit,
     Error,
     RoutingMode,
     GeoRegions,
 }
 
 /// VPN connection state.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum ConnectionState {
     #[default]
     Idle,
@@ -98,7 +97,9 @@ impl Model {
                 AppStatus::Info(_) => "[app]",
                 AppStatus::Error(_) => "[error]",
             };
-            self.push_log(format!("{} {}", prefix, text));
+            let line = format!("{} {}", prefix, text);
+            crate::services::log_tailer::append_app_log(&line);
+            self.push_log(line);
         }
         self.status = status;
     }
@@ -108,10 +109,31 @@ impl Model {
         let config = load_config().unwrap_or_default();
         let selected = config.resolve_selected();
 
-        // Reset state to disconnected on startup in case of previous crash.
-        crate::services::waybar::clear_state();
+        // Detect a background session left by a previous "hide" (q) action.
+        let background = crate::services::waybar::detect_background_session();
+        if background.is_none() {
+            // Reset state to disconnected on startup in case of previous crash.
+            crate::services::waybar::clear_state();
+        }
 
-        let (mut connection, selected, mut status) = Self::resolve_startup_state(&config, selected);
+        let (mut connection, selected, mut status, bg_pid, bg_id) =
+            if let Some((pid, profile_id, ref profile_name)) = background {
+                let idx = config
+                    .profiles
+                    .iter()
+                    .position(|p| p.id == profile_id)
+                    .unwrap_or(selected);
+                (
+                    ConnectionState::Connected,
+                    idx,
+                    AppStatus::Info(format!("Connected to {} (background)", profile_name)),
+                    Some(pid),
+                    Some(profile_id),
+                )
+            } else {
+                let (c, s, st) = Self::resolve_startup_state(&config, selected);
+                (c, s, st, None, None)
+            };
 
         // Block auto-connect until the user has picked a geo region.
         if config.settings.geo_region.is_none() {
@@ -125,8 +147,8 @@ impl Model {
             config,
             selected,
             status: AppStatus::Info(String::new()),
-            singbox_pid: None,
-            active_profile_id: None,
+            singbox_pid: bg_pid,
+            active_profile_id: bg_id,
             routing_selected: 0,
             geo_region_selected: 0,
             logs: VecDeque::new(),
@@ -144,6 +166,32 @@ impl Model {
             model.set_status_and_log(status);
         }
         Ok(model)
+    }
+
+    /// Build a Model from an already-loaded config (used by the TUI client
+    /// after it reloads profiles.json independently of the daemon).
+    pub fn from_config(config: Config) -> Self {
+        let selected = config.resolve_selected();
+        let mut model = Self {
+            overlay: Overlay::None,
+            connection: ConnectionState::Idle,
+            config,
+            selected,
+            status: AppStatus::Info(String::new()),
+            singbox_pid: None,
+            active_profile_id: None,
+            routing_selected: 0,
+            geo_region_selected: 0,
+            logs: VecDeque::new(),
+            log_scroll: 0,
+            geo_updating: false,
+            needs_redraw: false,
+            should_quit: false,
+        };
+        if model.config.settings.geo_region.is_none() {
+            model.overlay = Overlay::GeoRegions;
+        }
+        model
     }
 
     /// Determine connection state, selection and status on startup.
@@ -430,6 +478,7 @@ mod tests {
 
     #[test]
     fn new_blocks_auto_connect_when_geo_region_none() {
+        let _guard = crate::test_helpers::ENV_LOCK.lock().unwrap();
         let dir = tempfile::tempdir().unwrap();
         unsafe { std::env::set_var("XDG_CONFIG_HOME", dir.path()) };
 
@@ -456,6 +505,7 @@ mod tests {
 
     #[test]
     fn model_save_roundtrip() {
+        let _guard = crate::test_helpers::ENV_LOCK.lock().unwrap();
         let dir = tempfile::tempdir().unwrap();
         unsafe { std::env::set_var("XDG_CONFIG_HOME", dir.path()) };
 

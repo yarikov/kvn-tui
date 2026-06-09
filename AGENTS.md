@@ -22,9 +22,12 @@ The app does **not** implement VPN protocols itself. It is a configuration gener
 | `msg` | `src/app/msg.rs` | Message enum (`Msg`) — all external events (keys, ticks, logs, geo, resume, etc.) |
 | `update` | `src/app/update.rs` | Pure `update(model, msg) -> Vec<Effect>` — business logic, input routing, mode transitions |
 | `effect` | `src/app/effect.rs` | Effect enum — declarative description of side effects to be executed by runtime |
-| `runtime` | `src/runtime.rs` | TUI main loop: owns `mpsc` channel, spawns threads, renders UI, executes effects |
+| `daemon` | `src/daemon.rs` | Headless daemon: owns sing-box process, config, mpsc channel, IPC server, background services |
+| `tui_client` | `src/tui_client.rs` | TUI client: connects to daemon via Unix socket, renders UI, forwards input, reads clipboard |
+| `ipc` | `src/ipc.rs` | NDJSON protocol over Unix domain socket for daemon ↔ TUI client communication |
+| `test_helpers` | `src/test_helpers.rs` | Shared test utilities (e.g. `model_with_profiles`)
 | `process_handle` | `src/infra/process_handle.rs` | Wrapper around `std::process::Child` for sing-box lifecycle |
-| `ui` | `src/ui.rs`, `src/ui/layout.rs`, `src/ui/widgets.rs`, `src/ui/styles.rs`, `src/ui/nav.rs` | ratatui rendering, layout splits, widget definitions, color theme, navigation helpers |
+| `ui` | `src/ui.rs`, `src/ui/layout.rs`, `src/ui/widgets.rs`, `src/ui/styles.rs`, `src/ui/nav.rs` | ratatui rendering (used by TUI client only), layout splits, widget definitions, color theme, navigation helpers |
 | `config` | `src/config.rs`, `src/config/profile.rs` | JSON config I/O, profile struct definitions |
 | `singbox` | `src/singbox.rs`, `src/singbox/config.rs`, `src/singbox/runner.rs` | Process lifecycle: write temp config, run `sing-box check`, spawn `sing-box run`, kill on disconnect |
 | `clipboard` | `src/infra/clipboard.rs` | Wayland clipboard integration (`wl-paste`), VLESS share link parsing (`vless://`) |
@@ -33,8 +36,8 @@ The app does **not** implement VPN protocols itself. It is a configuration gener
 | `paths` | `src/infra/paths.rs` | XDG directory resolution (`~/.config/kvn-tui/`), atomic path construction |
 | `waybar` | `src/services/waybar.rs` | Read/write `state.json` for waybar integration and crash recovery |
 | `suspend` | `src/services/suspend.rs` | D-Bus listener for `systemd-logind` `PrepareForSleep` signals (zbus) |
-| `services` | `src/services.rs`, `src/services/log_tailer.rs`, `src/services/waybar.rs`, `src/services/suspend.rs` | Background services: log tailer, waybar state I/O, suspend watcher |
-| `infra` | `src/infra.rs`, `src/infra/clipboard.rs`, `src/infra/editor.rs`, `src/infra/geo.rs`, `src/infra/paths.rs`, `src/infra/process_handle.rs`, `src/infra/user_env.rs` | Infrastructure utilities: clipboard, editor, geo, paths, process handle, user env |
+| `services` | `src/services.rs`, `src/services/log_tailer.rs`, `src/services/waybar.rs`, `src/services/suspend.rs` | Background services: log tailer, waybar state I/O, suspend watcher (all run inside the daemon) |
+| `infra` | `src/infra.rs`, `src/infra/clipboard.rs`, `src/infra/editor.rs`, `src/infra/geo.rs`, `src/infra/paths.rs`, `src/infra/process_handle.rs`, `src/infra/user_env.rs` | Infrastructure utilities: clipboard (TUI client), editor (TUI client), geo, paths, process handle, user env |
 
 ---
 
@@ -118,18 +121,25 @@ The application follows **The Elm Architecture (TEA)**:
 2. **Messages** (`app/msg.rs`) represent every external event — keyboard input, timer ticks, log lines, geo updates, system resume.
 3. **Update** (`app/update.rs`) is a pure function `update(model, msg) -> Vec<Effect>`: no I/O, no threads, no system calls. All business logic lives here.
 4. **Effects** (`app/effect.rs`) are declarative descriptions of side effects (`Connect`, `DownloadGeo`, `SaveConfig`, `Quit`, etc.).
-5. **Runtime** (`runtime.rs`) owns the `mpsc` channel, spawns background threads (event reader, ticker, suspend watcher), renders the UI, and executes effects by performing the actual I/O. The sing-box process handle lives in an `Arc<Mutex<Option<ProcessHandle>>>` inside the runtime, not in `Model`.
+5. **Daemon** (`daemon.rs`) owns the canonical `Model`, the `mpsc` channel, the sing-box `process_slot`, and all background services (ticker, suspend watcher, log tailer, IPC server). It exposes a Unix domain socket IPC server (`ipc.rs`) that accepts NDJSON commands from TUI clients.
+6. **TUI Client** (`tui_client.rs`) connects to the daemon socket, enters the alternate screen, renders the UI using ratatui, and forwards keyboard input (plus clipboard/editor actions) as IPC commands. It has its own local `Model` that is kept in sync via `StateSnapshot` broadcasts from the daemon.
+7. **IPC Protocol** (`ipc.rs`) uses newline-delimited JSON over a Unix socket. Commands: `Attach`, `Detach`, `Key`, `Paste`, `ReloadConfig`, `Quit`. Responses: `StateSnapshot` pushed by the daemon after every state change.
 
 This separation makes `update.rs` fully synchronous and trivial to unit-test.
 
 ### Background Services
-Background work is executed in dedicated threads spawned by `runtime.rs`:
-- **Event reader** — polls `crossterm` events with `event::poll` and sends `Msg::Key` / `Msg::Resize`. Reading can be paused via an `AtomicBool` flag (used when opening an external editor so that keystrokes meant for the editor do not accumulate in the channel).
-- **Ticker** — sends `Msg::Tick` every 250 ms to drive log tailing and connection state machines.
-- **Suspend watcher** — `services/suspend.rs` runs a blocking zbus listener that sends `Msg::SystemResumed`.
-- **Effects** — `Connect` (with optional `force_restart`), `DownloadGeo`, and `PasteClipboard` each spawn a short-lived thread that sends the result back via the same channel.
-- **Log tailer** — `LogTailer` (`services/log_tailer.rs`) reads new lines from the sing-box log file on every `Tick`.
+Background work is executed in dedicated threads spawned by the **daemon** (`daemon.rs`):
+- **Ticker** — sends `Msg::Tick` every 250 ms to drive connection state machines.
+- **Suspend watcher** — `services/suspend.rs` runs a blocking zbus listener that sends `Msg::SystemResumed`; the daemon auto-reconnects on resume even when no TUI is attached.
+- **IPC server** — `ipc.rs` accepts Unix socket connections from TUI clients, parses NDJSON commands, and forwards them as `Msg::IpcCommand` into the daemon's mpsc channel.
+- **Effects** — `Connect`, `DownloadGeo`, and `PasteClipboard` (via `IpcCommand`) each spawn a short-lived thread that sends the result back via the daemon's channel.
+- **Log tailer** — `LogTailer` (`services/log_tailer.rs`) reads new lines from the shared log file on every `Tick` inside the daemon. App status messages are also written to the same file (with an `[app]` prefix) so both sing-box and app logs are visible in the TUI log panel.
 - **State I/O** — `services/waybar.rs` writes `state.json` on connect/disconnect for waybar integration.
+
+The **TUI client** (`tui_client.rs`) additionally spawns:
+- **Event reader** — polls `crossterm` events and sends `Msg::Key` / `Msg::Resize` to the local TUI channel. Reading can be paused while `$EDITOR` is open.
+- **Ticker** — sends `Msg::Tick` every 250 ms to drive the local log tailer.
+- **IPC reader** — reads NDJSON state snapshots from the daemon socket and forwards them as `Msg::StateUpdate`.
 
 ### sing-box Config Generation
 - `singbox::config::generate_config` builds a complete sing-box 1.12+ JSON object from a `Profile` and `Settings`.
@@ -156,6 +166,16 @@ Background work is executed in dedicated threads spawned by `runtime.rs`:
 - `services/waybar.rs` writes a small JSON file (`state.json`) on every connect/disconnect. It stores connection status, active profile name, and sing-box PID.
 - Used by the `--waybar-status` CLI flag and for crash recovery (state is cleared on startup).
 
+### Daemon + TUI Client Architecture
+- **Daemon** (`sudo kvn-tui --daemon`) runs headless. It owns the sing-box process, config, geo updates, suspend/resume handling, and log tailing. It binds a Unix domain socket for IPC.
+- **TUI Client** (`sudo kvn-tui`) connects to the daemon socket, requests a state snapshot (`Attach`), enters the alternate screen, and renders the UI. Keyboard input is forwarded to the daemon as `IpcCommand::Key` (except `p` and `e`, which are handled locally because they need terminal/Wayland access).
+- Pressing `q` (or `Esc`) when no overlay is shown sends `Detach` to the daemon, leaves the alternate screen, disables raw mode, and **exits the TUI process**. The daemon and sing-box keep running. Shell regains the prompt immediately because the foreground `sudo` process actually exits. If an overlay is open (Help, ConfirmDelete, RoutingMode, GeoRegions, Error), `q`/`Esc` is forwarded to the daemon as a normal key, which closes the overlay.
+- Pressing `Ctrl+C` sends `Quit` to the daemon. The daemon stops sing-box, cleans up the Unix socket, and exits. The TUI waits briefly (300 ms) for cleanup to complete before exiting.
+- Running `sudo kvn-tui` again connects to the same daemon and re-attaches, restoring the TUI instantly without restarting sing-box.
+- The IPC protocol is NDJSON over a Unix socket. The daemon pushes a full `StateSnapshot` after every state change. The snapshot includes the complete config (`profiles` and `settings`) so the TUI client always renders the current data.
+- `handle_ipc_command` unconditionally appends `Effect::BroadcastState` to every IPC command result, ensuring the daemon always pushes state after user interaction.
+- `handle_geo_result`, `Msg::ConnectFailed`, and the `handle_tick` idle fallback also append `Effect::BroadcastState` so state mutations that don't produce other broadcast-triggering effects are still visible to the TUI.
+
 ### Geo Region Selection
 - `settings.geo_region` (`Option<GeoRegion>`) controls which country rule-sets are downloaded and which routing modes are shown.
 - `GeoRegion::Ru` — download RU geoip/geosite, enable `Global` / `BypassRu` / `OnlyRu`.
@@ -181,6 +201,7 @@ Background work is executed in dedicated threads spawned by `runtime.rs`:
 | sing-box logs | `~/.config/kvn-tui/logs/sing-box.log` |
 | Temp sing-box config | `$XDG_RUNTIME_DIR/kvn-tui-singbox.json` or `/tmp/kvn-tui-singbox.json` |
 | Runtime state (waybar) | `~/.config/kvn-tui/state.json` |
+| IPC socket (daemon ↔ TUI) | `~/.config/kvn-tui/kvn-tui.sock` (under `SUDO_USER`) or `$XDG_RUNTIME_DIR/kvn-tui.sock` |
 
 ---
 

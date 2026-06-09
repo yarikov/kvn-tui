@@ -24,7 +24,6 @@ pub fn draw(frame: &mut Frame, model: &Model) {
     match model.overlay {
         Overlay::Help => draw_help(frame, area),
         Overlay::ConfirmDelete => draw_confirm_delete(frame, area),
-        Overlay::ConfirmQuit => draw_confirm_quit(frame, area),
         Overlay::Error => draw_error(frame, area, model.status.text()),
         Overlay::RoutingMode => draw_routing_mode(frame, model, area),
         Overlay::GeoRegions => draw_geo_region(frame, model, area),
@@ -78,19 +77,6 @@ fn draw_status_bar(frame: &mut Frame, model: &Model, area: Rect) {
 
 /// Draw the help popup overlay.
 fn draw_help(frame: &mut Frame, area: Rect) {
-    let popup_area = centered_rect(POPUP_WIDTH_PERCENT, POPUP_HEIGHT_PERCENT, area);
-
-    frame.render_widget(Clear, popup_area);
-
-    let block = Block::default()
-        .title(" Help ")
-        .borders(Borders::ALL)
-        .border_style(Theme::border())
-        .style(Theme::popup_bg());
-
-    let inner = block.inner(popup_area);
-    frame.render_widget(block, popup_area);
-
     let header =
         Row::new(vec!["Key", "Action"]).style(Theme::accent().add_modifier(Modifier::BOLD));
 
@@ -109,9 +95,25 @@ fn draw_help(frame: &mut Frame, area: Rect) {
         Row::new(vec!["a", "Toggle auto-connect"]),
         Row::new(vec!["r", "Reconnect"]),
         Row::new(vec!["s", "Stop / disconnect"]),
-        Row::new(vec!["q / Esc", "Quit"]),
+        Row::new(vec!["q / Esc", "Detach TUI"]),
+        Row::new(vec!["Ctrl+C", "Quit"]),
         Row::new(vec!["?", "Show this help"]),
     ];
+
+    let needed = rows.len() as u16 + 1 + 2; // data rows + header + borders
+    let percent = ((needed * 100) / area.height).clamp(50, 90);
+    let popup_area = centered_rect(POPUP_WIDTH_PERCENT, percent, area);
+
+    frame.render_widget(Clear, popup_area);
+
+    let block = Block::default()
+        .title(" Help ")
+        .borders(Borders::ALL)
+        .border_style(Theme::border())
+        .style(Theme::popup_bg());
+
+    let inner = block.inner(popup_area);
+    frame.render_widget(block, popup_area);
 
     let table = Table::new(rows, [Constraint::Length(12), Constraint::Min(1)]).header(header);
 
@@ -126,24 +128,6 @@ fn draw_confirm_delete(frame: &mut Frame, area: Rect) {
         " Confirm ",
         vec![
             Line::from(Span::styled("Delete selected profile?", Theme::error())),
-            Line::from(""),
-            Line::from("Press y to confirm, n to cancel"),
-        ],
-    );
-}
-
-/// Draw the quit confirmation dialog when a VPN connection is active.
-fn draw_confirm_quit(frame: &mut Frame, area: Rect) {
-    draw_modal(
-        frame,
-        area,
-        " Confirm Quit ",
-        vec![
-            Line::from(Span::styled(
-                "A VPN connection is still active.",
-                Theme::error(),
-            )),
-            Line::from("Are you sure you want to quit?"),
             Line::from(""),
             Line::from("Press y to confirm, n to cancel"),
         ],
@@ -349,7 +333,8 @@ mod tests {
             ("e", "Open profiles.json in $EDITOR"),
             ("r", "Reconnect"),
             ("s", "Stop / disconnect"),
-            ("q / Esc", "Quit"),
+            ("q / Esc", "Detach TUI"),
+            ("Ctrl+C", "Quit"),
             ("?", "Show this help"),
         ];
         for (key, action) in expected {
@@ -399,15 +384,6 @@ mod tests {
             "u1".to_string(),
         )]);
         model.overlay = Overlay::ConfirmDelete;
-        insta::assert_snapshot!(snapshot_terminal(&model, 80, 20));
-    }
-
-    #[test]
-    fn draw_confirm_quit_overlay_snapshot() {
-        ensure_fixed_geo();
-        let mut model = model_with_profiles(vec![]);
-        model.connection = ConnectionState::Connected;
-        model.overlay = Overlay::ConfirmQuit;
         insta::assert_snapshot!(snapshot_terminal(&model, 80, 20));
     }
 

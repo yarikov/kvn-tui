@@ -1,6 +1,5 @@
 ---
 source: src/ui/layout.rs
-assertion_line: 388
 expression: "snapshot_terminal(&model, 80, 40)"
 ---
 ┌ Profiles ────────────────────────────┐┌ Logs ────────────────────────────────┐
@@ -29,9 +28,9 @@ expression: "snapshot_terminal(&model, 80, 40)"
 │               │a            Toggle auto-connect              │               │
 │               │r            Reconnect                        │               │
 │               │s            Stop / disconnect                │               │
-│               │q / Esc      Quit                             │               │
+│               │q / Esc      Detach TUI                       │               │
+│               │Ctrl+C       Quit                             │               │
 │               │?            Show this help                   │               │
-│               │                                              │               │
 │               └──────────────────────────────────────────────┘               │
 │                                      ││                                      │
 │                                      ││                                      │

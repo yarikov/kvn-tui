@@ -111,6 +111,7 @@ mod tests {
 
     #[test]
     fn load_and_save_config_use_default_path() {
+        let _guard = crate::test_helpers::ENV_LOCK.lock().unwrap();
         let dir = tempfile::tempdir().unwrap();
         unsafe { std::env::set_var("XDG_CONFIG_HOME", dir.path()) };
         // Remove any existing file

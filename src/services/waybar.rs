@@ -60,6 +60,28 @@ fn read_state_from(path: impl AsRef<std::path::Path>) -> AppState {
         })
 }
 
+/// Read the current state from disk.
+pub fn read_state() -> AppState {
+    let path = crate::infra::paths::state_json_path();
+    read_state_from(&path)
+}
+
+/// Check whether a background sing-box session is still alive.
+///
+/// Returns `(pid, active_profile_id, profile_name)` if a valid session exists.
+pub fn detect_background_session() -> Option<(u32, uuid::Uuid, String)> {
+    let state = read_state();
+    let pid = state.singbox_pid?;
+    if !is_singbox_alive(pid) {
+        return None;
+    }
+    let id = state
+        .active_profile_id
+        .and_then(|s| uuid::Uuid::parse_str(&s).ok())?;
+    let name = state.profile_name.unwrap_or_else(|| "unknown".to_string());
+    Some((pid, id, name))
+}
+
 /// Print waybar status JSON to stdout.
 pub fn print_status() {
     let path = crate::infra::paths::state_json_path();
@@ -81,7 +103,7 @@ pub fn print_status() {
     print_waybar_from_state(&state);
 }
 
-fn is_singbox_alive(pid: u32) -> bool {
+pub fn is_singbox_alive(pid: u32) -> bool {
     let exe = std::path::PathBuf::from(format!("/proc/{pid}/exe"));
     std::fs::read_link(&exe)
         .map(|target| target.to_string_lossy().contains("sing-box"))

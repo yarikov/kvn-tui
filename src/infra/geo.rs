@@ -316,6 +316,9 @@ mod tests {
 
     #[test]
     fn metadata_roundtrip() {
+        let _guard = crate::test_helpers::ENV_LOCK.lock().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        unsafe { std::env::set_var("XDG_CONFIG_HOME", dir.path()) };
         let gm = GeoManager::new().unwrap();
         let meta = GeoMetadata {
             geoip_ru_etag: Some("etag1".to_string()),
@@ -335,6 +338,9 @@ mod tests {
 
     #[test]
     fn load_metadata_missing_returns_default() {
+        let _guard = crate::test_helpers::ENV_LOCK.lock().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        unsafe { std::env::set_var("XDG_CONFIG_HOME", dir.path()) };
         let gm = GeoManager::new().unwrap();
         let (geoip_ru, geosite_ru) = gm.local_paths();
         let (geoip_cn, geosite_cn) = gm.local_paths_cn();
@@ -353,6 +359,9 @@ mod tests {
 
     #[test]
     fn write_atomic_creates_file() {
+        let _guard = crate::test_helpers::ENV_LOCK.lock().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        unsafe { std::env::set_var("XDG_CONFIG_HOME", dir.path()) };
         let gm = GeoManager::new().unwrap();
         let dest = gm.geo_dir.join("test_atomic.txt");
         let _ = fs::remove_file(&dest);
@@ -365,6 +374,9 @@ mod tests {
 
     #[test]
     fn write_atomic_preserves_srs_extension() {
+        let _guard = crate::test_helpers::ENV_LOCK.lock().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        unsafe { std::env::set_var("XDG_CONFIG_HOME", dir.path()) };
         let gm = GeoManager::new().unwrap();
         let dest = gm.geo_dir.join("geoip-ru.srs");
         let _ = fs::remove_file(&dest);

@@ -64,42 +64,15 @@ pub fn update(model: &mut Model, msg: Msg) -> Vec<Effect> {
                 "Connection failed: {}",
                 err
             )));
-            vec![]
+            vec![Effect::BroadcastState]
         }
-        Msg::ClipboardRead(result) => match result {
-            Ok(text) => handle_clipboard_text(model, &text),
-            Err(e) => {
-                model.set_status_and_log(crate::app::model::AppStatus::Error(format!(
-                    "Clipboard error: {}",
-                    e
-                )));
-                vec![]
-            }
-        },
-        Msg::EditorClosed(result) => {
-            model.needs_redraw = true;
-            match result {
-                Ok(config) => {
-                    model.config = config;
-                    model.selected = model.config.resolve_selected();
-                    model.set_status_and_log(crate::app::model::AppStatus::Info(
-                        "Profiles updated from editor".into(),
-                    ));
-                    vec![]
-                }
-                Err(e) => {
-                    model.set_status_and_log(crate::app::model::AppStatus::Error(format!(
-                        "Editor failed: {}",
-                        e
-                    )));
-                    vec![]
-                }
-            }
-        }
+
         Msg::Resize => {
             model.needs_redraw = true;
             vec![]
         }
+        Msg::IpcCommand(cmd) => handle_ipc_command(model, cmd),
+        Msg::StateUpdate(_) => vec![],
     }
 }
 
@@ -120,6 +93,7 @@ fn handle_tick(model: &mut Model) -> Vec<Effect> {
         } else {
             model.connection = ConnectionState::Idle;
             model.overlay = Overlay::None;
+            effects.push(Effect::BroadcastState);
         }
     }
 
@@ -134,7 +108,6 @@ fn handle_key(model: &mut Model, key: KeyEvent) -> Vec<Effect> {
             vec![]
         }
         Overlay::ConfirmDelete => handle_confirm_delete(model, key),
-        Overlay::ConfirmQuit => handle_confirm_quit(model, key),
         Overlay::RoutingMode => handle_routing_mode(model, key),
         Overlay::GeoRegions => handle_geo_region(model, key),
         Overlay::Error => {
@@ -229,15 +202,8 @@ fn handle_main(model: &mut Model, key: KeyEvent) -> Vec<Effect> {
             return vec![Effect::SaveConfig];
         }
 
-        // Help and quit
+        // Help
         KeyCode::Char('?') => model.overlay = Overlay::Help,
-        KeyCode::Char('q') | KeyCode::Esc => {
-            if model.connection == ConnectionState::Connected {
-                model.overlay = Overlay::ConfirmQuit;
-            } else {
-                return vec![Effect::Quit];
-            }
-        }
 
         _ => {}
     }
@@ -265,17 +231,63 @@ fn handle_confirm_delete(model: &mut Model, key: KeyEvent) -> Vec<Effect> {
     vec![]
 }
 
-fn handle_confirm_quit(model: &mut Model, key: KeyEvent) -> Vec<Effect> {
-    match key.code {
-        KeyCode::Char('y') | KeyCode::Enter => {
-            return vec![Effect::Quit];
+fn handle_ipc_command(model: &mut Model, cmd: crate::app::msg::IpcCommand) -> Vec<Effect> {
+    use crate::app::msg::IpcCommand;
+    let mut effects = match cmd {
+        IpcCommand::Attach => vec![],
+        IpcCommand::Detach => vec![],
+        IpcCommand::Key { code, char, ctrl } => {
+            let key_event = rebuild_key_event(&code, char, ctrl);
+            if let Some(key) = key_event {
+                handle_key(model, key)
+            } else {
+                vec![]
+            }
         }
-        KeyCode::Char('n') | KeyCode::Esc => {
-            model.overlay = Overlay::None;
+        IpcCommand::Paste { text } => handle_clipboard_text(model, &text),
+        IpcCommand::ReloadConfig => {
+            match crate::config::load_config() {
+                Ok(config) => {
+                    model.selected = config.resolve_selected();
+                    model.config = config;
+                    model.set_status_and_log(crate::app::model::AppStatus::Info(
+                        "Profiles reloaded".into(),
+                    ));
+                }
+                Err(e) => {
+                    model.set_status_and_log(crate::app::model::AppStatus::Error(format!(
+                        "Failed to reload: {}",
+                        e
+                    )));
+                }
+            }
+            vec![]
         }
-        _ => {}
+        IpcCommand::Quit => vec![Effect::Quit],
+    };
+    effects.push(Effect::BroadcastState);
+    effects
+}
+
+fn rebuild_key_event(
+    code: &str,
+    ch: Option<char>,
+    ctrl: bool,
+) -> Option<crossterm::event::KeyEvent> {
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    let key_code = match code {
+        "Enter" => KeyCode::Enter,
+        "Esc" => KeyCode::Esc,
+        "Up" => KeyCode::Up,
+        "Down" => KeyCode::Down,
+        "Char" => KeyCode::Char(ch.unwrap_or(' ')),
+        _ => return None,
+    };
+    let mut modifiers = KeyModifiers::empty();
+    if ctrl {
+        modifiers |= KeyModifiers::CONTROL;
     }
-    vec![]
+    Some(KeyEvent::new(key_code, modifiers))
 }
 
 fn handle_routing_mode(model: &mut Model, key: KeyEvent) -> Vec<Effect> {
@@ -306,10 +318,10 @@ fn handle_routing_mode(model: &mut Model, key: KeyEvent) -> Vec<Effect> {
                 let effects = vec![Effect::SaveConfig];
                 if changed && model.connection == ConnectionState::Connected {
                     model.connection = ConnectionState::Connecting;
-                    model.logs.push_back(format!(
-                        "[routing] Mode changed to {} — reconnecting",
-                        mode.as_str()
-                    ));
+                    let line =
+                        format!("[routing] Mode changed to {} — reconnecting", mode.as_str());
+                    crate::services::log_tailer::append_app_log(&line);
+                    model.logs.push_back(line);
                 }
                 return effects;
             }
@@ -423,10 +435,12 @@ fn handle_clipboard_text(model: &mut Model, text: &str) -> Vec<Effect> {
 
 fn handle_geo_result(model: &mut Model, result: GeoResult) -> Vec<Effect> {
     model.geo_updating = false;
-    match result {
+    let mut effects = match result {
         GeoResult::Updated(parts) => {
             for part in &parts {
-                model.logs.push_back(format!("[geo] Updated: {}", part));
+                let line = format!("[geo] Updated: {}", part);
+                crate::services::log_tailer::append_app_log(&line);
+                model.logs.push_back(line);
             }
             model.set_status_and_log(crate::app::model::AppStatus::Info(
                 "Geo databases updated".into(),
@@ -452,7 +466,9 @@ fn handle_geo_result(model: &mut Model, result: GeoResult) -> Vec<Effect> {
             )));
             vec![]
         }
-    }
+    };
+    effects.push(Effect::BroadcastState);
+    effects
 }
 
 #[cfg(test)]
@@ -546,10 +562,40 @@ mod tests {
     }
 
     #[test]
-    fn normal_mode_q_quits_when_no_process() {
+    fn ipc_command_attach_broadcasts_state() {
         let mut model = model_with_profiles(vec![]);
-        let effects = handle_main(&mut model, key('q'));
-        assert_eq!(effects, vec![Effect::Quit]);
+        let effects = handle_ipc_command(&mut model, crate::app::msg::IpcCommand::Attach);
+        assert_eq!(effects, vec![Effect::BroadcastState]);
+    }
+
+    #[test]
+    fn ipc_command_key_navigates() {
+        let mut model = model_with_profiles(vec![
+            Profile::new(
+                "A".to_string(),
+                Protocol::Vless,
+                "1.1.1.1".to_string(),
+                443,
+                "u1".to_string(),
+            ),
+            Profile::new(
+                "B".to_string(),
+                Protocol::Vless,
+                "2.2.2.2".to_string(),
+                443,
+                "u2".to_string(),
+            ),
+        ]);
+        let effects = handle_ipc_command(
+            &mut model,
+            crate::app::msg::IpcCommand::Key {
+                code: "Char".into(),
+                char: Some('j'),
+                ctrl: false,
+            },
+        );
+        assert_eq!(effects, vec![Effect::BroadcastState]);
+        assert_eq!(model.selected, 1);
     }
 
     #[test]
@@ -600,23 +646,6 @@ mod tests {
         assert_eq!(model.config.profiles.len(), 1);
         assert_eq!(model.overlay, Overlay::None);
         assert!(effects.is_empty());
-    }
-
-    #[test]
-    fn confirm_quit_yes() {
-        let mut model = model_with_profiles(vec![]);
-        model.overlay = Overlay::ConfirmQuit;
-        let effects = handle_confirm_quit(&mut model, key('y'));
-        assert_eq!(effects, vec![Effect::Quit]);
-    }
-
-    #[test]
-    fn confirm_quit_no() {
-        let mut model = model_with_profiles(vec![]);
-        model.overlay = Overlay::ConfirmQuit;
-        let effects = handle_confirm_quit(&mut model, key('n'));
-        assert!(effects.is_empty());
-        assert_eq!(model.overlay, Overlay::None);
     }
 
     #[test]
@@ -763,13 +792,45 @@ mod tests {
     }
 
     #[test]
-    fn connected_mode_q_opens_confirm_quit() {
+    fn geo_result_updated_broadcasts_state() {
         let mut model = model_with_profiles(vec![]);
-        model.connection = ConnectionState::Connected;
-        model.overlay = Overlay::None;
-        let effects = handle_key(&mut model, key('q'));
-        assert!(effects.is_empty());
-        assert_eq!(model.overlay, Overlay::ConfirmQuit);
+        model.geo_updating = true;
+        let effects = update(
+            &mut model,
+            Msg::GeoUpdated(GeoResult::Updated(vec!["geoip".into()])),
+        );
+        assert!(!model.geo_updating);
+        assert_eq!(effects, vec![Effect::BroadcastState]);
+    }
+
+    #[test]
+    fn geo_result_up_to_date_broadcasts_state() {
+        let mut model = model_with_profiles(vec![]);
+        model.geo_updating = true;
+        let effects = update(&mut model, Msg::GeoUpdated(GeoResult::UpToDate));
+        assert!(!model.geo_updating);
+        assert_eq!(effects, vec![Effect::BroadcastState]);
+    }
+
+    #[test]
+    fn geo_result_error_broadcasts_state() {
+        let mut model = model_with_profiles(vec![]);
+        model.geo_updating = true;
+        let effects = update(
+            &mut model,
+            Msg::GeoUpdated(GeoResult::Error("net fail".into())),
+        );
+        assert!(!model.geo_updating);
+        assert_eq!(effects, vec![Effect::BroadcastState]);
+    }
+
+    #[test]
+    fn tick_idle_fallback_broadcasts_state() {
+        let mut model = Model::test_new(crate::config::profile::Config::default());
+        model.connection = ConnectionState::Connecting;
+        let effects = handle_tick(&mut model);
+        assert_eq!(model.connection, ConnectionState::Idle);
+        assert_eq!(effects, vec![Effect::TailLogs, Effect::BroadcastState]);
     }
 
     #[test]
@@ -860,7 +921,7 @@ mod tests {
         let effects = update(&mut model, Msg::ConnectFailed("timeout".into()));
         assert_eq!(model.overlay, Overlay::Error);
         assert_eq!(model.connection, ConnectionState::Idle);
-        assert!(effects.is_empty());
+        assert_eq!(effects, vec![Effect::BroadcastState]);
     }
 
     #[test]

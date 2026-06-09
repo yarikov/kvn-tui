@@ -49,6 +49,12 @@ zbus = { version = "5", default-features = false, features = ["blocking-api", "a
 # CLI parsing
 clap = { version = "4", features = ["derive"] }
 
+# Signal handling for graceful shutdown
+signal-hook = "0.3"
+
+# Unix UID for fallback socket path
+libc = "0.2"
+
 [dev-dependencies]
 insta = "1.47.2"
 tempfile = "3"
