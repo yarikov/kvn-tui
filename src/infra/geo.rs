@@ -17,6 +17,10 @@ const GEOIP_CN_URL: &str =
     "https://raw.githubusercontent.com/SagerNet/sing-geoip/rule-set/geoip-cn.srs";
 const GEOSITE_CN_URL: &str =
     "https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-cn.srs";
+const GEOIP_IR_URL: &str =
+    "https://raw.githubusercontent.com/SagerNet/sing-geoip/rule-set/geoip-ir.srs";
+const GEOSITE_IR_URL: &str =
+    "https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-category-ir.srs";
 
 /// Metadata tracking ETags and update time for geo rule-sets.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -29,6 +33,10 @@ struct GeoMetadata {
     geoip_cn_etag: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     geosite_cn_etag: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    geoip_ir_etag: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    geosite_ir_etag: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     updated_at: Option<DateTime<Utc>>,
 }
@@ -70,6 +78,13 @@ impl GeoManager {
         let geoip_cn = self.geo_dir.join("geoip-cn.srs");
         let geosite_cn = self.geo_dir.join("geosite-cn.srs");
         (geoip_cn, geosite_cn)
+    }
+
+    /// Return paths to local IR rule-set files.
+    pub fn local_paths_ir(&self) -> (PathBuf, PathBuf) {
+        let geoip_ir = self.geo_dir.join("geoip-ir.srs");
+        let geosite_ir = self.geo_dir.join("geosite-category-ir.srs");
+        (geoip_ir, geosite_ir)
     }
 
     /// Return a human-readable string of the last update time, or None.
@@ -130,6 +145,25 @@ impl GeoManager {
 
                 Ok((geoip_update, geosite_update))
             }
+            GeoRegion::Ir => {
+                let (geoip_ir, geosite_ir) = self.local_paths_ir();
+                let geoip_missing = !geoip_ir.exists();
+                let geosite_missing = !geosite_ir.exists();
+
+                let geoip_update = if geoip_missing {
+                    true
+                } else {
+                    self.check_single(GEOIP_IR_URL, meta.geoip_ir_etag.as_deref())?
+                };
+
+                let geosite_update = if geosite_missing {
+                    true
+                } else {
+                    self.check_single(GEOSITE_IR_URL, meta.geosite_ir_etag.as_deref())?
+                };
+
+                Ok((geoip_update, geosite_update))
+            }
         }
     }
 
@@ -171,6 +205,23 @@ impl GeoManager {
                         meta.geosite_cn_etag = etag;
                     }
                     Err(e) => return Err(e).context("Failed to download geosite-cn.srs"),
+                }
+            }
+            GeoRegion::Ir => {
+                let (geoip_ir, geosite_ir) = self.local_paths_ir();
+
+                match self.download_file(GEOIP_IR_URL, &geoip_ir) {
+                    Ok(etag) => {
+                        meta.geoip_ir_etag = etag;
+                    }
+                    Err(e) => return Err(e).context("Failed to download geoip-ir.srs"),
+                }
+
+                match self.download_file(GEOSITE_IR_URL, &geosite_ir) {
+                    Ok(etag) => {
+                        meta.geosite_ir_etag = etag;
+                    }
+                    Err(e) => return Err(e).context("Failed to download geosite-category-ir.srs"),
                 }
             }
         }
@@ -325,6 +376,8 @@ mod tests {
             geosite_ru_etag: Some("etag2".to_string()),
             geoip_cn_etag: Some("etag3".to_string()),
             geosite_cn_etag: Some("etag4".to_string()),
+            geoip_ir_etag: Some("etag5".to_string()),
+            geosite_ir_etag: Some("etag6".to_string()),
             updated_at: Some(Utc::now()),
         };
         gm.save_metadata(&meta).unwrap();
@@ -333,6 +386,8 @@ mod tests {
         assert_eq!(loaded.geosite_ru_etag, Some("etag2".to_string()));
         assert_eq!(loaded.geoip_cn_etag, Some("etag3".to_string()));
         assert_eq!(loaded.geosite_cn_etag, Some("etag4".to_string()));
+        assert_eq!(loaded.geoip_ir_etag, Some("etag5".to_string()));
+        assert_eq!(loaded.geosite_ir_etag, Some("etag6".to_string()));
         assert!(loaded.updated_at.is_some());
     }
 
@@ -350,6 +405,8 @@ mod tests {
         assert!(meta.geosite_ru_etag.is_none());
         assert!(meta.geoip_cn_etag.is_none());
         assert!(meta.geosite_cn_etag.is_none());
+        assert!(meta.geoip_ir_etag.is_none());
+        assert!(meta.geosite_ir_etag.is_none());
         assert!(meta.updated_at.is_none());
         let _ = fs::remove_file(&geoip_ru);
         let _ = fs::remove_file(&geosite_ru);

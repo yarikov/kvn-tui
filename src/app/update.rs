@@ -173,7 +173,8 @@ fn handle_main(model: &mut Model, key: KeyEvent) -> Vec<Effect> {
             model.geo_region_selected = match model.config.settings.geo_region {
                 Some(GeoRegion::Ru) => 0,
                 Some(GeoRegion::Cn) => 1,
-                Some(GeoRegion::Other) => 2,
+                Some(GeoRegion::Ir) => 2,
+                Some(GeoRegion::Other) => 3,
                 None => 0,
             };
         }
@@ -335,7 +336,12 @@ fn handle_routing_mode(model: &mut Model, key: KeyEvent) -> Vec<Effect> {
 }
 
 fn handle_geo_region(model: &mut Model, key: KeyEvent) -> Vec<Effect> {
-    const REGIONS: &[GeoRegion] = &[GeoRegion::Ru, GeoRegion::Cn, GeoRegion::Other];
+    const REGIONS: &[GeoRegion] = &[
+        GeoRegion::Ru,
+        GeoRegion::Cn,
+        GeoRegion::Ir,
+        GeoRegion::Other,
+    ];
     match key.code {
         KeyCode::Char('j') | KeyCode::Down => {
             crate::ui::nav::select_next(&mut model.geo_region_selected, REGIONS.len());
@@ -707,14 +713,16 @@ mod tests {
         let _ = handle_geo_region(&mut model, key('j'));
         assert_eq!(model.geo_region_selected, 2);
         let _ = handle_geo_region(&mut model, key('j'));
-        assert_eq!(model.geo_region_selected, 2); // clamp
+        assert_eq!(model.geo_region_selected, 3);
+        let _ = handle_geo_region(&mut model, key('j'));
+        assert_eq!(model.geo_region_selected, 3); // clamp
 
         let _ = handle_geo_region(&mut model, key('k'));
-        assert_eq!(model.geo_region_selected, 1);
+        assert_eq!(model.geo_region_selected, 2);
         let _ = handle_geo_region(&mut model, key('g'));
         assert_eq!(model.geo_region_selected, 0);
         let _ = handle_geo_region(&mut model, key('G'));
-        assert_eq!(model.geo_region_selected, 2);
+        assert_eq!(model.geo_region_selected, 3);
     }
 
     #[test]
@@ -759,7 +767,7 @@ mod tests {
         model.config.settings.geo_region = Some(GeoRegion::Ru);
         model.config.settings.routing_mode = RoutingMode::OnlyRu;
         model.overlay = Overlay::GeoRegions;
-        model.geo_region_selected = 2; // Other
+        model.geo_region_selected = 3; // Other
 
         let effects = handle_geo_region(&mut model, KeyEvent::from(KeyCode::Enter));
         assert_eq!(model.config.settings.geo_region, Some(GeoRegion::Other));

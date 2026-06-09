@@ -225,10 +225,76 @@ fn build_route(routing_mode: &RoutingMode, dns_strategy: DnsStrategy) -> (Value,
                 }
             }
         }
+        RoutingMode::BypassIr => {
+            rules.push(json!({
+                "ip_is_private": true,
+                "outbound": "direct"
+            }));
+            if let Ok(geo) = crate::infra::geo::GeoManager::new() {
+                let (geoip_ir, geosite_ir) = geo.local_paths_ir();
+                if geosite_ir.exists() {
+                    rules.push(json!({
+                        "rule_set": ["geosite-category-ir"],
+                        "outbound": "direct"
+                    }));
+                    rule_sets.push(json!({
+                        "tag": "geosite-category-ir",
+                        "type": "local",
+                        "format": "binary",
+                        "path": geosite_ir
+                    }));
+                }
+                if geoip_ir.exists() {
+                    rules.push(json!({
+                        "rule_set": ["geoip-ir"],
+                        "outbound": "direct"
+                    }));
+                    rule_sets.push(json!({
+                        "tag": "geoip-ir",
+                        "type": "local",
+                        "format": "binary",
+                        "path": geoip_ir
+                    }));
+                }
+            }
+        }
+        RoutingMode::OnlyIr => {
+            rules.push(json!({
+                "ip_is_private": true,
+                "outbound": "direct"
+            }));
+            if let Ok(geo) = crate::infra::geo::GeoManager::new() {
+                let (geoip_ir, geosite_ir) = geo.local_paths_ir();
+                if geosite_ir.exists() {
+                    rules.push(json!({
+                        "rule_set": ["geosite-category-ir"],
+                        "outbound": "proxy"
+                    }));
+                    rule_sets.push(json!({
+                        "tag": "geosite-category-ir",
+                        "type": "local",
+                        "format": "binary",
+                        "path": geosite_ir
+                    }));
+                }
+                if geoip_ir.exists() {
+                    rules.push(json!({
+                        "rule_set": ["geoip-ir"],
+                        "outbound": "proxy"
+                    }));
+                    rule_sets.push(json!({
+                        "tag": "geoip-ir",
+                        "type": "local",
+                        "format": "binary",
+                        "path": geoip_ir
+                    }));
+                }
+            }
+        }
     }
 
     let final_outbound = match routing_mode {
-        RoutingMode::OnlyRu | RoutingMode::OnlyCn => "direct",
+        RoutingMode::OnlyRu | RoutingMode::OnlyCn | RoutingMode::OnlyIr => "direct",
         _ => "proxy",
     };
 

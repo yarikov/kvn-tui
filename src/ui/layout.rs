@@ -212,8 +212,13 @@ fn draw_geo_region(frame: &mut Frame, model: &Model, area: Rect) {
     use ratatui::style::Modifier;
     use ratatui::text::Span;
 
-    let regions = [GeoRegion::Ru, GeoRegion::Cn, GeoRegion::Other];
-    let labels = ["Russia", "China", "Other (Global only)"];
+    let regions = [
+        GeoRegion::Ru,
+        GeoRegion::Cn,
+        GeoRegion::Ir,
+        GeoRegion::Other,
+    ];
+    let labels = ["Russia", "China", "Iran", "Other (Global only)"];
     let mut lines: Vec<Line> = vec![
         Line::from(Span::styled("Select geo region", Theme::accent())),
         Line::from(""),

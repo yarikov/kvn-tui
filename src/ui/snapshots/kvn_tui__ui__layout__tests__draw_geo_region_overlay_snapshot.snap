@@ -1,6 +1,5 @@
 ---
 source: src/ui/layout.rs
-assertion_line: 439
 expression: "snapshot_terminal(&model, 80, 20)"
 ---
 ┌ Profiles ────────────────────────────┐┌ Logs ────────────────────────────────┐
@@ -13,10 +12,10 @@ expression: "snapshot_terminal(&model, 80, 20)"
 │               │                                              │               │
 │               │                    Russia                    │               │
 │               │                    > China                   │               │
+│               │                     Iran                     │               │
 │               │              Other (Global only)             │               │
 │               │                                              │               │
 │               │    j/k navigate, Enter confirm, Esc cancel   │               │
-│               │                                              │               │
 │               └──────────────────────────────────────────────┘               │
 │                                      ││                                      │
 │                                      ││                                      │

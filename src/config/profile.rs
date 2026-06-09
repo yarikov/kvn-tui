@@ -23,6 +23,7 @@ pub enum GeoRegion {
     Other,
     Ru,
     Cn,
+    Ir,
 }
 
 impl GeoRegion {
@@ -31,6 +32,7 @@ impl GeoRegion {
             GeoRegion::Other => "other",
             GeoRegion::Ru => "ru",
             GeoRegion::Cn => "cn",
+            GeoRegion::Ir => "ir",
         }
     }
 }
@@ -45,6 +47,8 @@ pub enum RoutingMode {
     OnlyRu,
     BypassCn,
     OnlyCn,
+    BypassIr,
+    OnlyIr,
 }
 
 impl RoutingMode {
@@ -61,6 +65,11 @@ impl RoutingMode {
                 RoutingMode::BypassCn,
                 RoutingMode::OnlyCn,
             ],
+            Some(GeoRegion::Ir) => vec![
+                RoutingMode::Global,
+                RoutingMode::BypassIr,
+                RoutingMode::OnlyIr,
+            ],
             Some(GeoRegion::Other) | None => vec![RoutingMode::Global],
         }
     }
@@ -72,6 +81,8 @@ impl RoutingMode {
             RoutingMode::OnlyRu => "Only RU",
             RoutingMode::BypassCn => "Bypass CN",
             RoutingMode::OnlyCn => "Only CN",
+            RoutingMode::BypassIr => "Bypass IR",
+            RoutingMode::OnlyIr => "Only IR",
         }
     }
 }
@@ -283,6 +294,8 @@ mod tests {
         assert_eq!(RoutingMode::OnlyRu.as_str(), "Only RU");
         assert_eq!(RoutingMode::BypassCn.as_str(), "Bypass CN");
         assert_eq!(RoutingMode::OnlyCn.as_str(), "Only CN");
+        assert_eq!(RoutingMode::BypassIr.as_str(), "Bypass IR");
+        assert_eq!(RoutingMode::OnlyIr.as_str(), "Only IR");
     }
 
     #[test]
@@ -302,6 +315,14 @@ mod tests {
                 RoutingMode::Global,
                 RoutingMode::BypassCn,
                 RoutingMode::OnlyCn
+            ]
+        );
+        assert_eq!(
+            RoutingMode::available(Some(GeoRegion::Ir)),
+            vec![
+                RoutingMode::Global,
+                RoutingMode::BypassIr,
+                RoutingMode::OnlyIr
             ]
         );
         assert_eq!(
