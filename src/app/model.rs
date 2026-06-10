@@ -93,13 +93,12 @@ impl Model {
     pub fn set_status_and_log(&mut self, status: AppStatus) {
         let text = status.text();
         if !text.is_empty() {
-            let prefix = match &status {
-                AppStatus::Info(_) => "[app]",
-                AppStatus::Error(_) => "[error]",
+            let level = match &status {
+                AppStatus::Info(_) => "INFO",
+                AppStatus::Error(_) => "ERROR",
             };
-            let line = format!("{} {}", prefix, text);
-            crate::services::log_tailer::append_app_log(&line);
-            self.push_log(line);
+            crate::services::log_tailer::append_app_log(level, text);
+            self.push_log(text.to_string());
         }
         self.status = status;
     }
@@ -534,15 +533,15 @@ mod tests {
     }
 
     #[test]
-    fn set_status_and_log_logs_with_prefix() {
+    fn set_status_and_log_logs_plain_text() {
         let mut model = Model::test_new(Config::default());
         model.set_status_and_log(AppStatus::Info("hello".into()));
         assert_eq!(model.status.text(), "hello");
-        assert_eq!(model.logs.back().unwrap(), "[app] hello");
+        assert_eq!(model.logs.back().unwrap(), "hello");
 
         model.set_status_and_log(AppStatus::Error("oops".into()));
         assert_eq!(model.status.text(), "oops");
-        assert_eq!(model.logs.back().unwrap(), "[error] oops");
+        assert_eq!(model.logs.back().unwrap(), "oops");
     }
 
     #[test]

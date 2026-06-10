@@ -29,6 +29,13 @@ pub fn singbox_log_path() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("sing-box.log"))
 }
 
+/// Return the path to the application log file.
+pub fn app_log_path() -> PathBuf {
+    config_dir()
+        .map(|d| d.join("logs/app.log"))
+        .unwrap_or_else(|| PathBuf::from("app.log"))
+}
+
 /// Return the path to the temporary sing-box JSON configuration.
 pub fn temp_singbox_config_path() -> PathBuf {
     if let Some(dir) = dirs::runtime_dir() {
@@ -75,6 +82,13 @@ mod tests {
     fn singbox_log_path_is_not_empty() {
         let path = singbox_log_path();
         assert!(!path.as_os_str().is_empty());
+    }
+
+    #[test]
+    fn app_log_path_is_not_empty_and_in_config_dir() {
+        let path = app_log_path();
+        assert!(!path.as_os_str().is_empty());
+        assert!(path.starts_with(config_dir().unwrap()));
     }
 
     #[test]

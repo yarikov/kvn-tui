@@ -39,7 +39,10 @@ pub fn run() -> Result<()> {
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    let mut log_tailer = LogTailer::new(crate::infra::paths::singbox_log_path());
+    let mut log_tailer = LogTailer::new(vec![
+        crate::infra::paths::app_log_path(),
+        crate::infra::paths::singbox_log_path(),
+    ]);
 
     let result = run_loop(
         &mut terminal,

@@ -312,10 +312,9 @@ fn handle_routing_mode(model: &mut Model, key: KeyEvent) -> Vec<Effect> {
                 let effects = vec![Effect::SaveConfig];
                 if changed && model.connection == ConnectionState::Connected {
                     model.connection = ConnectionState::Connecting;
-                    let line =
-                        format!("[routing] Mode changed to {} — reconnecting", mode.as_str());
-                    crate::services::log_tailer::append_app_log(&line);
-                    model.logs.push_back(line);
+                    let text = format!("Mode changed to {} — reconnecting", mode.as_str());
+                    crate::services::log_tailer::append_app_log("INFO", &text);
+                    model.logs.push_back(text);
                 }
                 return effects;
             }
@@ -390,9 +389,7 @@ fn handle_geo_region(model: &mut Model, key: KeyEvent) -> Vec<Effect> {
                 let effects = vec![Effect::SaveConfig];
                 if changed && model.connection == ConnectionState::Connected {
                     model.connection = ConnectionState::Connecting;
-                    model
-                        .logs
-                        .push_back("[geo] Region changed — reconnecting".into());
+                    model.logs.push_back("Region changed — reconnecting".into());
                 }
                 return effects;
             }
@@ -437,17 +434,15 @@ fn handle_geo_result(model: &mut Model, result: GeoResult) -> Vec<Effect> {
     let mut effects = match result {
         GeoResult::Updated(parts) => {
             for part in &parts {
-                let line = format!("[geo] Updated: {}", part);
-                crate::services::log_tailer::append_app_log(&line);
-                model.logs.push_back(line);
+                let text = format!("Updated: {}", part);
+                crate::services::log_tailer::append_app_log("INFO", &text);
+                model.logs.push_back(text);
             }
             model.set_status_and_log(crate::app::model::AppStatus::Info(
                 "Geo databases updated".into(),
             ));
             if model.connection == ConnectionState::Connected {
-                model
-                    .logs
-                    .push_back("[geo] Reconnecting to apply new geo databases".into());
+                model.logs.push_back("Reconnecting to apply new geo databases".into());
                 model.connection = ConnectionState::Connecting;
             }
             vec![]
@@ -459,10 +454,7 @@ fn handle_geo_result(model: &mut Model, result: GeoResult) -> Vec<Effect> {
             vec![]
         }
         GeoResult::Error(err) => {
-            model.set_status_and_log(crate::app::model::AppStatus::Error(format!(
-                "[geo] {}",
-                err
-            )));
+            model.set_status_and_log(crate::app::model::AppStatus::Error(err));
             vec![]
         }
     };

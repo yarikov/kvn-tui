@@ -1,66 +1,101 @@
+use chrono::{DateTime, Local};
 use std::fs::{File, OpenOptions};
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::path::PathBuf;
 
-/// Append an app-generated log line to the shared log file.
-pub fn append_app_log(line: &str) {
-    let path = crate::infra::paths::singbox_log_path();
+/// Append an app-generated log line to the application log file.
+/// Format matches sing-box style: `+HHMM YYYY-MM-DD HH:MM:SS LEVEL message`
+pub fn append_app_log(level: &str, message: &str) {
+    let now = Local::now();
+    let path = crate::infra::paths::app_log_path();
     if let Ok(mut file) = OpenOptions::new().append(true).create(true).open(&path) {
-        let _ = writeln!(file, "{}", line);
+        let _ = writeln!(
+            file,
+            "{} {} {} {}",
+            now.format("%z"),
+            now.format("%Y-%m-%d %H:%M:%S"),
+            level,
+            message
+        );
     }
 }
 
-/// Tails the sing-box log file and returns new lines.
+/// Tails log files and returns new lines sorted chronologically.
 pub struct LogTailer {
-    path: PathBuf,
-    pos: u64,
+    files: Vec<(PathBuf, u64)>,
 }
 
 impl LogTailer {
-    pub fn new(path: PathBuf) -> Self {
-        let pos = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
-        Self { path, pos }
+    pub fn new(paths: Vec<PathBuf>) -> Self {
+        let files = paths
+            .into_iter()
+            .map(|p| {
+                let pos = std::fs::metadata(&p).map(|m| m.len()).unwrap_or(0);
+                (p, pos)
+            })
+            .collect();
+        Self { files }
     }
 
     #[cfg(test)]
-    pub fn test_new(path: PathBuf) -> Self {
-        Self { path, pos: 0 }
+    pub fn test_new(paths: Vec<PathBuf>) -> Self {
+        let files = paths.into_iter().map(|p| (p, 0)).collect();
+        Self { files }
     }
 
     pub fn tail(&mut self) -> Vec<String> {
-        let Ok(mut file) = File::open(&self.path) else {
-            return Vec::new();
-        };
-        let Ok(metadata) = file.metadata() else {
-            return Vec::new();
-        };
-        let file_len = metadata.len();
+        let mut entries: Vec<(DateTime<Local>, String)> = Vec::new();
 
-        // If file shrank (rotated), reset position.
-        if self.pos > file_len {
-            self.pos = 0;
-        }
+        for (path, pos) in self.files.iter_mut() {
+            let Ok(mut file) = File::open(path) else {
+                continue;
+            };
+            let Ok(metadata) = file.metadata() else {
+                continue;
+            };
+            let file_len = metadata.len();
 
-        let mut lines = Vec::new();
-        if file.seek(SeekFrom::Start(self.pos)).is_ok() {
-            let mut reader = BufReader::new(file);
-            for line in reader.by_ref().lines().map_while(Result::ok) {
-                if line.trim().is_empty() {
-                    continue;
+            if *pos > file_len {
+                *pos = 0;
+            }
+
+            if file.seek(SeekFrom::Start(*pos)).is_ok() {
+                let mut reader = BufReader::new(file);
+                for line in reader.by_ref().lines().map_while(Result::ok) {
+                    if line.trim().is_empty() {
+                        continue;
+                    }
+                    let ts = parse_timestamp(&line);
+                    entries.push((ts, line));
                 }
-                if line.starts_with('[') {
-                    lines.push(line);
-                } else {
-                    lines.push(format!("[sing-box] {}", line));
+                if let Ok(new_pos) = reader.stream_position() {
+                    *pos = new_pos;
                 }
             }
-            // Update position to exact end of read data
-            if let Ok(pos) = reader.stream_position() {
-                self.pos = pos;
-            }
         }
-        lines
+
+        entries.sort_by(|a, b| a.0.cmp(&b.0));
+        entries.into_iter().map(|(_, line)| line).collect()
     }
+}
+
+/// Parse a sing-box style timestamp from the start of a line.
+/// Falls back to the current local time if parsing fails.
+fn parse_timestamp(line: &str) -> DateTime<Local> {
+    if line.len() >= 25 {
+        let prefix = &line[..25];
+        if let Ok(dt) = DateTime::parse_from_str(prefix, "%z %Y-%m-%d %H:%M:%S") {
+            return dt.with_timezone(&Local);
+        }
+        // Try with milliseconds: +0300 2026-06-09 21:28:34.123
+        if line.len() >= 29 {
+            let prefix_ms = &line[..29];
+            if let Ok(dt) = DateTime::parse_from_str(prefix_ms, "%z %Y-%m-%d %H:%M:%S%.3f") {
+                return dt.with_timezone(&Local);
+            }
+        }
+    }
+    Local::now()
 }
 
 #[cfg(test)]
@@ -71,12 +106,11 @@ mod tests {
     #[test]
     fn tail_reads_new_lines() {
         let mut temp = tempfile::NamedTempFile::new().unwrap();
-        writeln!(temp, "log line 1").unwrap();
-        writeln!(temp, "log line 2").unwrap();
+        writeln!(temp, "+0000 2024-01-01 00:00:00 INFO log line 1").unwrap();
+        writeln!(temp, "+0000 2024-01-01 00:00:01 INFO log line 2").unwrap();
         let path = temp.path().to_path_buf();
 
-        // Start from beginning for this test
-        let mut tailer = LogTailer::test_new(path);
+        let mut tailer = LogTailer::test_new(vec![path]);
         let lines = tailer.tail();
         assert_eq!(lines.len(), 2);
         assert!(lines[0].contains("log line 1"));
@@ -84,39 +118,89 @@ mod tests {
     }
 
     #[test]
-    fn tail_preserves_app_prefix() {
+    fn tail_preserves_lines_as_is() {
         let mut temp = tempfile::NamedTempFile::new().unwrap();
-        writeln!(temp, "[app] hello").unwrap();
-        writeln!(temp, "[geo] updated").unwrap();
-        writeln!(temp, "plain sing-box line").unwrap();
+        writeln!(temp, "+0000 2024-01-01 00:00:00 INFO hello").unwrap();
+        writeln!(temp, "+0000 2024-01-01 00:00:01 WARN plain line").unwrap();
         let path = temp.path().to_path_buf();
 
-        let mut tailer = LogTailer::test_new(path);
+        let mut tailer = LogTailer::test_new(vec![path]);
         let lines = tailer.tail();
-        assert_eq!(lines.len(), 3);
-        assert_eq!(lines[0], "[app] hello");
-        assert_eq!(lines[1], "[geo] updated");
-        assert_eq!(lines[2], "[sing-box] plain sing-box line");
+        assert_eq!(lines.len(), 2);
+        assert!(lines[0].contains("hello"));
+        assert!(lines[1].contains("plain line"));
     }
 
     #[test]
     fn tail_resets_on_rotation() {
         let mut temp = tempfile::NamedTempFile::new().unwrap();
-        writeln!(temp, "this is a long old log line").unwrap();
+        writeln!(temp, "+0000 2024-01-01 00:00:00 INFO this is a long old log line").unwrap();
         let path = temp.path().to_path_buf();
 
-        // Start from beginning for this test
-        let mut tailer = LogTailer::test_new(path.clone());
+        let mut tailer = LogTailer::test_new(vec![path.clone()]);
         let lines = tailer.tail();
         assert_eq!(lines.len(), 1);
 
         // Simulate rotation: file shrinks
         let mut file = std::fs::File::create(&path).unwrap();
-        writeln!(file, "new").unwrap();
+        writeln!(file, "+0000 2024-01-01 00:00:00 INFO new").unwrap();
         drop(file);
 
         let lines = tailer.tail();
         assert_eq!(lines.len(), 1);
         assert!(lines[0].contains("new"));
+    }
+
+    #[test]
+    fn tail_merges_two_files_chronologically() {
+        let mut temp1 = tempfile::NamedTempFile::new().unwrap();
+        let mut temp2 = tempfile::NamedTempFile::new().unwrap();
+
+        writeln!(temp1, "+0000 2024-01-01 00:00:02 INFO from file 1").unwrap();
+        writeln!(temp1, "+0000 2024-01-01 00:00:04 INFO from file 1 again").unwrap();
+
+        writeln!(temp2, "+0000 2024-01-01 00:00:01 INFO from file 2").unwrap();
+        writeln!(temp2, "+0000 2024-01-01 00:00:03 INFO from file 2 again").unwrap();
+
+        let path1 = temp1.path().to_path_buf();
+        let path2 = temp2.path().to_path_buf();
+
+        let mut tailer = LogTailer::test_new(vec![path1, path2]);
+        let lines = tailer.tail();
+        assert_eq!(lines.len(), 4);
+        assert!(lines[0].contains("from file 2"));
+        assert!(lines[1].contains("from file 1"));
+        assert!(lines[2].contains("from file 2 again"));
+        assert!(lines[3].contains("from file 1 again"));
+    }
+
+    #[test]
+    fn parse_timestamp_valid() {
+        use chrono::Datelike;
+        let line = "+0300 2026-06-09 21:28:34 INFO hello";
+        let dt = parse_timestamp(line);
+        assert_eq!(dt.year(), 2026);
+        assert_eq!(dt.month(), 6);
+        assert_eq!(dt.day(), 9);
+    }
+
+    #[test]
+    fn parse_timestamp_from_real_singbox_line() {
+        use chrono::Timelike;
+        let line = "+0300 2026-06-10 09:35:55 DEBUG [4216981911 0ms] router: match[1] inbound=tun-in port=53 => hijack-dns";
+        let dt = parse_timestamp(line);
+        assert_eq!(dt.hour(), 9);
+        assert_eq!(dt.minute(), 35);
+        assert_eq!(dt.second(), 55);
+    }
+
+    #[test]
+    fn parse_timestamp_fallback_for_malformed() {
+        let line = "some random text without timestamp";
+        let dt = parse_timestamp(line);
+        // Should not panic and return something close to now
+        let now = Local::now();
+        let diff = (dt - now).num_seconds().abs();
+        assert!(diff < 2);
     }
 }
