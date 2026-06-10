@@ -49,6 +49,7 @@ jobs:
           sed -e "s/{{VERSION}}/${VERSION}/g" \
               -e "s/{{SHA256SUM}}/${SHA256}/g" \
               pkg/aur/PKGBUILD.bin > /tmp/aur/PKGBUILD
+          cp pkg/aur/kvn-tui.install /tmp/aur/kvn-tui.install
 
       - name: Generate .SRCINFO
         run: |
@@ -63,7 +64,7 @@ jobs:
       - name: Commit and push to AUR
         run: |
           cd /tmp/aur
-          git add PKGBUILD .SRCINFO
+          git add PKGBUILD .SRCINFO kvn-tui.install
           if git diff --cached --quiet; then
             echo "No changes to commit"
             exit 0
