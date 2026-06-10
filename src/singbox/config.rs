@@ -27,8 +27,7 @@ pub fn generate_config(profile: &Profile, settings: &Settings) -> anyhow::Result
                     "path": "/dns-query"
                 }
             ],
-            "final": "remote",
-            "strategy": settings.dns_strategy.clone()
+            "final": "remote"
         },
         "inbounds": [
             {
@@ -48,10 +47,6 @@ pub fn generate_config(profile: &Profile, settings: &Settings) -> anyhow::Result
             {
                 "type": "direct",
                 "tag": "direct"
-            },
-            {
-                "type": "block",
-                "tag": "block"
             }
         ],
         "route": route,
