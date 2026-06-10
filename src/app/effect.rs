@@ -9,7 +9,6 @@ pub enum Effect {
     },
     Disconnect,
     DownloadGeo,
-    TailLogs,
     WriteState,
     SaveConfig,
     OpenEditor(usize),

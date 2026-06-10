@@ -12,10 +12,6 @@ pub fn update(model: &mut Model, msg: Msg) -> Vec<Effect> {
     match msg {
         Msg::Key(key) => handle_key(model, key),
         Msg::Tick => handle_tick(model),
-        Msg::LogLine(line) => {
-            model.push_log(line);
-            vec![]
-        }
         Msg::GeoUpdated(result) => handle_geo_result(model, result),
         Msg::SystemResumed => {
             if model.connection == ConnectionState::Connected {
@@ -78,9 +74,6 @@ pub fn update(model: &mut Model, msg: Msg) -> Vec<Effect> {
 
 fn handle_tick(model: &mut Model) -> Vec<Effect> {
     let mut effects = Vec::new();
-
-    // Tail logs
-    effects.push(Effect::TailLogs);
 
     // Check geo updates — in the new architecture geo runs in its own thread
     // and sends GeoUpdated messages, so nothing to do here directly.
@@ -838,7 +831,7 @@ mod tests {
         model.connection = ConnectionState::Connecting;
         let effects = handle_tick(&mut model);
         assert_eq!(model.connection, ConnectionState::Idle);
-        assert_eq!(effects, vec![Effect::TailLogs, Effect::BroadcastState]);
+        assert_eq!(effects, vec![Effect::BroadcastState]);
     }
 
     #[test]
@@ -1007,17 +1000,5 @@ mod tests {
         assert!(effects.is_empty());
         assert!(model.status.is_error());
         assert!(model.status.text().contains("already exists"));
-    }
-
-    #[test]
-    fn log_line_truncates() {
-        let mut model = Model::test_new(crate::config::profile::Config::default());
-        for i in 0..1005 {
-            let _ = update(&mut model, Msg::LogLine(format!("line {}", i)));
-        }
-        assert_eq!(model.logs.len(), 1000);
-        assert_eq!(model.logs[0], "line 5");
-        assert_eq!(model.logs[999], "line 1004");
-        assert_eq!(model.log_scroll, 999);
     }
 }

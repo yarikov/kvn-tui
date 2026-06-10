@@ -6,7 +6,6 @@ pub enum Msg {
     Key(KeyEvent),
     Tick,
     Resize,
-    LogLine(String),
     GeoUpdated(GeoResult),
     SystemResumed,
     Connected { pid: u32 },

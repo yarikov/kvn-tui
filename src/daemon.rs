@@ -11,7 +11,6 @@ use crate::app::msg::{GeoResult, Msg, StateSnapshot};
 use crate::app::update::update;
 use crate::infra::process_handle::ProcessHandle;
 use crate::ipc::{IpcServer, cleanup_socket};
-use crate::services::LogTailer;
 
 /// Run the daemon main loop.
 pub fn run(mut model: Model) -> Result<()> {
@@ -21,18 +20,9 @@ pub fn run(mut model: Model) -> Result<()> {
     spawn_ticker(tx.clone());
     spawn_suspend_watcher(tx.clone());
 
-    let mut log_tailer = LogTailer::new(crate::infra::paths::singbox_log_path());
-
     let process_slot = Arc::new(Mutex::new(None));
 
-    let result = run_loop(
-        &mut model,
-        rx,
-        &tx,
-        &mut log_tailer,
-        process_slot.clone(),
-        &ipc_server,
-    );
+    let result = run_loop(&mut model, rx, &tx, process_slot.clone(), &ipc_server);
 
     // Cleanup
     if let Some(mut handle) = process_slot.lock().unwrap().take() {
@@ -49,7 +39,6 @@ fn run_loop(
     model: &mut Model,
     rx: std::sync::mpsc::Receiver<Msg>,
     tx: &Sender<Msg>,
-    log_tailer: &mut LogTailer,
     process_slot: Arc<Mutex<Option<ProcessHandle>>>,
     ipc_server: &IpcServer,
 ) -> Result<()> {
@@ -74,7 +63,7 @@ fn run_loop(
         }
 
         for effect in effects {
-            execute_daemon_effect(effect, tx, model, log_tailer, &process_slot)?;
+            execute_daemon_effect(effect, tx, model, &process_slot)?;
         }
 
         if model.should_quit {
@@ -88,12 +77,10 @@ fn run_loop(
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
 fn execute_daemon_effect(
     effect: Effect,
     tx: &Sender<Msg>,
     model: &mut Model,
-    log_tailer: &mut LogTailer,
     process_slot: &Arc<Mutex<Option<ProcessHandle>>>,
 ) -> Result<()> {
     match effect {
@@ -158,11 +145,6 @@ fn execute_daemon_effect(
                 };
                 let _ = tx.send(Msg::GeoUpdated(result));
             });
-        }
-        Effect::TailLogs => {
-            for line in log_tailer.tail() {
-                let _ = tx.send(Msg::LogLine(line));
-            }
         }
         Effect::WriteState => {
             crate::services::waybar::write_state(model);
