@@ -3,7 +3,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Local};
 use serde::{Deserialize, Serialize};
 
 use crate::app::msg::GeoResult;
@@ -38,7 +38,7 @@ struct GeoMetadata {
     #[serde(skip_serializing_if = "Option::is_none")]
     geosite_ir_etag: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    updated_at: Option<DateTime<Utc>>,
+    updated_at: Option<DateTime<Local>>,
 }
 
 /// Manages downloading and updating geoip/geosite rule-sets for sing-box.
@@ -226,7 +226,7 @@ impl GeoManager {
             }
         }
 
-        meta.updated_at = Some(Utc::now());
+        meta.updated_at = Some(Local::now());
         self.save_metadata(&meta)?;
 
         Ok(true)
@@ -378,7 +378,7 @@ mod tests {
             geosite_cn_etag: Some("etag4".to_string()),
             geoip_ir_etag: Some("etag5".to_string()),
             geosite_ir_etag: Some("etag6".to_string()),
-            updated_at: Some(Utc::now()),
+            updated_at: Some(Local::now()),
         };
         gm.save_metadata(&meta).unwrap();
         let loaded = gm.load_metadata().unwrap();
