@@ -40,8 +40,8 @@ pub fn run() -> Result<()> {
     let mut terminal = Terminal::new(backend)?;
 
     let mut log_tailer = LogTailer::new(vec![
-        crate::infra::paths::app_log_path(),
-        crate::infra::paths::singbox_log_path(),
+        (crate::infra::paths::app_log_path(), "[app]"),
+        (crate::infra::paths::singbox_log_path(), "[sb]"),
     ]);
 
     let result = run_loop(
