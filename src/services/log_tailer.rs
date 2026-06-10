@@ -86,7 +86,7 @@ impl LogTailer {
             }
         }
 
-        entries.sort_by(|a, b| a.0.cmp(&b.0));
+        entries.sort_by_key(|a| a.0);
         entries.into_iter().map(|(_, line)| line).collect()
     }
 }

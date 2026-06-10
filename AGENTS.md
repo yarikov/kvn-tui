@@ -97,8 +97,9 @@ See the `release` skill in `.agents/skills/release/SKILL.md` for the full versio
 - Config file: `profiles.json` (top-level `Config` struct with `profiles: Vec<Profile>` and `settings: Settings`).
 - Enums use `#[serde(rename_all = "snake_case")]` or `"lowercase"` as appropriate.
 
-### Formatting
+### Formatting & Linting
 - Run `cargo fmt` before committing to keep the codebase consistent.
+- Run `cargo clippy --all-targets --all-features` and fix any warnings before committing.
 - The project uses the default `rustfmt` configuration (no `rustfmt.toml`).
 
 ### Naming
