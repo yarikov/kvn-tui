@@ -146,7 +146,11 @@ mod tests {
     #[test]
     fn tail_resets_on_rotation() {
         let mut temp = tempfile::NamedTempFile::new().unwrap();
-        writeln!(temp, "+0000 2024-01-01 00:00:00 INFO this is a long old log line").unwrap();
+        writeln!(
+            temp,
+            "+0000 2024-01-01 00:00:00 INFO this is a long old log line"
+        )
+        .unwrap();
         let path = temp.path().to_path_buf();
 
         let mut tailer = LogTailer::test_new(vec![(path.clone(), "[app]")]);

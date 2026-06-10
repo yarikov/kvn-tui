@@ -442,7 +442,9 @@ fn handle_geo_result(model: &mut Model, result: GeoResult) -> Vec<Effect> {
                 "Geo databases updated".into(),
             ));
             if model.connection == ConnectionState::Connected {
-                model.logs.push_back("Reconnecting to apply new geo databases".into());
+                model
+                    .logs
+                    .push_back("Reconnecting to apply new geo databases".into());
                 model.connection = ConnectionState::Connecting;
             }
             vec![]
