@@ -58,7 +58,7 @@ Under the hood, `kvn-tui` is built entirely in **Rust** and leverages the follow
 
 ### Architecture Highlights
 
-- **Daemon + TUI client** — the application splits into a headless daemon (owns sing-box, config, and state) and a TUI client (renders UI and forwards input). They communicate over a Unix domain socket via NDJSON. Running `sudo kvn-tui` auto-starts the daemon in the background if it is not already running.
+- **Daemon + TUI client** — the application splits into a headless daemon (owns sing-box, config, and state) and a TUI client (renders UI and forwards input). They communicate over a Unix domain socket via NDJSON. Running `kvn-tui` auto-starts the daemon in the background if it is not already running.
 - **TEA (The Elm Architecture)** — the daemon's business logic is split into pure `Model` / `update` / `Effect` layers. `update.rs` is fully synchronous and side-effect-free, making it easy to unit-test.
 - **sing-box runner** — dynamically generates valid sing-box 1.12+ JSON configurations from profile data, validates them with `sing-box check`, and spawns the process with automatic crash detection.
 - **Background services** — event reader, ticker, suspend watcher, IPC server, and effect workers run in dedicated threads inside the daemon communicating through an `mpsc` channel. Log tailing and geo updates are driven by messages, not shared mutable state.
@@ -107,6 +107,24 @@ This automatically:
 
 After installation, the daemon starts automatically on login. Open the TUI on demand via the Waybar module, the keybinding, or by running `omarchy-launch-kvn-tui`.
 
+### Polkit Setup (recommended)
+
+If your system uses **systemd-resolved** or **NetworkManager**, sing-box may trigger authentication dialogs when it changes DNS settings or routes on connect. To avoid these prompts, install the bundled polkit rule:
+
+```bash
+sudo kvn-tui --install-polkit
+```
+
+This command will:
+
+1. Add your user to the `network` group (if not already a member).
+2. Create `/etc/polkit-1/rules.d/49-kvn-tui.rules`, allowing the `network` group to manage DNS and network settings without a password.
+3. Restart the polkit service.
+
+> If you were just added to the `network` group, run `newgrp network` in your current shell, or log out and back in before testing.
+
+If you prefer not to use polkit, you can simply authenticate when the dialog appears — the application works either way.
+
 ### Build & Install from Source
 
 #### Prerequisites
@@ -147,8 +165,6 @@ This compiles the release binary with `--release --locked` and installs it to `/
 sing-box version
 ```
 
-> You must run `kvn-tui` as root so that sing-box can create the TUN interface. See [Quick Start](#quick-start) below.
-
 ### Manual Build (without package manager)
 
 ```bash
@@ -163,27 +179,16 @@ sudo install -Dm755 target/release/kvn-tui /usr/local/bin/kvn-tui
 Launch the application:
 
 ```bash
-sudo kvn-tui
+kvn-tui
 ```
 
-> `kvn-tui` must be run as root so that sing-box can create and manage the TUN interface and system routes.
-
-### Run without password
-
-To avoid typing your password on every launch, create a sudoers drop-in file:
-
-```bash
-echo "$USER ALL=(ALL) NOPASSWD: /usr/bin/kvn-tui" | sudo tee /etc/sudoers.d/kvn-tui
-sudo chmod 440 /etc/sudoers.d/kvn-tui
-```
-
-Then launch with:
-
-```bash
-sudo kvn-tui
-```
-
-> Adjust the path `/usr/bin/kvn-tui` if you installed to `/usr/local/bin/kvn-tui` or another location. Use `which kvn-tui` to verify.
+> No root required. TUN mode works via Linux capabilities set on the `sing-box`
+> binary (`cap_net_admin`, `cap_net_raw`). The AUR package configures this
+> automatically. For a manual install, run once:
+>
+> ```bash
+> sudo setcap cap_net_admin,cap_net_raw+ep /usr/bin/sing-box
+> ```
 
 ### Default Key Bindings
 

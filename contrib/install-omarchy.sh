@@ -50,7 +50,7 @@ if [ -f "$WAYBAR_CONFIG" ]; then
       sed -i '$ s/[[:space:]]*$/,/' "$tmp"
       cat >> "$tmp" <<'EOF'
   "custom/kvn-tui": {
-    "exec": "sudo kvn-tui --waybar-status",
+    "exec": "kvn-tui --waybar-status",
     "return-type": "json",
     "interval": 5,
     "on-click": "omarchy-launch-kvn-tui",
@@ -95,7 +95,7 @@ if [ ! -f "$LAUNCHER_SCRIPT" ]; then
   cat > "$LAUNCHER_SCRIPT" <<'EOF'
 #!/bin/bash
 exec omarchy-launch-or-focus "org.omarchy.kvn-tui" \
-  "uwsm-app -- xdg-terminal-exec --app-id=org.omarchy.kvn-tui -e sudo kvn-tui"
+  "uwsm-app -- xdg-terminal-exec --app-id=org.omarchy.kvn-tui -e kvn-tui"
 EOF
   chmod +x "$LAUNCHER_SCRIPT"
 else
@@ -116,7 +116,7 @@ if [ "$autostart_already" = false ]; then
   if [[ "$autostart_answer" =~ ^[Yy]$ ]]; then
     echo "Adding kvn-tui daemon to hyprland autostart..."
     mkdir -p "$(dirname "$HYPR_AUTOSTART")"
-    printf '\n%s\n' "exec-once = sudo kvn-tui --daemon" >> "$HYPR_AUTOSTART"
+    printf '\n%s\n' "exec-once = kvn-tui --daemon" >> "$HYPR_AUTOSTART"
   else
     echo "Skipping autostart."
   fi

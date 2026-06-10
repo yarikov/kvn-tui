@@ -104,9 +104,12 @@ pub fn print_status() {
 }
 
 pub fn is_singbox_alive(pid: u32) -> bool {
-    let exe = std::path::PathBuf::from(format!("/proc/{pid}/exe"));
-    std::fs::read_link(&exe)
-        .map(|target| target.to_string_lossy().contains("sing-box"))
+    // Use /proc/{pid}/comm instead of /proc/{pid}/exe because the kernel
+    // blocks read_link on /proc/{pid}/exe for processes with file
+    // capabilities (cap_net_admin,cap_net_raw=ep) even for the owning user.
+    let comm = std::path::PathBuf::from(format!("/proc/{pid}/comm"));
+    std::fs::read_to_string(&comm)
+        .map(|name| name.trim() == "sing-box")
         .unwrap_or(false)
 }
 

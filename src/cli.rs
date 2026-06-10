@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::Parser;
 
 use crate::services::waybar;
@@ -14,6 +14,12 @@ pub struct Cli {
         help = "Install Omarchy integration (Waybar module and desktop entry for Walker)"
     )]
     install_omarchy: bool,
+
+    #[arg(
+        long,
+        help = "Install polkit rule to allow network group to manage DNS without password prompts"
+    )]
+    install_polkit: bool,
 
     #[arg(long, help = "Run the headless daemon that manages sing-box")]
     pub daemon: bool,
@@ -32,6 +38,22 @@ fn install_omarchy() -> Result<()> {
     Ok(())
 }
 
+/// Run the embedded polkit rule installer script.
+fn install_polkit() -> Result<()> {
+    let script = include_str!("../contrib/install-polkit.sh");
+    let tmp = std::env::temp_dir().join("kvn-tui-install-polkit.sh");
+    std::fs::write(&tmp, script)?;
+    let status = std::process::Command::new("bash")
+        .arg(&tmp)
+        .status()
+        .context("failed to run install-polkit.sh")?;
+    std::fs::remove_file(&tmp).ok();
+    if !status.success() {
+        anyhow::bail!("install-polkit.sh exited with status {}", status);
+    }
+    Ok(())
+}
+
 /// Parse CLI arguments and execute any non-TUI commands.
 ///
 /// Returns `Some(Ok(()))` or `Some(Err(_))` if a CLI action was handled
@@ -46,6 +68,9 @@ pub fn try_run() -> Option<Result<()>> {
 pub fn try_run_from_parsed(cli: &Cli) -> Option<Result<()>> {
     if cli.install_omarchy {
         return Some(install_omarchy());
+    }
+    if cli.install_polkit {
+        return Some(install_polkit());
     }
     if cli.waybar_status {
         waybar::print_status();
@@ -76,6 +101,12 @@ mod tests {
     fn install_omarchy_flag_detected() {
         let cli = Cli::parse_from(["kvn-tui", "--install-omarchy"]);
         assert!(cli.install_omarchy);
+    }
+
+    #[test]
+    fn install_polkit_flag_detected() {
+        let cli = Cli::parse_from(["kvn-tui", "--install-polkit"]);
+        assert!(cli.install_polkit);
     }
 
     #[test]

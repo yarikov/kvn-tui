@@ -25,11 +25,14 @@ sed -e "s/{{VERSION}}/${VERSION}/g" \
     -e "s/{{SHA256SUM}}/${SHA256}/g" \
     "${SCRIPT_DIR}/PKGBUILD.bin" > PKGBUILD
 
+# Copy .install file
+cp "${SCRIPT_DIR}/kvn-tui.install" kvn-tui.install
+
 # Generate .SRCINFO
 makepkg --printsrcinfo > .SRCINFO
 
 # Commit and push
-git add PKGBUILD .SRCINFO
+git add PKGBUILD .SRCINFO kvn-tui.install
 if git diff --cached --quiet; then
     echo "No changes to commit"
     exit 0

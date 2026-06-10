@@ -53,10 +53,16 @@ Build release:
 cargo build --release
 ```
 
-Run (must be root for TUN):
+Run (no root required when sing-box has capabilities):
 
 ```bash
-sudo ./target/release/kvn-tui
+./target/release/kvn-tui
+```
+
+Install polkit rule (avoids authentication dialogs on connect):
+
+```bash
+sudo ./target/release/kvn-tui --install-polkit
 ```
 
 ---
@@ -172,11 +178,11 @@ The **TUI client** (`tui_client.rs`) additionally spawns:
 - Used by the `--waybar-status` CLI flag and for crash recovery (state is cleared on startup).
 
 ### Daemon + TUI Client Architecture
-- **Daemon** (`sudo kvn-tui --daemon`) runs headless. It owns the sing-box process, config, geo updates, suspend/resume handling, and log tailing. It binds a Unix domain socket for IPC.
-- **TUI Client** (`sudo kvn-tui`) connects to the daemon socket, requests a state snapshot (`Attach`), enters the alternate screen, and renders the UI. Keyboard input is forwarded to the daemon as `IpcCommand::Key` (except `p` and `e`, which are handled locally because they need terminal/Wayland access).
-- Pressing `q` (or `Esc`) when no overlay is shown sends `Detach` to the daemon, leaves the alternate screen, disables raw mode, and **exits the TUI process**. The daemon and sing-box keep running. Shell regains the prompt immediately because the foreground `sudo` process actually exits. If an overlay is open (Help, ConfirmDelete, RoutingMode, GeoRegions, Error), `q`/`Esc` is forwarded to the daemon as a normal key, which closes the overlay.
+- **Daemon** (`kvn-tui --daemon`) runs headless. It owns the sing-box process, config, geo updates, suspend/resume handling, and log tailing. It binds a Unix domain socket for IPC.
+- **TUI Client** (`kvn-tui`) connects to the daemon socket, requests a state snapshot (`Attach`), enters the alternate screen, and renders the UI. Keyboard input is forwarded to the daemon as `IpcCommand::Key` (except `p` and `e`, which are handled locally because they need terminal/Wayland access).
+- Pressing `q` (or `Esc`) when no overlay is shown sends `Detach` to the daemon, leaves the alternate screen, disables raw mode, and **exits the TUI process**. The daemon and sing-box keep running. Shell regains the prompt immediately because the foreground TUI process actually exits. If an overlay is open (Help, ConfirmDelete, RoutingMode, GeoRegions, Error), `q`/`Esc` is forwarded to the daemon as a normal key, which closes the overlay.
 - Pressing `Ctrl+C` sends `Quit` to the daemon. The daemon stops sing-box, cleans up the Unix socket, and exits. The TUI waits briefly (300 ms) for cleanup to complete before exiting.
-- Running `sudo kvn-tui` again connects to the same daemon and re-attaches, restoring the TUI instantly without restarting sing-box.
+- Running `kvn-tui` again connects to the same daemon and re-attaches, restoring the TUI instantly without restarting sing-box.
 - The IPC protocol is NDJSON over a Unix socket. The daemon pushes a full `StateSnapshot` after every state change. The snapshot includes the complete config (`profiles` and `settings`) so the TUI client always renders the current data.
 - `handle_ipc_command` unconditionally appends `Effect::BroadcastState` to every IPC command result, ensuring the daemon always pushes state after user interaction.
 - `handle_geo_result`, `Msg::ConnectFailed`, and the `handle_tick` idle fallback also append `Effect::BroadcastState` so state mutations that don't produce other broadcast-triggering effects are still visible to the TUI.
@@ -206,7 +212,7 @@ The **TUI client** (`tui_client.rs`) additionally spawns:
 | sing-box logs | `~/.config/kvn-tui/logs/sing-box.log` |
 | Temp sing-box config | `$XDG_RUNTIME_DIR/kvn-tui-singbox.json` or `/tmp/kvn-tui-singbox.json` |
 | Runtime state (waybar) | `~/.config/kvn-tui/state.json` |
-| IPC socket (daemon ↔ TUI) | `~/.config/kvn-tui/kvn-tui.sock` (under `SUDO_USER`) or `$XDG_RUNTIME_DIR/kvn-tui.sock` |
+| IPC socket (daemon ↔ TUI) | `~/.config/kvn-tui/kvn-tui.sock` or `$XDG_RUNTIME_DIR/kvn-tui.sock` |
 
 ---
 
