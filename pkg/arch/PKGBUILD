@@ -1,6 +1,6 @@
 # Maintainer: Dmitry Yarikov <dmitry@yarikov.com>
 pkgname=kvn-tui
-pkgver=0.11.1
+pkgver=0.11.2
 pkgrel=1
 pkgdesc="Terminal VPN client for Arch Linux + Wayland with vim navigation"
 arch=('x86_64')
