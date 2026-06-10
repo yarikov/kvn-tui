@@ -97,6 +97,10 @@ See the `release` skill in `.agents/skills/release/SKILL.md` for the full versio
 - Config file: `profiles.json` (top-level `Config` struct with `profiles: Vec<Profile>` and `settings: Settings`).
 - Enums use `#[serde(rename_all = "snake_case")]` or `"lowercase"` as appropriate.
 
+### Formatting
+- Run `cargo fmt` before committing to keep the codebase consistent.
+- The project uses the default `rustfmt` configuration (no `rustfmt.toml`).
+
 ### Naming
 - Modules are snake_case (`singbox`, not `sing_box`).
 - The binary name is `kvn-tui`; the crate name is `kvn-tui`.
@@ -212,3 +216,4 @@ The **TUI client** (`tui_client.rs`) additionally spawns:
 3. Are tests added for new public functions?
 4. Are you respecting the Arch + Wayland constraint (no X11 fallbacks added silently)?
 5. Does the sing-box config generation remain valid for sing-box 1.12+?
+6. Have you run `cargo fmt` to ensure consistent code formatting?
