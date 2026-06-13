@@ -8,11 +8,6 @@ use crate::app::msg::{IpcCommand, Msg, StateSnapshot};
 
 /// Return the path to the Unix domain socket used for IPC.
 pub fn socket_path() -> std::path::PathBuf {
-    if let Some(user) = crate::infra::user_env::sudo_user() {
-        if let Some(home) = crate::infra::user_env::home_dir(&user) {
-            return home.join(".config").join("kvn-tui").join("kvn-tui.sock");
-        }
-    }
     if let Some(dir) = std::env::var_os("XDG_RUNTIME_DIR") {
         std::path::PathBuf::from(dir).join("kvn-tui.sock")
     } else {

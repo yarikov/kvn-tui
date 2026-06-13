@@ -219,7 +219,7 @@ pub fn open_profiles_editor(profile_index: usize) -> Result<Config> {
         vec![path.display().to_string()]
     };
 
-    let status = crate::infra::user_env::command_as_user(&editor)
+    let status = Command::new(&editor)
         .args(&args)
         .status()
         .with_context(|| format!("Failed to launch editor: {}", editor))?;

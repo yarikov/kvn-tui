@@ -6,14 +6,6 @@ use std::path::PathBuf;
 /// instead of `/root/.config`, so that different users on the same system
 /// do not share profiles.
 pub fn config_dir() -> Option<PathBuf> {
-    #[cfg(not(test))]
-    {
-        if let Some(user) = crate::infra::user_env::sudo_user() {
-            if let Some(home) = crate::infra::user_env::home_dir(&user) {
-                return Some(home.join(".config").join("kvn-tui"));
-            }
-        }
-    }
     dirs::config_dir().map(|d| d.join("kvn-tui"))
 }
 
