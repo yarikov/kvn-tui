@@ -69,6 +69,12 @@ fn collect_geo_availability() -> GeoAvailability {
             geo.regions.insert(region, (geoip, geosite));
         }
     }
+    for service in crate::config::profile::RoutedService::ALL {
+        if gm.has_service_databases(service) {
+            geo.services
+                .insert(service, gm.service_local_paths(service));
+        }
+    }
     geo
 }
 
@@ -242,6 +248,37 @@ mod tests {
         // geosite missing → Ru must stay absent.
         let geo = collect_geo_availability();
         assert!(!geo.regions.contains_key(&GeoRegion::Ru));
+    }
+
+    #[test]
+    fn collect_geo_availability_includes_service_when_all_files_present() {
+        use crate::config::profile::RoutedService;
+
+        let _guard = crate::test_helpers::ENV_LOCK.lock().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        unsafe { std::env::set_var("XDG_CONFIG_HOME", dir.path()) };
+        let gm = crate::geo::GeoManager::new().unwrap();
+        let paths = gm.service_local_paths(RoutedService::Steam);
+
+        assert!(
+            !collect_geo_availability()
+                .services
+                .contains_key(&RoutedService::Steam)
+        );
+        fs::write(&paths[0].1, b"x").unwrap();
+        assert!(
+            !collect_geo_availability()
+                .services
+                .contains_key(&RoutedService::Steam),
+            "geoip missing"
+        );
+        fs::write(&paths[1].1, b"x").unwrap();
+        assert_eq!(
+            collect_geo_availability()
+                .services
+                .get(&RoutedService::Steam),
+            Some(&paths)
+        );
     }
 
     /// Validation against the real `sing-box` binary. Skipped automatically

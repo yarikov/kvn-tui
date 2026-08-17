@@ -236,6 +236,8 @@ mod tests {
             dns_strategy_draft: None,
             theme_selected: 0,
             theme_draft: None,
+            service_routing_selected: 0,
+            service_routing_draft: None,
             geo_updating: false,
             geo_last_updated: None,
             overlay: Overlay::None,

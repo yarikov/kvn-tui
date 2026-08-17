@@ -3,7 +3,8 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use crate::config::profile::{
-    DnsConfig, DnsServer, GeoRegion, Profile, ProtocolConfig, RoutingMode, Settings,
+    DnsConfig, DnsServer, GeoRegion, Profile, ProtocolConfig, RoutedService, RoutingMode,
+    ServiceRoute, Settings,
 };
 use crate::singbox::outbound::{
     build_anytls_outbound, build_http_outbound, build_hysteria2_outbound,
@@ -20,6 +21,9 @@ pub struct GeoAvailability {
     /// disk; `build_route` reads via `get`. Regions without rule-sets
     /// (`GeoRegion::Global`) never appear here.
     pub regions: HashMap<GeoRegion, (PathBuf, PathBuf)>,
+    /// `(tag, path)` per rule-set, in rule order, for each service whose
+    /// defined rule-set files all exist on disk.
+    pub services: HashMap<RoutedService, Vec<(&'static str, PathBuf)>>,
 }
 
 impl GeoAvailability {
@@ -42,7 +46,18 @@ impl GeoAvailability {
                 );
             }
         }
-        Self { regions }
+        let mut services = HashMap::new();
+        for service in RoutedService::ALL {
+            services.insert(
+                service,
+                crate::geo::service_assets(service)
+                    .present()
+                    .into_iter()
+                    .map(|a| (a.tag(), PathBuf::from("/geo").join(a.filename)))
+                    .collect(),
+            );
+        }
+        Self { regions, services }
     }
 }
 
@@ -73,7 +88,12 @@ pub fn generate_config(
 ) -> anyhow::Result<Value> {
     let mut proxy_outbounds = build_outbound(profile)?;
     proxy_outbounds.push(json!({ "type": "direct", "tag": "direct" }));
-    let (route, rule_sets) = build_route(&settings.geo_routing.mode(), &settings.dns, geo);
+    let (route, rule_sets) = build_route(
+        &settings.geo_routing.mode(),
+        &settings.dns,
+        geo,
+        &settings.geo_routing.service_routes,
+    );
     let dns = build_dns(&settings.dns);
 
     let mut cache_file = json!({ "enabled": true });
@@ -250,6 +270,7 @@ fn build_route(
     routing_mode: &RoutingMode,
     dns: &DnsConfig,
     geo: &GeoAvailability,
+    service_routes: &HashMap<RoutedService, ServiceRoute>,
 ) -> (Value, Vec<Value>) {
     let mut rules = vec![
         json!({
@@ -268,6 +289,37 @@ fn build_route(
     ];
 
     let mut rule_sets: Vec<Value> = Vec::new();
+
+    // Per-service routing overrides, placed before the regional geo rules so
+    // an explicit override wins in every routing mode (`Direct` beats a
+    // region's `Only` → proxy; `Proxy` beats its `Bypass` → direct). A
+    // service is skipped while its rule-set files are missing — a pending
+    // download must never fail the connection. Iterates `RoutedService::ALL`,
+    // not the map: `HashMap` iteration order is nondeterministic and would
+    // make the generated config unstable across runs.
+    for service in RoutedService::ALL {
+        let outbound = match service_routes.get(&service).copied().unwrap_or_default() {
+            ServiceRoute::Disabled => continue,
+            ServiceRoute::Proxy => "proxy",
+            ServiceRoute::Direct => "direct",
+        };
+        let Some(entries) = geo.services.get(&service) else {
+            continue;
+        };
+        let tags: Vec<&str> = entries.iter().map(|(tag, _)| *tag).collect();
+        rules.push(json!({
+            "rule_set": tags,
+            "outbound": outbound,
+        }));
+        for (tag, path) in entries {
+            rule_sets.push(json!({
+                "tag": tag,
+                "type": "local",
+                "format": "binary",
+                "path": path,
+            }));
+        }
+    }
 
     match routing_mode {
         RoutingMode::Global => {}
@@ -917,6 +969,7 @@ mod tests {
             &RoutingMode::Global,
             &dns_default(),
             &GeoAvailability::all(),
+            &no_services(),
         );
         assert_eq!(
             route["default_mark"].as_u64(),
@@ -929,7 +982,12 @@ mod tests {
     fn build_route_global_has_basic_rules() {
         let mut dns = dns_default();
         dns.strategy = DnsStrategy::OnlyIpv4;
-        let (route, rule_sets) = build_route(&RoutingMode::Global, &dns, &GeoAvailability::all());
+        let (route, rule_sets) = build_route(
+            &RoutingMode::Global,
+            &dns,
+            &GeoAvailability::all(),
+            &no_services(),
+        );
         assert!(rule_sets.is_empty());
         let rules = route["rules"].as_array().unwrap();
         assert_eq!(rules.len(), 3); // ipv6 reject, dns hijack, direct cidr
@@ -944,6 +1002,7 @@ mod tests {
             &RoutingMode::Only(GeoRegion::Ru),
             &dns_default(),
             &GeoAvailability::all(),
+            &no_services(),
         );
         let rules = route["rules"].as_array().unwrap();
         assert!(rules.len() >= 4); // basic 3 + ip_is_private
@@ -971,6 +1030,7 @@ mod tests {
             &RoutingMode::Bypass(GeoRegion::Cn),
             &dns_default(),
             &GeoAvailability::all(),
+            &no_services(),
         );
         let rules = route["rules"].as_array().unwrap();
         assert!(rules.len() >= 4); // basic 3 + ip_is_private
@@ -983,6 +1043,7 @@ mod tests {
             &RoutingMode::Only(GeoRegion::Cn),
             &dns_default(),
             &GeoAvailability::all(),
+            &no_services(),
         );
         let rules = route["rules"].as_array().unwrap();
         assert!(rules.len() >= 4); // basic 3 + ip_is_private
@@ -1218,6 +1279,7 @@ mod tests {
             &RoutingMode::Bypass(GeoRegion::Ir),
             &dns_default(),
             &GeoAvailability::all(),
+            &no_services(),
         );
         let rules = route["rules"].as_array().unwrap();
         assert!(rules.len() >= 4);
@@ -1237,6 +1299,7 @@ mod tests {
             &RoutingMode::Only(GeoRegion::Ir),
             &dns_default(),
             &GeoAvailability::all(),
+            &no_services(),
         );
         let rules = route["rules"].as_array().unwrap();
         assert!(rules.len() >= 4);
@@ -1251,6 +1314,7 @@ mod tests {
             &RoutingMode::Bypass(GeoRegion::Ru),
             &dns_default(),
             &GeoAvailability::all(),
+            &no_services(),
         );
         assert_eq!(route["final"], "proxy");
         assert_eq!(rule_sets.len(), 2);
@@ -1264,6 +1328,7 @@ mod tests {
             &RoutingMode::Bypass(GeoRegion::Ru),
             &dns_default(),
             &GeoAvailability::default(),
+            &no_services(),
         );
         assert!(rule_sets.is_empty());
     }
@@ -1274,6 +1339,7 @@ mod tests {
             &RoutingMode::Only(GeoRegion::Cn),
             &dns_default(),
             &GeoAvailability::default(),
+            &no_services(),
         );
         assert!(rule_sets.is_empty());
     }
@@ -1284,6 +1350,7 @@ mod tests {
             &RoutingMode::Bypass(GeoRegion::Ir),
             &dns_default(),
             &GeoAvailability::default(),
+            &no_services(),
         );
         assert!(rule_sets.is_empty());
     }
@@ -1294,8 +1361,169 @@ mod tests {
             &RoutingMode::Only(GeoRegion::Ir),
             &dns_default(),
             &GeoAvailability::default(),
+            &no_services(),
         );
         assert!(rule_sets.is_empty());
+    }
+
+    // ---- Per-service routing overrides ----
+
+    fn no_services() -> HashMap<RoutedService, ServiceRoute> {
+        HashMap::new()
+    }
+
+    fn routes(entries: &[(RoutedService, ServiceRoute)]) -> HashMap<RoutedService, ServiceRoute> {
+        entries.iter().copied().collect()
+    }
+
+    #[test]
+    fn build_route_service_direct_adds_rule_and_rule_sets_in_global() {
+        let (route, rule_sets) = build_route(
+            &RoutingMode::Global,
+            &dns_default(),
+            &GeoAvailability::all(),
+            &routes(&[(RoutedService::Steam, ServiceRoute::Direct)]),
+        );
+        let rules = route["rules"].as_array().unwrap();
+        let steam_rule = rules
+            .iter()
+            .find(|r| r["rule_set"] == json!(["geosite-steam", "geoip-steam"]))
+            .expect("steam rule present");
+        assert_eq!(steam_rule["outbound"], "direct");
+        let tags: Vec<&str> = rule_sets.iter().filter_map(|r| r["tag"].as_str()).collect();
+        assert_eq!(tags, ["geosite-steam", "geoip-steam"]);
+        assert!(
+            rule_sets
+                .iter()
+                .all(|r| r["type"] == "local" && r["format"] == "binary")
+        );
+    }
+
+    #[test]
+    fn build_route_service_proxy_uses_proxy_outbound() {
+        let (route, rule_sets) = build_route(
+            &RoutingMode::Bypass(GeoRegion::Ru),
+            &dns_default(),
+            &GeoAvailability::all(),
+            &routes(&[(RoutedService::Telegram, ServiceRoute::Proxy)]),
+        );
+        let rules = route["rules"].as_array().unwrap();
+        let tg_rule = rules
+            .iter()
+            .find(|r| r["rule_set"] == json!(["geosite-telegram", "geoip-telegram"]))
+            .expect("telegram rule present");
+        assert_eq!(tg_rule["outbound"], "proxy");
+        // Telegram's 2 rule-sets + the region's 2.
+        assert_eq!(rule_sets.len(), 4);
+    }
+
+    #[test]
+    fn build_route_service_rules_precede_geo_rules_under_only() {
+        let (route, rule_sets) = build_route(
+            &RoutingMode::Only(GeoRegion::Ru),
+            &dns_default(),
+            &GeoAvailability::all(),
+            &routes(&[(RoutedService::Steam, ServiceRoute::Direct)]),
+        );
+        let rules = route["rules"].as_array().unwrap();
+        let steam_idx = rules
+            .iter()
+            .position(|r| r["rule_set"] == json!(["geosite-steam", "geoip-steam"]))
+            .unwrap();
+        let geo_idx = rules
+            .iter()
+            .position(|r| r["rule_set"] == json!(["geosite-category-ru"]))
+            .unwrap();
+        assert!(
+            steam_idx < geo_idx,
+            "service overrides must win over the regional rules"
+        );
+        assert_eq!(rule_sets.len(), 4);
+    }
+
+    #[test]
+    fn build_route_service_rules_follow_all_order() {
+        // Same config must always yield the same rule order, regardless of
+        // HashMap internals — services appear in RoutedService::ALL order.
+        let (route, _) = build_route(
+            &RoutingMode::Global,
+            &dns_default(),
+            &GeoAvailability::all(),
+            &routes(&[
+                (RoutedService::Telegram, ServiceRoute::Direct),
+                (RoutedService::Steam, ServiceRoute::Direct),
+            ]),
+        );
+        let rules = route["rules"].as_array().unwrap();
+        let service_rules: Vec<&Value> = rules
+            .iter()
+            .filter(|r| r.get("rule_set").is_some())
+            .collect();
+        assert_eq!(service_rules.len(), 2);
+        assert_eq!(
+            service_rules[0]["rule_set"],
+            json!(["geosite-steam", "geoip-steam"])
+        );
+        assert_eq!(
+            service_rules[1]["rule_set"],
+            json!(["geosite-telegram", "geoip-telegram"])
+        );
+    }
+
+    #[test]
+    fn build_route_disabled_services_emit_no_entries() {
+        let (route, rule_sets) = build_route(
+            &RoutingMode::Global,
+            &dns_default(),
+            &GeoAvailability::all(),
+            &routes(&[(RoutedService::Steam, ServiceRoute::Disabled)]),
+        );
+        assert!(rule_sets.is_empty());
+        assert!(
+            route["rules"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|r| r.get("rule_set").is_none())
+        );
+    }
+
+    #[test]
+    fn build_route_service_enabled_without_files_is_noop() {
+        let (_route, rule_sets) = build_route(
+            &RoutingMode::Global,
+            &dns_default(),
+            &GeoAvailability::default(),
+            &routes(&[(RoutedService::Steam, ServiceRoute::Direct)]),
+        );
+        assert!(rule_sets.is_empty());
+    }
+
+    #[test]
+    fn generated_config_includes_service_rule_sets_when_enabled() {
+        let profile = test_profile();
+        let mut settings = Settings::default();
+        settings
+            .geo_routing
+            .service_routes
+            .insert(RoutedService::Steam, ServiceRoute::Direct);
+        let config = generate_config(&profile, &settings, &GeoAvailability::all()).unwrap();
+        let tags: Vec<&str> = config["route"]["rule_set"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|r| r["tag"].as_str())
+            .collect();
+        assert!(tags.contains(&"geosite-steam"));
+        assert!(tags.contains(&"geoip-steam"));
+    }
+
+    #[test]
+    fn generated_config_omits_service_rule_sets_by_default() {
+        let profile = test_profile();
+        let settings = Settings::default();
+        let config = generate_config(&profile, &settings, &GeoAvailability::all()).unwrap();
+        assert!(config["route"].get("rule_set").is_none());
     }
 
     // ---- build_dns_server for every variant ----

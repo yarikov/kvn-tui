@@ -59,6 +59,7 @@ pub fn draw(frame: &mut Frame, model: &Model) {
         Overlay::GeoRegions => draw_geo_region(frame, model, area),
         Overlay::DnsSettings => draw_dns_settings(frame, model, area),
         Overlay::ThemeSettings => draw_theme_settings(frame, model, area),
+        Overlay::ServiceRouting => draw_service_routing(frame, model, area),
         Overlay::None => {}
     }
 }
@@ -161,6 +162,7 @@ fn draw_help(frame: &mut Frame, theme: &Theme, area: Rect) {
         Row::new(vec!["a", "Toggle auto-connect"]),
         Row::new(vec!["K", "Toggle kill switch"]),
         Row::new(vec!["D", "DNS settings"]),
+        Row::new(vec!["S", "Service routing"]),
         Row::new(vec!["C", "Theme picker"]),
         Row::new(vec!["t", "Test selected profile latency"]),
         Row::new(vec!["T", "Test all profiles (batch)"]),
@@ -334,6 +336,69 @@ fn draw_dns_settings(frame: &mut Frame, model: &Model, area: Rect) {
         current_dns_preset_index(dns),
         POPUP_HEIGHT_PERCENT,
     );
+}
+
+/// Draw the service routing overlay. Each row shows a service and its
+/// draft route (`‹ value ›`, cycled with h/l); a `*` marks rows whose draft
+/// differs from the committed setting. Enter commits the whole draft.
+///
+/// Rendered without the shared `draw_selection_modal`: that helper centers
+/// each line and trims whitespace, which would break the fixed columns this
+/// table-shaped overlay needs.
+fn draw_service_routing(frame: &mut Frame, model: &Model, area: Rect) {
+    use crate::config::profile::RoutedService;
+
+    let theme = &model.theme;
+    let committed = &model.config.settings.geo_routing.service_routes;
+
+    let popup_area = centered_rect(POPUP_WIDTH_PERCENT, POPUP_HEIGHT_PERCENT, area);
+    frame.render_widget(Clear, popup_area);
+    let block = Block::default()
+        .title(" Services ")
+        .borders(Borders::ALL)
+        .border_style(theme.border())
+        .style(theme.popup_bg());
+    let inner = block.inner(popup_area);
+    frame.render_widget(block, popup_area);
+
+    let mut lines: Vec<Line> = vec![
+        Line::from(Span::styled("Service routing", theme.accent())).centered(),
+        Line::from(""),
+    ];
+
+    // marker(2) + name(9) + " ‹ " + route(8) + " ›" + dirty(2)
+    const ROW_WIDTH: usize = 2 + 9 + 3 + 8 + 2 + 2;
+    let indent = " ".repeat((inner.width as usize).saturating_sub(ROW_WIDTH) / 2);
+    for (i, service) in RoutedService::ALL.into_iter().enumerate() {
+        let saved = committed.get(&service).copied().unwrap_or_default();
+        // Inside a draft an absent entry IS Disabled (the commit handler
+        // normalizes Disabled to "no entry") — it must not fall back to the
+        // committed value, or cycling back to Disabled would render stale.
+        let shown = match model.service_routing_draft.as_ref() {
+            Some(draft) => draft.get(&service).copied().unwrap_or_default(),
+            None => saved,
+        };
+        let selected = i == model.service_routing_selected;
+        let row = format!(
+            "{}{}{:<9} ‹ {:^8} ›{}",
+            indent,
+            if selected { "> " } else { "  " },
+            service.label(),
+            shown.label(),
+            if shown != saved { " *" } else { "" },
+        );
+        let style = if selected {
+            theme.accent().add_modifier(Modifier::BOLD)
+        } else {
+            theme.normal()
+        };
+        lines.push(Line::from(Span::styled(row, style)));
+    }
+
+    lines.push(Line::from(""));
+    lines.push(Line::from("j/k select, h/l change, Enter, Esc").centered());
+
+    frame.render_widget(Paragraph::new(lines), inner);
 }
 
 /// Draw the theme picker overlay. Lists all bundled palettes plus an
@@ -1010,6 +1075,47 @@ mod tests {
         model.overlay = Overlay::DnsSettings;
         // Cursor on the "Strategy" row so it gets highlighted in the snapshot.
         model.dns_selected = 4;
+        insta::assert_snapshot!(snapshot_terminal(&model, 80, 24));
+    }
+
+    /// Service routing overlay with the cursor on the second row and an
+    /// uncommitted draft change (`*`). Covers the Direct and Proxy
+    /// renderings; Disabled is pinned by the `_no_edits` snapshot below.
+    #[test]
+    fn draw_service_routing_overlay_snapshot() {
+        use crate::config::profile::{RoutedService, ServiceRoute};
+        use std::collections::HashMap;
+
+        let mut model = model_with_profiles(vec![]);
+        model.geo_last_updated = Some("2026-05-31 13:41".to_string());
+        model.overlay = Overlay::ServiceRouting;
+        model.service_routing_selected = 1;
+        // Steam is committed as Direct; the Telegram→Proxy edit is
+        // draft-only, so its row carries the dirty marker.
+        model
+            .config
+            .settings
+            .geo_routing
+            .service_routes
+            .insert(RoutedService::Steam, ServiceRoute::Direct);
+        model.service_routing_draft = Some(HashMap::from([
+            (RoutedService::Steam, ServiceRoute::Direct),
+            (RoutedService::Telegram, ServiceRoute::Proxy),
+        ]));
+        insta::assert_snapshot!(snapshot_terminal(&model, 80, 24));
+    }
+
+    /// Freshly opened overlay with no committed routes: every row renders
+    /// Disabled (an absent draft entry), no dirty markers.
+    #[test]
+    fn draw_service_routing_overlay_no_edits_snapshot() {
+        use std::collections::HashMap;
+
+        let mut model = model_with_profiles(vec![]);
+        model.geo_last_updated = Some("2026-05-31 13:41".to_string());
+        model.overlay = Overlay::ServiceRouting;
+        model.service_routing_selected = 0;
+        model.service_routing_draft = Some(HashMap::new());
         insta::assert_snapshot!(snapshot_terminal(&model, 80, 24));
     }
 

@@ -55,8 +55,18 @@ pub enum Msg {
     SystemResumed,
     Connected {
         pid: u32,
+        /// The profile that actually connected. Carried through the connect
+        /// flow because the cursor may have moved since the connect was
+        /// issued — attribution must not depend on the selection.
+        profile_id: Uuid,
     },
     ConnectFailed(IpcError),
+    /// A service rule-set download pass finished (files may still be missing
+    /// if individual downloads failed — absence degrades to "no rule for
+    /// that service"). Consumed by the reducer to run the reconnect that a
+    /// service-routing commit deferred until the rule-sets were fetched
+    /// through the still-active tunnel (`Model::pending_service_reconnect`).
+    ServiceRuleSetsReady,
     SubscriptionFetched {
         id: Uuid,
         result: Result<Vec<crate::config::profile::Profile>, IpcError>,
@@ -222,6 +232,15 @@ pub struct StateSnapshot {
     pub theme_selected: usize,
     #[serde(default)]
     pub theme_draft: Option<String>,
+    #[serde(default)]
+    pub service_routing_selected: usize,
+    #[serde(default)]
+    pub service_routing_draft: Option<
+        std::collections::HashMap<
+            crate::config::profile::RoutedService,
+            crate::config::profile::ServiceRoute,
+        >,
+    >,
     pub geo_updating: bool,
     pub geo_last_updated: Option<String>,
     pub overlay: Overlay,

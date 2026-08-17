@@ -282,6 +282,7 @@ Press `?` at any time to see the full key map.
 | `o` | Select geo region |
 | `K` | Toggle kill switch |
 | `D` | DNS settings (presets, strategy, fake-IP) |
+| `S` | Service routing (Steam / Telegram → Proxy / Direct) |
 | `C` | Theme picker (live preview, Enter to persist) |
 | `a` | Toggle auto-connect |
 | `t` | Test latency of selected profile |
@@ -334,6 +335,10 @@ When `auto_connect` is enabled, the application stores `last_connected_profile` 
 `settings.geo_routing.current_region` controls which regional rule-sets are downloaded and which routing modes are available. The `settings.geo_routing.selected_region_modes` map remembers the routing mode previously selected for each region, while `settings.geo_routing.auto_update` controls background rule-set updates. Select `global` to skip geo downloads and use Global routing only.
 
 On the very first launch (or when `geo_routing.current_region` is absent), a modal overlay forces you to pick a region before the main UI becomes usable.
+
+Press `S` to open the **service routing** overlay. Each predefined service (Steam, Telegram) can be routed independently of the regional mode: `Disabled` (default — follows the normal routing), `Proxy` (always through the tunnel, even in a Bypass mode), or `Direct` (out the `direct` outbound, so the service sees your real network location — e.g. Steam then picks nearby CDN servers for downloads instead of servers near the VPN exit). `h`/`l` cycle a service's route, `Enter` applies (reconnecting if needed), `Esc` cancels. The setting persists as `geo_routing.service_routes` in `profiles.json`.
+
+Matching uses local rule-set files (from MetaCubeX/meta-rules-dat): Steam matches Steam domains plus Valve's AS32590 IP ranges (note the ASN file covers *all* Valve traffic, including game servers and Steam logins, not just download CDNs); Telegram matches Telegram's domains and IP ranges (its clients mostly connect by bare IP). `Direct` is an explicit opt-in because it deliberately sends that traffic outside the tunnel (and past the kill switch, which allowlists the `direct` outbound by design). The rule-set files are fetched through the tunnel — applying a change while connected first downloads any missing files through the active tunnel, then reconnects, so the new rules are live immediately — and are refreshed alongside the geo databases. If a file is missing (a download failed), the override degrades silently and connections proceed without it; it kicks in on the next reconnect after the file arrives.
 
 `settings.theme` is a string slug naming the active color palette. Default: `tokyo-night`. The reserved slug `omarchy` is a sentinel that auto-follows `$XDG_STATE_HOME/omarchy/current/theme.name` on Omarchy 4 and `$XDG_CONFIG_HOME/omarchy/current/theme.name` on Omarchy 3 (and only appears as the `Auto` entry when Omarchy is installed). Any of the 22 bundled palettes can be selected by name — see `themes/*.toml` for the canonical list.
 
