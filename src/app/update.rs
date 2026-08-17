@@ -61,7 +61,7 @@ pub fn update(model: &mut Model, msg: Msg) -> Vec<Effect> {
                 vec![]
             }
         }
-        Msg::Connected { pid } => {
+        Msg::Connected { pid, profile_id } => {
             model.singbox_pid = Some(pid);
             model.connection = ConnectionState::Connected;
             model.overlay = Overlay::None;
@@ -71,24 +71,85 @@ pub fn update(model: &mut Model, msg: Msg) -> Vec<Effect> {
             model.last_traffic_sample_at_ms = 0;
             model.last_traffic_fetch_at = None;
             let mut effects = vec![Effect::WriteState];
-            if let Some(profile) = model.selected_profile() {
-                let profile_id = profile.id;
-                let profile_name = profile.name.clone();
-                model.active_profile_id = Some(profile_id);
-                push_status(
-                    &mut effects,
-                    model,
-                    crate::app::model::AppStatus::Info(format!("Connected to {}", profile_name)),
-                );
-                // Persist last connected profile for auto-connect on next startup.
-                if model.config.settings.last_connected_profile != Some(profile_id) {
-                    model.config.settings.last_connected_profile = Some(profile_id);
-                    effects.push(Effect::SaveConfig);
-                }
+            // The tunnel is up — fetch rule-sets for enabled service routes
+            // through it if any are still missing (they apply on the next
+            // reconnect).
+            if !model
+                .config
+                .settings
+                .geo_routing
+                .enabled_services()
+                .is_empty()
+            {
+                effects.push(Effect::DownloadServiceRuleSetsIfMissing);
+            }
+            // Attribute the connection to the profile that actually connected
+            // (carried in the message) — never to the cursor's row, which may
+            // have moved since the connect was issued.
+            model.active_profile_id = Some(profile_id);
+            let profile_name = model
+                .config
+                .profiles
+                .iter()
+                .find(|p| p.id == profile_id)
+                .map(|p| p.name.clone());
+            push_status(
+                &mut effects,
+                model,
+                crate::app::model::AppStatus::Info(match profile_name {
+                    Some(name) => format!("Connected to {}", name),
+                    // Profile deleted while the connect was in flight.
+                    None => "Connected".to_string(),
+                }),
+            );
+            // Persist last connected profile for auto-connect on next startup.
+            if model.config.settings.last_connected_profile != Some(profile_id) {
+                model.config.settings.last_connected_profile = Some(profile_id);
+                effects.push(Effect::SaveConfig);
             }
             effects
         }
         Msg::SubscriptionFetched { id, result } => handle_subscription_result(model, id, result),
+        Msg::ServiceRuleSetsReady => {
+            // The post-connect backstop download also reports here; without
+            // a pending commit there is nothing to do.
+            if !model.pending_service_reconnect {
+                return vec![];
+            }
+            model.pending_service_reconnect = false;
+            if model.connection != ConnectionState::Connected {
+                // Disconnected while the download ran — the files are on
+                // disk and apply on whatever connect happens next.
+                return vec![];
+            }
+            let mut effects = vec![Effect::BroadcastState];
+            // Reconnect the ACTIVE profile explicitly — never the cursor's
+            // row, which may have moved since the routing change.
+            let active = model
+                .active_profile_id
+                .and_then(|id| model.config.profiles.iter().find(|p| p.id == id).cloned());
+            if let Some(profile) = active {
+                let settings = model.config.settings.clone();
+                model.connection = ConnectionState::Connecting;
+                push_status(
+                    &mut effects,
+                    model,
+                    crate::app::model::AppStatus::Info(
+                        "Service routing changed — reconnecting".into(),
+                    ),
+                );
+                effects.push(Effect::Connect { profile, settings });
+            } else {
+                push_status(
+                    &mut effects,
+                    model,
+                    crate::app::model::AppStatus::Info(
+                        "Service routing saved — reconnect to apply".into(),
+                    ),
+                );
+            }
+            effects
+        }
         Msg::ConnectFailed(err) => {
             model.connection = ConnectionState::Idle;
             model.traffic = TrafficStats::default();
@@ -1583,10 +1644,179 @@ mod tests {
     fn connected_clears_pending() {
         let mut model = Model::test_new(crate::config::profile::Config::default());
         model.connection = ConnectionState::ConnectPending;
-        let effects = update(&mut model, Msg::Connected { pid: 12345 });
+        let id = uuid::Uuid::new_v4();
+        let effects = update(
+            &mut model,
+            Msg::Connected {
+                pid: 12345,
+                profile_id: id,
+            },
+        );
         assert_eq!(model.connection, ConnectionState::Connected);
         assert_eq!(model.overlay, Overlay::None);
-        assert_eq!(effects, vec![Effect::WriteState]);
+        // The connection is attributed to the carried id even when the
+        // profile is no longer in the list (deleted mid-connect).
+        assert_eq!(model.active_profile_id, Some(id));
+        assert_eq!(
+            effects,
+            vec![
+                Effect::WriteState,
+                app_log_info("Connected"),
+                Effect::SaveConfig
+            ]
+        );
+    }
+
+    #[test]
+    fn connected_attributes_to_carried_profile_not_cursor() {
+        let a = Profile::new_vless(
+            "A".to_string(),
+            "1.1.1.1".to_string(),
+            443,
+            "u1".to_string(),
+        );
+        let b = Profile::new_vless(
+            "B".to_string(),
+            "2.2.2.2".to_string(),
+            443,
+            "u2".to_string(),
+        );
+        let a_id = a.id;
+        let mut model = model_with_profiles(vec![a, b]);
+        model.connection = ConnectionState::ConnectPending;
+        // Cursor rests on B while A's connect completes.
+        model.select_next();
+        let effects = update(
+            &mut model,
+            Msg::Connected {
+                pid: 1,
+                profile_id: a_id,
+            },
+        );
+        assert_eq!(model.active_profile_id, Some(a_id));
+        assert_eq!(model.config.settings.last_connected_profile, Some(a_id));
+        assert!(effects.contains(&app_log_info("Connected to A")));
+    }
+
+    #[test]
+    fn connected_fetches_service_rule_sets_only_when_enabled() {
+        use crate::config::profile::{RoutedService, ServiceRoute};
+
+        let mut model = Model::test_new(crate::config::profile::Config::default());
+        model.connection = ConnectionState::ConnectPending;
+        let effects = update(
+            &mut model,
+            Msg::Connected {
+                pid: 1,
+                profile_id: uuid::Uuid::new_v4(),
+            },
+        );
+        assert!(
+            !effects.contains(&Effect::DownloadServiceRuleSetsIfMissing),
+            "all service routes are disabled by default — no fetch"
+        );
+
+        let mut model = Model::test_new(crate::config::profile::Config::default());
+        model
+            .config
+            .settings
+            .geo_routing
+            .service_routes
+            .insert(RoutedService::Telegram, ServiceRoute::Proxy);
+        model.connection = ConnectionState::ConnectPending;
+        let effects = update(
+            &mut model,
+            Msg::Connected {
+                pid: 1,
+                profile_id: uuid::Uuid::new_v4(),
+            },
+        );
+        assert!(effects.contains(&Effect::DownloadServiceRuleSetsIfMissing));
+
+        // Explicitly-disabled entries don't count as enabled.
+        let mut model = Model::test_new(crate::config::profile::Config::default());
+        model
+            .config
+            .settings
+            .geo_routing
+            .service_routes
+            .insert(RoutedService::Steam, ServiceRoute::Disabled);
+        model.connection = ConnectionState::ConnectPending;
+        let effects = update(
+            &mut model,
+            Msg::Connected {
+                pid: 1,
+                profile_id: uuid::Uuid::new_v4(),
+            },
+        );
+        assert!(!effects.contains(&Effect::DownloadServiceRuleSetsIfMissing));
+    }
+
+    #[test]
+    fn service_rule_sets_ready_reconnects_active_profile_not_cursor() {
+        let a = Profile::new_vless("A".into(), "e".into(), 1, "u".into());
+        let b = Profile::new_vless("B".into(), "e".into(), 2, "u".into());
+        let active_id = a.id;
+        let mut model = model_with_profiles(vec![a, b]);
+        model.connection = ConnectionState::Connected;
+        model.active_profile_id = Some(active_id);
+        model.pending_service_reconnect = true;
+        // Cursor rests on profile B — the reconnect must still target A.
+        model.select_next();
+        let effects = update(&mut model, Msg::ServiceRuleSetsReady);
+        assert!(!model.pending_service_reconnect, "flag is consumed");
+        assert_eq!(model.connection, ConnectionState::Connecting);
+        let connect_id = effects.iter().find_map(|e| match e {
+            Effect::Connect { profile, .. } => Some(profile.id),
+            _ => None,
+        });
+        assert_eq!(
+            connect_id,
+            Some(active_id),
+            "must reconnect the active profile, not the cursor's"
+        );
+    }
+
+    #[test]
+    fn service_rule_sets_ready_without_pending_commit_is_noop() {
+        // The post-connect backstop download also reports readiness; it must
+        // not trigger a reconnect loop.
+        let profile = Profile::new_vless("A".into(), "e".into(), 1, "u".into());
+        let mut model = model_with_profiles(vec![profile.clone()]);
+        model.connection = ConnectionState::Connected;
+        model.active_profile_id = Some(profile.id);
+        let effects = update(&mut model, Msg::ServiceRuleSetsReady);
+        assert!(effects.is_empty());
+        assert_eq!(model.connection, ConnectionState::Connected);
+    }
+
+    #[test]
+    fn service_rule_sets_ready_after_disconnect_clears_flag_without_connect() {
+        let profile = Profile::new_vless("A".into(), "e".into(), 1, "u".into());
+        let mut model = model_with_profiles(vec![profile.clone()]);
+        model.connection = ConnectionState::Idle;
+        model.active_profile_id = Some(profile.id);
+        model.pending_service_reconnect = true;
+        let effects = update(&mut model, Msg::ServiceRuleSetsReady);
+        assert!(!model.pending_service_reconnect);
+        assert!(!effects.iter().any(|e| matches!(e, Effect::Connect { .. })));
+        assert_eq!(model.connection, ConnectionState::Idle);
+    }
+
+    #[test]
+    fn service_rule_sets_ready_with_missing_active_profile_does_not_flip_state() {
+        let profile = Profile::new_vless("A".into(), "e".into(), 1, "u".into());
+        let mut model = model_with_profiles(vec![profile]);
+        model.connection = ConnectionState::Connected;
+        // Active profile id points at a profile that no longer exists.
+        model.active_profile_id = Some(uuid::Uuid::new_v4());
+        model.pending_service_reconnect = true;
+        let effects = update(&mut model, Msg::ServiceRuleSetsReady);
+        assert!(!model.pending_service_reconnect);
+        assert!(!effects.iter().any(|e| matches!(e, Effect::Connect { .. })));
+        // Never drop to Connecting without a resolvable target — that path
+        // ends in Idle-with-live-tunnel on the next Tick.
+        assert_eq!(model.connection, ConnectionState::Connected);
     }
 
     #[test]
@@ -1598,7 +1828,14 @@ mod tests {
             "u1".to_string(),
         )]);
         model.connection = ConnectionState::ConnectPending;
-        let effects = update(&mut model, Msg::Connected { pid: 12345 });
+        let id = model.config.profiles[0].id;
+        let effects = update(
+            &mut model,
+            Msg::Connected {
+                pid: 12345,
+                profile_id: id,
+            },
+        );
         assert_eq!(model.connection, ConnectionState::Connected);
         assert_eq!(
             model.config.settings.last_connected_profile,
@@ -2422,7 +2659,14 @@ mod tests {
         model.traffic.up_rate_bps = 100;
         model.last_traffic_sample_at_ms = 1_000;
         model.last_traffic_fetch_at = Some(Instant::now());
-        let _ = update(&mut model, Msg::Connected { pid: 1234 });
+        let id = model.config.profiles[0].id;
+        let _ = update(
+            &mut model,
+            Msg::Connected {
+                pid: 1234,
+                profile_id: id,
+            },
+        );
         assert_eq!(model.traffic, TrafficStats::default());
         assert_eq!(model.last_traffic_sample_at_ms, 0);
         assert!(model.last_traffic_fetch_at.is_none());

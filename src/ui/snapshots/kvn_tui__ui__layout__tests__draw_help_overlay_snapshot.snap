@@ -7,7 +7,6 @@ expression: "snapshot_terminal(&model, 80, 40)"
 │or subscription URL from clipboard.   ││                                      │
 │                                      ││                                      │
 │                                      ││                                      │
-│                                      ││                                      │
 │               ┌ Help ────────────────────────────────────────┐               │
 │               │Key          Action                           │               │
 │               │j / Down     Move down                        │               │
@@ -27,6 +26,7 @@ expression: "snapshot_terminal(&model, 80, 40)"
 │               │a            Toggle auto-connect              │               │
 │               │K            Toggle kill switch               │               │
 │               │D            DNS settings                     │               │
+│               │S            Service routing                  │               │
 │               │C            Theme picker                     │               │
 │               │t            Test selected profile latency    │               │
 │               │T            Test all profiles (batch)        │               │
@@ -35,8 +35,8 @@ expression: "snapshot_terminal(&model, 80, 40)"
 │               │q / Esc      Detach TUI                       │               │
 │               │Ctrl+C       Quit                             │               │
 │               │?            Show this help                   │               │
+│               │                                              │               │
 │               └──────────────────────────────────────────────┘               │
-│                                      ││                                      │
 │                                      ││                                      │
 │                                      ││                                      │
 │                                      ││                                      │

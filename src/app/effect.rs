@@ -11,6 +11,10 @@ pub enum Effect {
     Disconnect,
     DownloadGeo,
     DownloadGeoIfMissing,
+    /// Fetch rule-sets for enabled service routes if absent. Emitted after a
+    /// successful connect so the download rides the freshly opened tunnel —
+    /// pre-tunnel the source may be unreachable (kill switch or ISP blocks).
+    DownloadServiceRuleSetsIfMissing,
     RefreshGeoLastUpdated,
     WriteState,
     SaveConfig,

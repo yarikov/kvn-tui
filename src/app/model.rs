@@ -3,7 +3,9 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::time::Instant;
 use uuid::Uuid;
 
-use crate::config::profile::{Config, DnsStrategy, GeoRegion, Profile};
+use crate::config::profile::{
+    Config, DnsStrategy, GeoRegion, Profile, RoutedService, ServiceRoute,
+};
 use crate::config::{load_config, save_config};
 use crate::ui::styles::Theme;
 use chrono::{DateTime, Local};
@@ -19,6 +21,7 @@ pub enum Overlay {
     GeoRegions,
     DnsSettings,
     ThemeSettings,
+    ServiceRouting,
 }
 
 /// A single selectable row in the unified Sources list.
@@ -153,6 +156,21 @@ pub struct Model {
     /// Pending DNS strategy preview while the DNS overlay is open. Set by
     /// `h`/`l` on the Strategy row, committed by Enter, discarded by Esc.
     pub dns_strategy_draft: Option<DnsStrategy>,
+    /// Cursor position inside the service routing overlay (index into
+    /// `RoutedService::ALL`).
+    pub service_routing_selected: usize,
+    /// Draft copy of `geo_routing.service_routes` while the service routing
+    /// overlay is open. Committed as a whole by Enter, discarded by Esc — a
+    /// separate map keeps partially edited routes out of the running
+    /// configuration until the user confirms them.
+    pub service_routing_draft: Option<HashMap<RoutedService, ServiceRoute>>,
+    /// Set when a service-routing commit is waiting for its rule-sets to be
+    /// fetched through the still-active tunnel; `Msg::ServiceRuleSetsReady`
+    /// consumes it and triggers the reconnect. Downloading BEFORE the
+    /// reconnect matters: reconnecting first would build the new sing-box
+    /// config while the files are still missing, leaving the freshly enabled
+    /// service inert until a second manual reconnect.
+    pub pending_service_reconnect: bool,
     pub logs: VecDeque<String>,
     pub log_scroll: usize,
     pub geo_updating: bool,
@@ -296,6 +314,9 @@ impl Model {
             geo_region_selected: 0,
             dns_selected: 0,
             dns_strategy_draft: None,
+            service_routing_selected: 0,
+            service_routing_draft: None,
+            pending_service_reconnect: false,
             logs: VecDeque::new(),
             log_scroll: 0,
             geo_updating: false,
@@ -360,6 +381,9 @@ impl Model {
             geo_region_selected: 0,
             dns_selected: 0,
             dns_strategy_draft: None,
+            service_routing_selected: 0,
+            service_routing_draft: None,
+            pending_service_reconnect: false,
             logs: VecDeque::new(),
             log_scroll: 0,
             geo_updating: false,
@@ -554,6 +578,9 @@ impl Model {
             geo_region_selected: 0,
             dns_selected: 0,
             dns_strategy_draft: None,
+            service_routing_selected: 0,
+            service_routing_draft: None,
+            pending_service_reconnect: false,
             logs: VecDeque::new(),
             log_scroll: 0,
             geo_updating: false,

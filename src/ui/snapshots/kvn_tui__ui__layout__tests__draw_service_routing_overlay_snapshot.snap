@@ -1,0 +1,29 @@
+---
+source: src/ui/layout.rs
+assertion_line: 1105
+expression: "snapshot_terminal(&model, 80, 24)"
+---
+┌ Sources ─────────────────────────────┐┌ Logs ────────────────────────────────┐
+│No sources. Press p to paste a profile││                                      │
+│or subscription URL from clipboard.   ││                                      │
+│                                      ││                                      │
+│                                      ││                                      │
+│                                      ││                                      │
+│               ┌ Services ────────────────────────────────────┐               │
+│               │                Service routing               │               │
+│               │                                              │               │
+│               │            Steam     ‹  Direct  ›            │               │
+│               │          > Telegram  ‹  Proxy   › *          │               │
+│               │                                              │               │
+│               │      j/k select, h/l change, Enter, Esc      │               │
+│               │                                              │               │
+│               │                                              │               │
+│               │                                              │               │
+│               │                                              │               │
+│               └──────────────────────────────────────────────┘               │
+│                                      ││                                      │
+│                                      ││                                      │
+│                                      ││                                      │
+│                                      ││                                      │
+└──────────────────────────────────────┘└──────────────────────────────────────┘
+[DISCONNECTED] [DNS: DoH] [Global] [Geo: 2026-05-31 13:41]

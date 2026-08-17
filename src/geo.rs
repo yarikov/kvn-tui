@@ -7,7 +7,7 @@ use chrono::{DateTime, Local};
 use serde::{Deserialize, Serialize};
 
 use crate::app::msg::GeoResult;
-use crate::config::profile::GeoRegion;
+use crate::config::profile::{GeoRegion, RoutedService};
 
 /// One downloadable rule-set file (geoip *or* geosite) for a region.
 pub(crate) struct GeoAsset {
@@ -67,6 +67,63 @@ pub(crate) fn region_assets(region: GeoRegion) -> Option<RegionAssets> {
                 url: "https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-category-ir.srs",
             },
         }),
+    }
+}
+
+/// Rule-sets backing one service's routing override (`service_routes`).
+/// Either side may be absent when no suitable upstream file exists.
+pub(crate) struct ServiceAssets {
+    pub(crate) geoip: Option<GeoAsset>,
+    pub(crate) geosite: Option<GeoAsset>,
+}
+
+impl ServiceAssets {
+    /// Defined assets in rule order: geosite first, then geoip — matching
+    /// the order rule-set tags are referenced from generated route rules.
+    pub(crate) fn present(&self) -> Vec<&GeoAsset> {
+        [self.geosite.as_ref(), self.geoip.as_ref()]
+            .into_iter()
+            .flatten()
+            .collect()
+    }
+}
+
+/// Single source of truth for which files / URLs back each routable service.
+///
+/// Steam: the geosite file covers Steam domains; the "geoip" file is Valve's
+/// AS32590 announced ranges, which catch content servers the Steam client
+/// contacts by bare IP (no domain to match on). Local filenames are
+/// normalized to the `geoip-`/`geosite-` scheme even though the ASN file's
+/// upstream basename differs.
+///
+/// Telegram: clients mostly connect by bare IP, so the geoip side is what
+/// actually matches; the geosite file catches web/API domains.
+///
+/// All service assets come from MetaCubeX/meta-rules-dat so the subsystem has
+/// one provider and one branch layout (the regional RU/CN/IR assets are a
+/// separate, SagerNet-backed pipeline).
+pub(crate) fn service_assets(service: RoutedService) -> ServiceAssets {
+    match service {
+        RoutedService::Steam => ServiceAssets {
+            geoip: Some(GeoAsset {
+                filename: "geoip-steam.srs",
+                url: "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/sing/asn/AS32590.srs",
+            }),
+            geosite: Some(GeoAsset {
+                filename: "geosite-steam.srs",
+                url: "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/sing/geo/geosite/steam.srs",
+            }),
+        },
+        RoutedService::Telegram => ServiceAssets {
+            geoip: Some(GeoAsset {
+                filename: "geoip-telegram.srs",
+                url: "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/sing/geo/geoip/telegram.srs",
+            }),
+            geosite: Some(GeoAsset {
+                filename: "geosite-telegram.srs",
+                url: "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/sing/geo/geosite/telegram.srs",
+            }),
+        },
     }
 }
 
@@ -130,6 +187,13 @@ impl From<GeoMetadataRaw> for GeoMetadata {
     }
 }
 
+/// Serializes read-modify-write cycles on `metadata.json`. The daemon runs
+/// downloads on detached threads (periodic geo updates, region-change fetch,
+/// post-connect Steam fetch); without this, two interleaved
+/// `load_metadata → save_metadata` cycles lose each other's ETags, forcing
+/// spurious re-downloads. Atomic renames prevent corruption, not lost updates.
+static METADATA_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 /// Manages downloading and updating geoip/geosite rule-sets for sing-box.
 pub struct GeoManager {
     geo_dir: PathBuf,
@@ -146,7 +210,17 @@ impl GeoManager {
             .with_context(|| format!("Failed to create geo dir {:?}", geo_dir))?;
 
         let metadata_path = geo_dir.join("metadata.json");
-        let agent = ureq::Agent::new_with_defaults();
+        // Bounded setup-phase timeouts so a stalled GitHub connection can't
+        // wedge the geo update threads forever. Deliberately no body timeout
+        // (`timeout_recv_body` is cumulative, not idle): a multi-hundred-KB
+        // `.srs` on a slow pre-VPN link can legitimately take many minutes,
+        // and a transfer that is still making progress must not be aborted.
+        let agent: ureq::Agent = ureq::Agent::config_builder()
+            .timeout_resolve(Some(std::time::Duration::from_secs(15)))
+            .timeout_connect(Some(std::time::Duration::from_secs(15)))
+            .timeout_recv_response(Some(std::time::Duration::from_secs(30)))
+            .build()
+            .into();
 
         Ok(Self {
             geo_dir,
@@ -176,6 +250,89 @@ impl GeoManager {
                 self.geo_dir.join(a.geoip.filename).exists()
                     && self.geo_dir.join(a.geosite.filename).exists()
             }
+        }
+    }
+
+    /// Return `(tag, local_path)` for each of `service`'s defined rule-sets,
+    /// in rule order (geosite first). Paths are computed; the files may not
+    /// exist yet.
+    pub(crate) fn service_local_paths(
+        &self,
+        service: RoutedService,
+    ) -> Vec<(&'static str, PathBuf)> {
+        service_assets(service)
+            .present()
+            .into_iter()
+            .map(|a| (a.tag(), self.geo_dir.join(a.filename)))
+            .collect()
+    }
+
+    /// Return whether every rule-set file defined for `service` is present.
+    pub fn has_service_databases(&self, service: RoutedService) -> bool {
+        self.service_local_paths(service)
+            .iter()
+            .all(|(_, path)| path.exists())
+    }
+
+    /// Check and, if stale or missing, download `service`'s rule-sets.
+    /// Returns `true` when at least one file was (re)downloaded.
+    pub fn update_service_if_needed(&self, service: RoutedService) -> Result<bool> {
+        let _guard = METADATA_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        self.update_assets_if_needed(&service_assets(service).present())
+    }
+
+    /// ETag-checked download of a set of assets. Every asset is attempted
+    /// even when an earlier one fails (a transient error on one file must
+    /// not starve its siblings), and ETags are persisted for whatever
+    /// succeeded — otherwise a partial failure would force a spurious
+    /// re-download of the successful file next time. The first error is
+    /// still returned. Callers must hold [`METADATA_LOCK`].
+    fn update_assets_if_needed(&self, assets: &[&GeoAsset]) -> Result<bool> {
+        let mut meta = self.load_metadata().unwrap_or_default();
+        let mut updated = false;
+        let mut first_err: Option<anyhow::Error> = None;
+        for asset in assets {
+            let dest = self.geo_dir.join(asset.filename);
+            let needed = if dest.exists() {
+                match self.check_single(
+                    asset.url,
+                    meta.etags.get(asset.filename).map(String::as_str),
+                ) {
+                    Ok(n) => n,
+                    Err(e) => {
+                        if first_err.is_none() {
+                            first_err = Some(e);
+                        }
+                        continue;
+                    }
+                }
+            } else {
+                true
+            };
+            if !needed {
+                continue;
+            }
+            match self.download_file(asset.url, &dest) {
+                Ok(etag) => {
+                    if let Some(e) = etag {
+                        meta.etags.insert(asset.filename.to_string(), e);
+                    }
+                    updated = true;
+                }
+                Err(e) => {
+                    if first_err.is_none() {
+                        first_err =
+                            Some(e.context(format!("Failed to download {}", asset.filename)));
+                    }
+                }
+            }
+        }
+        if updated {
+            self.save_metadata(&meta)?;
+        }
+        match first_err {
+            Some(e) => Err(e),
+            None => Ok(updated),
         }
     }
 
@@ -220,26 +377,32 @@ impl GeoManager {
     }
 
     /// Download rule-sets for the given region and update metadata atomically.
-    /// `Global` is a no-op returning `Ok(false)`.
+    /// `Global` is a no-op returning `Ok(false)`. Locked entry point kept for
+    /// tests; production code reaches downloads via `update_if_needed`.
+    #[cfg(test)]
     pub fn download_databases(&self, region: GeoRegion) -> Result<bool> {
+        let _guard = METADATA_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        self.download_databases_inner(region)
+    }
+
+    /// Body of [`Self::download_databases`]; callers must hold
+    /// [`METADATA_LOCK`]. Shares the asset orchestration with the service
+    /// rule-sets, so a partial failure keeps the successful file's ETag
+    /// instead of forcing a re-download next cycle; the region timestamps
+    /// are only stamped on a fully successful pass.
+    fn download_databases_inner(&self, region: GeoRegion) -> Result<bool> {
         let Some(assets) = region_assets(region) else {
             return Ok(false);
         };
-        let mut meta = self.load_metadata().unwrap_or_default();
-        for asset in [&assets.geoip, &assets.geosite] {
-            let dest = self.geo_dir.join(asset.filename);
-            let etag = self
-                .download_file(asset.url, &dest)
-                .with_context(|| format!("Failed to download {}", asset.filename))?;
-            if let Some(e) = etag {
-                meta.etags.insert(asset.filename.to_string(), e);
-            }
+        let updated = self.update_assets_if_needed(&[&assets.geoip, &assets.geosite])?;
+        if updated {
+            let mut meta = self.load_metadata().unwrap_or_default();
+            let now = Local::now();
+            meta.updated_at.insert(region, now);
+            meta.checked_at.insert(region, now);
+            self.save_metadata(&meta)?;
         }
-        let now = Local::now();
-        meta.updated_at.insert(region, now);
-        meta.checked_at.insert(region, now);
-        self.save_metadata(&meta)?;
-        Ok(true)
+        Ok(updated)
     }
 
     /// Full update flow: check then download if needed.
@@ -248,6 +411,7 @@ impl GeoManager {
         if matches!(region, GeoRegion::Global) {
             return Ok(GeoResult::UpToDate { checked_at: None });
         }
+        let _guard = METADATA_LOCK.lock().unwrap_or_else(|p| p.into_inner());
 
         let (geoip_need, geosite_need) = self.check_update_available(region)?;
 
@@ -261,7 +425,7 @@ impl GeoManager {
             });
         }
 
-        let updated = self.download_databases(region)?;
+        let updated = self.download_databases_inner(region)?;
         if updated {
             let mut parts = Vec::new();
             if geoip_need {
@@ -380,6 +544,223 @@ mod tests {
         let a = region_assets(GeoRegion::Ru).unwrap();
         assert_eq!(a.geoip.tag(), "geoip-ru");
         assert_eq!(a.geosite.tag(), "geosite-category-ru");
+    }
+
+    #[test]
+    fn service_assets_tags_and_urls() {
+        let steam = service_assets(RoutedService::Steam);
+        let tags: Vec<&str> = steam.present().iter().map(|a| a.tag()).collect();
+        assert_eq!(tags, ["geosite-steam", "geoip-steam"]);
+        // The ASN file's upstream basename differs from the local filename.
+        assert!(steam.geoip.as_ref().unwrap().url.ends_with("AS32590.srs"));
+
+        let telegram = service_assets(RoutedService::Telegram);
+        let tags: Vec<&str> = telegram.present().iter().map(|a| a.tag()).collect();
+        assert_eq!(tags, ["geosite-telegram", "geoip-telegram"]);
+
+        for service in RoutedService::ALL {
+            for asset in service_assets(service).present() {
+                assert!(asset.url.starts_with("https://"), "{}", asset.url);
+                assert!(asset.filename.ends_with(".srs"), "{}", asset.filename);
+            }
+        }
+    }
+
+    #[test]
+    fn service_local_paths_and_presence() {
+        let _guard = crate::test_helpers::ENV_LOCK.lock().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        unsafe { std::env::set_var("XDG_CONFIG_HOME", dir.path()) };
+        let gm = GeoManager::new().unwrap();
+        let paths = gm.service_local_paths(RoutedService::Steam);
+        assert_eq!(paths.len(), 2);
+        assert_eq!(paths[0].0, "geosite-steam");
+        assert_eq!(paths[1].0, "geoip-steam");
+        assert!(paths.iter().all(|(_, p)| p.starts_with(&gm.geo_dir)));
+
+        assert!(!gm.has_service_databases(RoutedService::Steam));
+        fs::write(&paths[0].1, b"x").unwrap();
+        assert!(
+            !gm.has_service_databases(RoutedService::Steam),
+            "only geosite present"
+        );
+        fs::write(&paths[1].1, b"x").unwrap();
+        assert!(gm.has_service_databases(RoutedService::Steam));
+    }
+
+    /// Minimal scripted HTTP/1.1 server for exercising the download paths
+    /// without the network. `handler(method, path)` returns
+    /// `(status, etag, body)`. Serves at most `max_requests` connections.
+    fn spawn_stub_http(
+        max_requests: usize,
+        handler: impl Fn(&str, &str) -> (u16, Option<String>, Vec<u8>) + Send + 'static,
+    ) -> String {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        std::thread::spawn(move || {
+            for _ in 0..max_requests {
+                let Ok((mut stream, _)) = listener.accept() else {
+                    break;
+                };
+                let mut head = Vec::new();
+                let mut buf = [0u8; 2048];
+                loop {
+                    let n = stream.read(&mut buf).unwrap_or(0);
+                    if n == 0 {
+                        break;
+                    }
+                    head.extend_from_slice(&buf[..n]);
+                    if head.windows(4).any(|w| w == b"\r\n\r\n") {
+                        break;
+                    }
+                }
+                let text = String::from_utf8_lossy(&head);
+                let mut parts = text.split_whitespace();
+                let method = parts.next().unwrap_or("").to_string();
+                let path = parts.next().unwrap_or("").to_string();
+                let (status, etag, body) = handler(&method, &path);
+                let mut resp = format!(
+                    "HTTP/1.1 {status} Stub\r\nContent-Length: {}\r\nConnection: close\r\n",
+                    body.len()
+                );
+                if let Some(e) = etag {
+                    resp.push_str(&format!("ETag: {e}\r\n"));
+                }
+                resp.push_str("\r\n");
+                let _ = stream.write_all(resp.as_bytes());
+                if method != "HEAD" {
+                    let _ = stream.write_all(&body);
+                }
+                let _ = stream.flush();
+            }
+        });
+        format!("http://{addr}")
+    }
+
+    fn stub_assets(base: &str) -> Vec<GeoAsset> {
+        let leak = |s: String| -> &'static str { Box::leak(s.into_boxed_str()) };
+        vec![
+            GeoAsset {
+                filename: "geoip-stub.srs",
+                url: leak(format!("{base}/geoip")),
+            },
+            GeoAsset {
+                filename: "geosite-stub.srs",
+                url: leak(format!("{base}/geosite")),
+            },
+        ]
+    }
+
+    #[test]
+    fn update_assets_partial_failure_persists_successful_etag() {
+        let _guard = crate::test_helpers::ENV_LOCK.lock().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        unsafe { std::env::set_var("XDG_CONFIG_HOME", dir.path()) };
+        let gm = GeoManager::new().unwrap();
+        let base = spawn_stub_http(4, |_, path| {
+            if path == "/geoip" {
+                (200, Some("etag-ok".to_string()), b"AAA".to_vec())
+            } else {
+                (500, None, Vec::new())
+            }
+        });
+        let assets = stub_assets(&base);
+
+        let refs: Vec<&GeoAsset> = assets.iter().collect();
+        let err = gm.update_assets_if_needed(&refs).unwrap_err().to_string();
+        assert!(err.contains("geosite-stub.srs"), "{err}");
+        // The successful first download and its ETag must survive the
+        // failure of the second, or the next attempt re-downloads it.
+        assert!(gm.geo_dir.join("geoip-stub.srs").exists());
+        assert!(!gm.geo_dir.join("geosite-stub.srs").exists());
+        let meta = gm.load_metadata().unwrap();
+        assert_eq!(
+            meta.etags.get("geoip-stub.srs").map(String::as_str),
+            Some("etag-ok")
+        );
+        assert!(!meta.etags.contains_key("geosite-stub.srs"));
+    }
+
+    #[test]
+    fn update_assets_downloads_both_when_missing_then_skips_via_etag() {
+        let _guard = crate::test_helpers::ENV_LOCK.lock().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        unsafe { std::env::set_var("XDG_CONFIG_HOME", dir.path()) };
+        let gm = GeoManager::new().unwrap();
+        let base = spawn_stub_http(8, |_, _| (200, Some("same".to_string()), b"DATA".to_vec()));
+        let assets = stub_assets(&base);
+
+        let refs: Vec<&GeoAsset> = assets.iter().collect();
+        assert!(gm.update_assets_if_needed(&refs).unwrap());
+        assert_eq!(
+            fs::read(gm.geo_dir.join("geoip-stub.srs")).unwrap(),
+            b"DATA"
+        );
+        assert_eq!(
+            fs::read(gm.geo_dir.join("geosite-stub.srs")).unwrap(),
+            b"DATA"
+        );
+        // Second run: files exist and ETags match — HEAD only, no downloads.
+        assert!(!gm.update_assets_if_needed(&refs).unwrap());
+    }
+
+    #[test]
+    fn update_assets_check_error_does_not_starve_missing_sibling() {
+        let _guard = crate::test_helpers::ENV_LOCK.lock().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        unsafe { std::env::set_var("XDG_CONFIG_HOME", dir.path()) };
+        let gm = GeoManager::new().unwrap();
+        let base = spawn_stub_http(2, |_, _| (200, Some("e1".to_string()), b"NEW".to_vec()));
+        let leak = |s: String| -> &'static str { Box::leak(s.into_boxed_str()) };
+        // First asset: file present, but its HEAD check fails at transport
+        // level (closed port). Second asset: file missing, live server.
+        let assets = [
+            GeoAsset {
+                filename: "geoip-stub.srs",
+                url: "http://127.0.0.1:1/dead",
+            },
+            GeoAsset {
+                filename: "geosite-stub.srs",
+                url: leak(format!("{base}/geosite")),
+            },
+        ];
+        fs::write(gm.geo_dir.join("geoip-stub.srs"), b"OLD").unwrap();
+
+        let refs: Vec<&GeoAsset> = assets.iter().collect();
+        // The check error is surfaced…
+        let err = gm.update_assets_if_needed(&refs).unwrap_err().to_string();
+        assert!(err.contains("HEAD request failed"), "{err}");
+        // …but the missing sibling was still fetched this same cycle.
+        assert_eq!(
+            fs::read(gm.geo_dir.join("geosite-stub.srs")).unwrap(),
+            b"NEW"
+        );
+        let meta = gm.load_metadata().unwrap();
+        assert_eq!(
+            meta.etags.get("geosite-stub.srs").map(String::as_str),
+            Some("e1")
+        );
+    }
+
+    /// Integration test that hits the real network. Run with `cargo test -- --ignored`.
+    #[test]
+    #[ignore]
+    fn test_download_service_srs_files() {
+        let gm = GeoManager::new().unwrap();
+        for service in RoutedService::ALL {
+            for (_, path) in gm.service_local_paths(service) {
+                let _ = fs::remove_file(path);
+            }
+
+            assert!(
+                gm.update_service_if_needed(service).unwrap(),
+                "expected download for {service:?}"
+            );
+            assert!(gm.has_service_databases(service));
+            // Second run must be an ETag-checked no-op.
+            assert!(!gm.update_service_if_needed(service).unwrap());
+        }
     }
 
     #[test]

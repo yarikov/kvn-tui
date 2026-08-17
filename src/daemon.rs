@@ -135,7 +135,10 @@ fn execute_daemon_effect(
                     Ok(handle) => {
                         let pid = handle.pid;
                         *lock_process_slot(&slot) = Some(handle);
-                        let _ = tx.send(Msg::Connected { pid });
+                        let _ = tx.send(Msg::Connected {
+                            pid,
+                            profile_id: profile.id,
+                        });
                     }
                     Err(e) => {
                         if kill_switch
@@ -181,15 +184,53 @@ fn execute_daemon_effect(
                 .geo_routing
                 .current_region
                 .unwrap_or(crate::config::profile::GeoRegion::Global);
+            let services = model.config.settings.geo_routing.enabled_services();
             thread::spawn(move || {
-                let result = match crate::geo::GeoManager::new() {
-                    Ok(gm) => match gm.update_if_needed(region) {
-                        Ok(geo_result) => geo_result,
-                        Err(e) => GeoResult::Error(e.to_string()),
-                    },
+                let gm = match crate::geo::GeoManager::new() {
+                    Ok(gm) => gm,
+                    Err(e) => {
+                        let _ = tx.send(Msg::GeoUpdated(GeoResult::Error(e.to_string())));
+                        return;
+                    }
+                };
+                let result = match gm.update_if_needed(region) {
+                    Ok(geo_result) => geo_result,
                     Err(e) => GeoResult::Error(e.to_string()),
                 };
                 let _ = tx.send(Msg::GeoUpdated(result));
+                // Service rule-sets refresh only after the regional result is
+                // reported: they can take minutes on a slow link and must not
+                // pin the geo_updating spinner or delay further updates.
+                // Their failures are non-fatal — the route builder simply
+                // omits a service's rules until its files appear.
+                refresh_service_rule_sets(&gm, &services);
+            });
+        }
+        Effect::DownloadServiceRuleSetsIfMissing => {
+            // Fired while a tunnel is up (after `Msg::Connected`, or on a
+            // service-routing commit before its deferred reconnect), so the
+            // fetch goes through the VPN — pre-tunnel, GitHub may be
+            // unreachable (kill switch allowlists only the VPN endpoint, and
+            // the ISP may block it). `Msg::ServiceRuleSetsReady` is sent in
+            // every exit path, download failures included: the reducer uses
+            // it to run a pending reconnect, and the route builder tolerates
+            // files that never arrived.
+            let services = model.config.settings.geo_routing.enabled_services();
+            let tx = tx.clone();
+            thread::spawn(move || {
+                match crate::geo::GeoManager::new() {
+                    Ok(gm) => {
+                        let missing: Vec<_> = services
+                            .into_iter()
+                            .filter(|s| !gm.has_service_databases(*s))
+                            .collect();
+                        refresh_service_rule_sets(&gm, &missing);
+                    }
+                    Err(e) => {
+                        tracing::warn!("Failed to init geo manager for service rule-sets: {e:#}");
+                    }
+                }
+                let _ = tx.send(Msg::ServiceRuleSetsReady);
             });
         }
         Effect::RefreshGeoLastUpdated => {
@@ -444,6 +485,21 @@ fn socks5_connect_latency(addr: &str) -> anyhow::Result<u64> {
     Ok(start.elapsed().as_millis() as u64)
 }
 
+/// Best-effort check/download of service rule-sets, shared by the periodic
+/// geo-update thread and the post-connect fetch. Failures are logged, never
+/// surfaced — the route builder just omits a service's rules until its files
+/// appear.
+fn refresh_service_rule_sets(
+    gm: &crate::geo::GeoManager,
+    services: &[crate::config::profile::RoutedService],
+) {
+    for service in services {
+        if let Err(e) = gm.update_service_if_needed(*service) {
+            tracing::warn!("Failed to update {} rule-sets: {e:#}", service.label());
+        }
+    }
+}
+
 /// Wall-clock time in milliseconds since the Unix epoch.
 fn unix_now_ms() -> u64 {
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -583,6 +639,8 @@ fn build_snapshot(model: &Model) -> StateSnapshot {
         dns_strategy_draft: model.dns_strategy_draft.clone(),
         theme_selected: model.theme_selected,
         theme_draft: model.theme_draft.clone(),
+        service_routing_selected: model.service_routing_selected,
+        service_routing_draft: model.service_routing_draft.clone(),
         geo_updating: model.geo_updating,
         geo_last_updated: model.geo_last_updated.clone(),
         overlay: model.overlay,
