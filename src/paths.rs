@@ -109,6 +109,9 @@ mod tests {
 
     #[test]
     fn profiles_path_inside_config_dir() {
+        // Reads XDG_CONFIG_HOME twice; hold ENV_LOCK so a concurrent
+        // env-mutating test can't swap it between the two reads.
+        let _guard = crate::test_helpers::ENV_LOCK.lock().unwrap();
         let config = config_dir().unwrap();
         let profiles = profiles_path().unwrap();
         assert!(profiles.starts_with(&config));
