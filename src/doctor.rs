@@ -473,6 +473,9 @@ mod tests {
 
     #[test]
     fn singbox_version_check_covers_success_and_failures() {
+        // Spawns the stub scripts (execve reads the process env) — hold
+        // ENV_LOCK against env-mutating tests.
+        let _lock = crate::test_helpers::ENV_LOCK.lock().unwrap();
         let dir = tempfile::tempdir().unwrap();
 
         let current = executable(dir.path(), "current", "echo 'sing-box version 1.13.2'");

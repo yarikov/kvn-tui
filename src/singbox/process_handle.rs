@@ -28,6 +28,10 @@ mod tests {
 
     #[test]
     fn process_handle_lifecycle() {
+        // spawn() resolves `sleep` via PATH, i.e. reads the process env —
+        // racing the ENV_LOCK-guarded tests that call env::set_var, which
+        // intermittently fails the lookup with ENOENT. Serialize with them.
+        let _guard = crate::test_helpers::ENV_LOCK.lock().unwrap();
         let child = std::process::Command::new("sleep")
             .arg("10")
             .spawn()
