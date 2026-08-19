@@ -315,7 +315,16 @@ fn draw_dns_settings(frame: &mut Frame, model: &Model, area: Rect) {
     } else {
         format!("Strategy: ‹ {} ›", dns.strategy.as_str())
     };
-    let fakeip_label = format!("Fake-IP: {}", if dns.fakeip_enabled { "on" } else { "off" });
+    let fakeip = model.dns_fakeip_draft.unwrap_or(dns.fakeip_enabled);
+    let fakeip_label = format!(
+        "Fake-IP: ‹ {} ›{}",
+        if fakeip { "on" } else { "off" },
+        if model.dns_fakeip_draft.is_some() && fakeip != dns.fakeip_enabled {
+            " *"
+        } else {
+            ""
+        }
+    );
     let labels: Vec<String> = vec![
         "Preset: Cloudflare DoH (1.1.1.1)".to_string(),
         "Preset: Google DoT (8.8.8.8)".to_string(),

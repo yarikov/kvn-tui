@@ -16,7 +16,7 @@ expression: "snapshot_terminal(&model, 80, 24)"
 │               │          Preset: Quad9 DoH (9.9.9.9)         │               │
 │               │        Preset: System resolver (local)       │               │
 │               │           Strategy: ‹ prefer_ipv4 ›          │               │
-│               │                 > Fake-IP: on                │               │
+│               │               > Fake-IP: ‹ on ›              │               │
 │               │                                              │               │
 │               │    j/k navigate, Enter confirm, Esc cancel   │               │
 │               └──────────────────────────────────────────────┘               │

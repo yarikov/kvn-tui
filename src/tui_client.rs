@@ -266,6 +266,7 @@ fn apply_snapshot(model: &mut Model, snapshot: crate::app::msg::StateSnapshot) {
     model.geo_region_selected = snapshot.geo_region_selected;
     model.dns_selected = snapshot.dns_selected;
     model.dns_strategy_draft = snapshot.dns_strategy_draft;
+    model.dns_fakeip_draft = snapshot.dns_fakeip_draft;
     model.theme_selected = snapshot.theme_selected;
     model.theme_draft = snapshot.theme_draft.clone();
     model.service_routing_selected = snapshot.service_routing_selected;
