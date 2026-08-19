@@ -156,6 +156,9 @@ pub struct Model {
     /// Pending DNS strategy preview while the DNS overlay is open. Set by
     /// `h`/`l` on the Strategy row, committed by Enter, discarded by Esc.
     pub dns_strategy_draft: Option<DnsStrategy>,
+    /// Pending Fake-IP preview while the DNS overlay is open. Set by `h`/`l`
+    /// on the Fake-IP row, committed by Enter, discarded by Esc.
+    pub dns_fakeip_draft: Option<bool>,
     /// Cursor position inside the service routing overlay (index into
     /// `RoutedService::ALL`).
     pub service_routing_selected: usize,
@@ -314,6 +317,7 @@ impl Model {
             geo_region_selected: 0,
             dns_selected: 0,
             dns_strategy_draft: None,
+            dns_fakeip_draft: None,
             service_routing_selected: 0,
             service_routing_draft: None,
             pending_service_reconnect: false,
@@ -381,6 +385,7 @@ impl Model {
             geo_region_selected: 0,
             dns_selected: 0,
             dns_strategy_draft: None,
+            dns_fakeip_draft: None,
             service_routing_selected: 0,
             service_routing_draft: None,
             pending_service_reconnect: false,
@@ -578,6 +583,7 @@ impl Model {
             geo_region_selected: 0,
             dns_selected: 0,
             dns_strategy_draft: None,
+            dns_fakeip_draft: None,
             service_routing_selected: 0,
             service_routing_draft: None,
             pending_service_reconnect: false,

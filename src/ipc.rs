@@ -234,6 +234,7 @@ mod tests {
             geo_region_selected: 0,
             dns_selected: 0,
             dns_strategy_draft: None,
+            dns_fakeip_draft: None,
             theme_selected: 0,
             theme_draft: None,
             service_routing_selected: 0,

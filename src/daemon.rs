@@ -637,6 +637,7 @@ fn build_snapshot(model: &Model) -> StateSnapshot {
         geo_region_selected: model.geo_region_selected,
         dns_selected: model.dns_selected,
         dns_strategy_draft: model.dns_strategy_draft.clone(),
+        dns_fakeip_draft: model.dns_fakeip_draft,
         theme_selected: model.theme_selected,
         theme_draft: model.theme_draft.clone(),
         service_routing_selected: model.service_routing_selected,

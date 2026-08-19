@@ -190,6 +190,7 @@ pub(super) fn handle_sources(model: &mut Model, key: KeyEvent) -> Vec<Effect> {
             model.overlay = Overlay::DnsSettings;
             model.dns_selected = 0;
             model.dns_strategy_draft = None;
+            model.dns_fakeip_draft = None;
         }
         KeyCode::Char('S') => {
             model.overlay = Overlay::ServiceRouting;
@@ -665,6 +666,8 @@ pub(super) fn handle_dns_settings(model: &mut Model, key: KeyEvent) -> Vec<Effec
     let len = DnsSettingsItem::ALL.len();
     let on_strategy =
         DnsSettingsItem::from_index(model.dns_selected) == Some(DnsSettingsItem::CycleStrategy);
+    let on_fakeip =
+        DnsSettingsItem::from_index(model.dns_selected) == Some(DnsSettingsItem::ToggleFakeIp);
     match key.code {
         KeyCode::Char('j') | KeyCode::Down => {
             crate::ui::nav::select_next(&mut model.dns_selected, len);
@@ -688,6 +691,12 @@ pub(super) fn handle_dns_settings(model: &mut Model, key: KeyEvent) -> Vec<Effec
                 .unwrap_or_else(|| model.config.settings.dns.strategy.clone());
             model.dns_strategy_draft = Some(base.prev());
         }
+        KeyCode::Char('l') | KeyCode::Right if on_fakeip => {
+            model.dns_fakeip_draft = Some(true);
+        }
+        KeyCode::Char('h') | KeyCode::Left if on_fakeip => {
+            model.dns_fakeip_draft = Some(false);
+        }
         KeyCode::Enter => {
             let Some(item) = DnsSettingsItem::from_index(model.dns_selected) else {
                 return vec![];
@@ -697,6 +706,7 @@ pub(super) fn handle_dns_settings(model: &mut Model, key: KeyEvent) -> Vec<Effec
         KeyCode::Char('q') | KeyCode::Esc => {
             model.overlay = Overlay::None;
             model.dns_strategy_draft = None;
+            model.dns_fakeip_draft = None;
         }
         _ => {}
     }
@@ -819,7 +829,12 @@ fn apply_dns_item(model: &mut Model, item: DnsSettingsItem) -> Vec<Effect> {
             );
         }
         DnsSettingsItem::ToggleFakeIp => {
-            let enabled = !model.config.settings.dns.fakeip_enabled;
+            let Some(enabled) = model.dns_fakeip_draft.take() else {
+                return effects;
+            };
+            if enabled == model.config.settings.dns.fakeip_enabled {
+                return effects;
+            }
             model.config.settings.dns.fakeip_enabled = enabled;
             if enabled
                 && !model
@@ -1213,9 +1228,12 @@ mod tests {
             .position(|i| *i == DnsSettingsItem::ToggleFakeIp)
             .unwrap();
         assert!(!model.config.settings.dns.fakeip_enabled);
+        handle_dns_settings(&mut model, key('l'));
+        assert_eq!(model.dns_fakeip_draft, Some(true));
         handle_dns_settings(&mut model, enter());
         assert!(model.config.settings.dns.fakeip_enabled);
         assert!(model.config.settings.dns.fakeip_server().is_some());
+        assert!(model.dns_fakeip_draft.is_none());
     }
 
     #[test]
@@ -1225,10 +1243,12 @@ mod tests {
             .iter()
             .position(|i| *i == DnsSettingsItem::ToggleFakeIp)
             .unwrap();
-        // First toggle on.
+        // Select and commit on.
+        handle_dns_settings(&mut model, key('l'));
         handle_dns_settings(&mut model, enter());
         assert!(model.config.settings.dns.fakeip_enabled);
-        // Second toggle off.
+        // Select and commit off.
+        handle_dns_settings(&mut model, key('h'));
         handle_dns_settings(&mut model, enter());
         assert!(!model.config.settings.dns.fakeip_enabled);
     }
@@ -1242,6 +1262,7 @@ mod tests {
             .iter()
             .position(|i| *i == DnsSettingsItem::ToggleFakeIp)
             .unwrap();
+        handle_dns_settings(&mut model, key('l'));
         handle_dns_settings(&mut model, enter());
         assert_eq!(model.config.settings.dns.strategy, DnsStrategy::PreferIpv4);
         assert_eq!(model.config.settings.dns_strategy, DnsStrategy::PreferIpv4);
@@ -1255,10 +1276,12 @@ mod tests {
             .position(|i| *i == DnsSettingsItem::CycleStrategy)
             .unwrap();
         model.dns_strategy_draft = Some(DnsStrategy::OnlyIpv6);
+        model.dns_fakeip_draft = Some(true);
         let effects = handle_dns_settings(&mut model, esc());
         assert!(effects.is_empty());
         assert_eq!(model.overlay, Overlay::None);
         assert!(model.dns_strategy_draft.is_none());
+        assert!(model.dns_fakeip_draft.is_none());
     }
 
     #[test]
@@ -1374,11 +1397,13 @@ mod tests {
         let mut model = model_with_profiles(vec![]);
         model.dns_selected = 4;
         model.dns_strategy_draft = Some(DnsStrategy::OnlyIpv6);
+        model.dns_fakeip_draft = Some(true);
         let effects = handle_sources(&mut model, key('D'));
         assert!(effects.is_empty());
         assert_eq!(model.overlay, Overlay::DnsSettings);
         assert_eq!(model.dns_selected, 0);
         assert!(model.dns_strategy_draft.is_none());
+        assert!(model.dns_fakeip_draft.is_none());
     }
 
     #[test]

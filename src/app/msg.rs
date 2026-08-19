@@ -229,6 +229,8 @@ pub struct StateSnapshot {
     #[serde(default)]
     pub dns_strategy_draft: Option<DnsStrategy>,
     #[serde(default)]
+    pub dns_fakeip_draft: Option<bool>,
+    #[serde(default)]
     pub theme_selected: usize,
     #[serde(default)]
     pub theme_draft: Option<String>,
