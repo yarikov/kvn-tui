@@ -29,6 +29,37 @@ pub(super) const POP_KEYBOARD_PROTOCOL: &str = "\x1b[<1u";
 const POLL_INTERVAL: Duration = Duration::from_millis(50);
 const ESCAPE_TIMEOUT: Duration = Duration::from_millis(30);
 
+pub(super) struct EventReaderControl {
+    reading_enabled: AtomicBool,
+    paused: AtomicBool,
+}
+
+impl EventReaderControl {
+    pub(super) fn new() -> Self {
+        Self {
+            reading_enabled: AtomicBool::new(true),
+            paused: AtomicBool::new(false),
+        }
+    }
+
+    /// Stop the reader and wait until it can no longer consume editor input.
+    pub(super) fn pause(&self) -> bool {
+        self.reading_enabled.store(false, Ordering::Release);
+        let deadline = Instant::now() + Duration::from_millis(250);
+        while !self.paused.load(Ordering::Acquire) {
+            if Instant::now() >= deadline {
+                return false;
+            }
+            thread::sleep(Duration::from_millis(1));
+        }
+        true
+    }
+
+    pub(super) fn resume(&self) {
+        self.reading_enabled.store(true, Ordering::Release);
+    }
+}
+
 pub(super) fn enable_keyboard_protocol(out: &mut impl Write) -> io::Result<()> {
     out.write_all(PUSH_KEYBOARD_PROTOCOL.as_bytes())?;
     out.flush()
@@ -39,7 +70,7 @@ pub(super) fn disable_keyboard_protocol(out: &mut impl Write) -> io::Result<()> 
     out.flush()
 }
 
-pub(super) fn spawn_event_reader(tx: Sender<Msg>, reading_enabled: Arc<AtomicBool>) {
+pub(super) fn spawn_event_reader(tx: Sender<Msg>, control: Arc<EventReaderControl>) {
     spawn_resize_reader(tx.clone());
     thread::spawn(move || {
         let mut decoder = Decoder::default();
@@ -47,10 +78,12 @@ pub(super) fn spawn_event_reader(tx: Sender<Msg>, reading_enabled: Arc<AtomicBoo
         let mut bytes = [0_u8; 64];
 
         loop {
-            if !reading_enabled.load(Ordering::Relaxed) {
+            if !control.reading_enabled.load(Ordering::Acquire) {
+                control.paused.store(true, Ordering::Release);
                 thread::sleep(POLL_INTERVAL);
                 continue;
             }
+            control.paused.store(false, Ordering::Release);
 
             match stdin_ready(POLL_INTERVAL) {
                 Ok(true) => match stdin.read(&mut bytes) {
@@ -399,6 +432,25 @@ fn event(code: KeyCode, modifiers: KeyModifiers, used: usize) -> ParseResult {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn event_reader_control_waits_for_pause_acknowledgement() {
+        let control = Arc::new(EventReaderControl::new());
+        let reader_control = control.clone();
+        let reader = thread::spawn(move || {
+            while reader_control.reading_enabled.load(Ordering::Acquire) {
+                thread::yield_now();
+            }
+            reader_control.paused.store(true, Ordering::Release);
+            while !reader_control.reading_enabled.load(Ordering::Acquire) {
+                thread::yield_now();
+            }
+        });
+
+        assert!(control.pause());
+        control.resume();
+        reader.join().unwrap();
+    }
 
     fn decode(input: &[u8]) -> KeyEvent {
         match parse_one(input, true) {

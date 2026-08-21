@@ -5,7 +5,6 @@ pub(crate) mod theme_watch;
 
 use std::io::{self, IsTerminal, Write};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Sender, channel};
 use std::thread;
 use std::time::Duration;
@@ -102,7 +101,7 @@ pub fn run() -> Result<()> {
     model.theme = theme_watch::resolve_active(&model.config.settings.theme);
 
     let (tx, rx) = channel::<Msg>();
-    let event_reading_enabled = Arc::new(AtomicBool::new(true));
+    let event_reader_control = Arc::new(input::EventReaderControl::new());
     spawn_ticker(tx.clone());
     theme_watch::spawn_theme_watcher(tx.clone());
     client.spawn_reader(tx.clone())?;
@@ -112,7 +111,7 @@ pub fn run() -> Result<()> {
     let stdout = io::stdout();
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
-    input::spawn_event_reader(tx, event_reading_enabled.clone());
+    input::spawn_event_reader(tx, event_reader_control.clone());
 
     let mut log_tailer = LogTailer::new(vec![
         (crate::paths::app_log_path(), "[app]"),
@@ -125,7 +124,7 @@ pub fn run() -> Result<()> {
         rx,
         &mut client,
         &mut log_tailer,
-        event_reading_enabled,
+        event_reader_control,
     )
 }
 
@@ -135,7 +134,7 @@ fn run_loop(
     rx: std::sync::mpsc::Receiver<Msg>,
     client: &mut IpcClient,
     log_tailer: &mut LogTailer,
-    event_reading_enabled: Arc<AtomicBool>,
+    event_reader_control: Arc<input::EventReaderControl>,
 ) -> Result<()> {
     // Initial draw
     terminal.draw(|f| crate::ui::draw(f, model))?;
@@ -197,7 +196,11 @@ fn run_loop(
                         }
                     }
                     KeyCode::Char('e') => {
-                        event_reading_enabled.store(false, Ordering::Relaxed);
+                        anyhow::ensure!(
+                            event_reader_control.pause(),
+                            "Timed out while pausing terminal input for external editor"
+                        );
+                        input::disable_keyboard_protocol(terminal.backend_mut())?;
                         disable_raw_mode()?;
                         terminal.backend_mut().execute(LeaveAlternateScreen)?;
                         let result = self::editor::open_profiles_editor(
@@ -205,9 +208,10 @@ fn run_loop(
                         );
                         enable_raw_mode()?;
                         terminal.backend_mut().execute(EnterAlternateScreen)?;
+                        input::enable_keyboard_protocol(terminal.backend_mut())?;
                         terminal.clear()?;
                         input::discard_pending_input();
-                        event_reading_enabled.store(true, Ordering::Relaxed);
+                        event_reader_control.resume();
                         match result {
                             Ok(_) => {
                                 if let Ok(config) = crate::config::load_config() {

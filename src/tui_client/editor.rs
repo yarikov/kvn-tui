@@ -1,14 +1,9 @@
 use std::env;
 use std::fs;
-use std::io::{self, stdout};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use anyhow::{Context, Result};
-use crossterm::ExecutableCommand;
-use crossterm::terminal::{
-    EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
-};
 
 use crate::config::profile::Config;
 use crate::paths::profiles_path;
@@ -40,34 +35,6 @@ fn split_editor(editor: &str) -> (String, Vec<String>) {
     let mut parts = editor.split_whitespace().map(String::from);
     let program = parts.next().unwrap_or_else(|| "vi".to_string());
     (program, parts.collect())
-}
-
-/// RAII guard that restores terminal state when dropped.
-///
-/// On creation: leaves the alternate screen and disables raw mode.
-/// On drop: re-enters the alternate screen and re-enables raw mode.
-struct TerminalGuard;
-
-impl TerminalGuard {
-    fn new() -> io::Result<Self> {
-        disable_raw_mode().inspect_err(|e| {
-            tracing::warn!("Failed to disable raw mode: {}", e);
-        })?;
-        stdout().execute(LeaveAlternateScreen).inspect_err(|e| {
-            tracing::warn!("Failed to leave alternate screen: {}", e);
-        })?;
-        Ok(Self)
-    }
-}
-
-impl Drop for TerminalGuard {
-    fn drop(&mut self) {
-        let _ = stdout()
-            .execute(EnterAlternateScreen)
-            .inspect_err(|e| tracing::warn!("Failed to enter alternate screen: {}", e));
-        let _ =
-            enable_raw_mode().inspect_err(|e| tracing::warn!("Failed to enable raw mode: {}", e));
-    }
 }
 
 /// RAII guard for a config file backup.
@@ -209,8 +176,8 @@ fn editor_args(editor: &str, path: &Path, line: usize) -> Vec<String> {
 /// Open `profiles.json` in the user's preferred external editor.
 ///
 /// If `profile_index` is within bounds, the editor will be asked to jump to the
-/// line where that profile object starts. Terminal state is temporarily restored
-/// so the editor can take full control. A backup is created before editing; if
+/// line where that profile object starts. The caller must restore the terminal
+/// before invoking this function. A backup is created before editing; if
 /// the edited file contains invalid JSON, the backup is restored automatically
 /// and an error is returned. On success the parsed [`Config`] is returned so
 /// the application can reload.
@@ -222,8 +189,6 @@ pub fn open_profiles_editor(profile_index: usize) -> Result<Config> {
     ensure_profiles_file(&path)?;
 
     let mut backup = ConfigBackup::create(&path)?;
-
-    let _guard = TerminalGuard::new().context("Failed to restore terminal for external editor")?;
 
     let args = if let Some(line) = find_profile_line(&path, profile_index) {
         editor_args(&program, &path, line)
