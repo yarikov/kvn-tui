@@ -98,6 +98,7 @@ fn execute_daemon_effect(
 ) -> Result<()> {
     match effect {
         Effect::Connect { profile, settings } => {
+            model.connecting_profile_id = None;
             if let Some(mut handle) = lock_process_slot(process_slot).take()
                 && let Err(e) = handle.kill_and_wait()
             {
@@ -162,6 +163,7 @@ fn execute_daemon_effect(
             }
             model.connection = ConnectionState::Idle;
             model.active_profile_id = None;
+            model.connecting_profile_id = None;
             model.singbox_pid = None;
             model.traffic = TrafficStats::default();
             model.last_traffic_sample_at_ms = 0;

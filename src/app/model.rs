@@ -150,6 +150,9 @@ pub struct Model {
     pub status: AppStatus,
     pub singbox_pid: Option<u32>,
     pub active_profile_id: Option<Uuid>,
+    /// Explicit target for a queued connection attempt. This must never be
+    /// inferred from `selected`, which is only the UI cursor.
+    pub connecting_profile_id: Option<Uuid>,
     pub routing_selected: usize,
     pub geo_region_selected: usize,
     pub dns_selected: usize,
@@ -295,6 +298,9 @@ impl Model {
             connection = ConnectionState::Idle;
             status = AppStatus::Info("Press ? for help".to_string());
         }
+        let connecting_profile_id = (connection == ConnectionState::Connecting)
+            .then_some(config.settings.last_connected_profile)
+            .flatten();
 
         let region = config
             .settings
@@ -313,6 +319,7 @@ impl Model {
             status: AppStatus::Info(String::new()),
             singbox_pid: bg_pid,
             active_profile_id: bg_id,
+            connecting_profile_id,
             routing_selected: 0,
             geo_region_selected: 0,
             dns_selected: 0,
@@ -381,6 +388,7 @@ impl Model {
             status: AppStatus::Info(String::new()),
             singbox_pid: None,
             active_profile_id: None,
+            connecting_profile_id: None,
             routing_selected: 0,
             geo_region_selected: 0,
             dns_selected: 0,
@@ -579,6 +587,7 @@ impl Model {
             status: AppStatus::Info(String::new()),
             singbox_pid: None,
             active_profile_id: None,
+            connecting_profile_id: None,
             routing_selected: 0,
             geo_region_selected: 0,
             dns_selected: 0,
