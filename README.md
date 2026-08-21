@@ -131,7 +131,8 @@ This automatically:
 - Adds a clickable command module to Omarchy Shell 4, or a `custom/kvn-tui` module to Waybar on Omarchy 3
 - Optionally adds a Hyprland keybinding to open the TUI; press Enter for `Super + Ctrl + K` or enter a custom combination such as `SUPER SHIFT, V`
 - Configures the TUI window to open centered and floating
-- Backs up the Shell/Waybar and Hyprland configs before modifying them
+- Backs up the Shell/Waybar and Hyprland configs before modifying them, keeping
+  the five most recent versions of each file with Omarchy-style timestamps
 - Validates and hot-reloads Hyprland; Omarchy 3 also restarts Waybar
 
 > The installer is idempotent — running it again will skip already-applied changes.
@@ -150,8 +151,8 @@ After verifying the integration, remove the backup files created by setup with:
 kvn-tui clean --omarchy
 ```
 
-This only removes the `.bak.before-kvn-tui` files created by kvn-tui; it
-does not remove the integration or modify the active Waybar and Hyprland files.
+Backups use names such as `.bak.before-kvn-tui.20260821143012`. The clean command removes these backups;
+it does not remove the integration or modify the active Waybar and Hyprland files.
 
 ### Build & Install from Source
 

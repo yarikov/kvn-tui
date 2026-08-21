@@ -6,7 +6,7 @@
 //! `network` group) to enable/disable the unit and to add/remove handshake
 //! exceptions while sing-box is establishing the VPN tunnel.
 //!
-//! See `contrib/install-killswitch.sh` for the one-time setup that the user
+//! See `contrib/setup-killswitch.sh` for the one-time setup that the user
 //! runs as `sudo kvn-tui setup --killswitch`.
 
 use anyhow::{Context, Result, bail};

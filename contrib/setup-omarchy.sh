@@ -2,18 +2,47 @@
 set -euo pipefail
 
 BACKUP_SUFFIX=".bak.before-kvn-tui"
+BACKUP_LIMIT=5
+declare -A RUN_BACKUPS=()
 
 backup_file() {
-  local file="$1"
-  if [[ -f $file && ! -f $file$BACKUP_SUFFIX ]]; then
-    cp -p -- "$file" "$file$BACKUP_SUFFIX"
-  fi
+  local file="$1" timestamp backup tmp candidate suffix
+  [[ -f $file ]] || return 0
+
+  timestamp=$(date +%Y%m%d%H%M%S)
+  backup="${file}${BACKUP_SUFFIX}.${timestamp}"
+  while [[ -e $backup ]]; do
+    sleep 1
+    timestamp=$(date +%Y%m%d%H%M%S)
+    backup="${file}${BACKUP_SUFFIX}.${timestamp}"
+  done
+
+  tmp=$(mktemp "${backup}.tmp.XXXXXX")
+  cp -p -- "$file" "$tmp"
+  mv -- "$tmp" "$backup"
+  RUN_BACKUPS["$file"]=$backup
+
+  local backups=()
+  [[ -f $file$BACKUP_SUFFIX ]] && backups+=("$file$BACKUP_SUFFIX")
+  for candidate in "${file}${BACKUP_SUFFIX}."*; do
+    [[ -f $candidate ]] || continue
+    suffix=${candidate#"${file}${BACKUP_SUFFIX}."}
+    [[ $suffix =~ ^[0-9]{14}$ ]] && backups+=("$candidate")
+  done
+  while (( ${#backups[@]} > BACKUP_LIMIT )); do
+    rm -- "${backups[0]}"
+    backups=("${backups[@]:1}")
+  done
 }
 
-restore_file() {
+restore_current_backup() {
   local file="$1"
-  if [[ -f $file$BACKUP_SUFFIX ]]; then
-    cp -p -- "$file$BACKUP_SUFFIX" "$file"
+  local backup=${RUN_BACKUPS["$file"]:-}
+  if [[ -n $backup && -f $backup ]]; then
+    local tmp
+    tmp=$(mktemp "${file}.tmp.XXXXXX")
+    cp -p -- "$backup" "$tmp"
+    atomic_replace "$tmp" "$file"
   fi
 }
 
@@ -27,12 +56,22 @@ atomic_replace() {
   sync -f "$(dirname "$target")" 2>/dev/null || true
 }
 
+replace_if_changed() {
+  local source="$1" target="$2"
+  if [[ -f $target ]] && cmp -s -- "$source" "$target"; then
+    rm -- "$source"
+    return
+  fi
+  backup_file "$target"
+  atomic_replace "$source" "$target"
+}
+
 append_atomic() {
   local target="$1" content="$2" tmp
   tmp=$(mktemp "${target}.tmp.XXXXXX")
   [[ -f $target ]] && cp -- "$target" "$tmp"
   printf '%s' "$content" >>"$tmp"
-  atomic_replace "$tmp" "$target"
+  replace_if_changed "$tmp" "$target"
 }
 
 install_launcher() {
@@ -82,10 +121,6 @@ install_omarchy_v3() {
   local hypr_bindings="$HOME/.config/hypr/bindings.conf"
   local hypr_main="$HOME/.config/hypr/hyprland.conf"
 
-  for file in "$waybar_config" "$waybar_style" "$hypr_autostart" "$hypr_bindings" "$hypr_main"; do
-    backup_file "$file"
-  done
-
   if [[ -f $waybar_config ]]; then
     if ! grep -q '"custom/kvn-tui"' "$waybar_config"; then
       echo "Adding kvn-tui module to Waybar config..."
@@ -108,7 +143,7 @@ install_omarchy_v3() {
   }
 }
 EOF
-        atomic_replace "$tmp" "$waybar_config"
+        replace_if_changed "$tmp" "$waybar_config"
       else
         echo "Warning: Waybar config does not end with '}' on its own line; skipping module definition."
       fi
@@ -137,7 +172,7 @@ EOF
     local tmp
     tmp=$(mktemp "${hypr_autostart}.tmp.XXXXXX")
     sed '/^[[:space:]]*exec-once[[:space:]]*=[[:space:]]*kvn-tui --daemon[[:space:]]*$/d' "$hypr_autostart" >"$tmp"
-    atomic_replace "$tmp" "$hypr_autostart"
+    replace_if_changed "$tmp" "$hypr_autostart"
   fi
 
   if [[ -f $hypr_bindings ]] && grep -q "omarchy-launch-kvn-tui" "$hypr_bindings"; then
@@ -169,8 +204,8 @@ EOF
   sleep 2
   if ! pgrep -x waybar >/dev/null 2>&1; then
     echo "Error: Waybar failed to start. Restoring backups..." >&2
-    restore_file "$waybar_config"
-    restore_file "$waybar_style"
+    restore_current_backup "$waybar_config"
+    restore_current_backup "$waybar_style"
     omarchy restart waybar
     return 1
   fi
@@ -186,7 +221,7 @@ append_marker_block() {
   tmp=$(mktemp "${file}.tmp.XXXXXX")
   cp -- "$file" "$tmp"
   printf '\n%s\n' "$block" >>"$tmp"
-  atomic_replace "$tmp" "$file"
+  replace_if_changed "$tmp" "$file"
 }
 
 install_omarchy_v4() {
@@ -203,7 +238,6 @@ install_omarchy_v4() {
       echo "Error: required Omarchy 4 config not found: $file" >&2
       return 1
     }
-    backup_file "$file"
   done
 
   V4_SHELL_CONFIG=$shell_config
@@ -266,7 +300,7 @@ EOF
       end
   ' "$shell_config" >"$tmp"
   jq -e '.version == 1 and (.bar.layout | type == "object")' "$tmp" >/dev/null
-  atomic_replace "$tmp" "$shell_config"
+  replace_if_changed "$tmp" "$shell_config"
 
   install_launcher 4
 
