@@ -1,5 +1,6 @@
 mod clipboard;
 mod editor;
+mod input;
 pub(crate) mod theme_watch;
 
 use std::io::{self, IsTerminal, Write};
@@ -11,7 +12,6 @@ use std::time::Duration;
 
 use anyhow::Result;
 use crossterm::ExecutableCommand;
-use crossterm::event;
 use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
 };
@@ -38,6 +38,37 @@ pub(crate) fn osc11(color: Color) -> String {
 /// OSC 111: reset terminal background to its default. Emitted on exit so
 /// we don't leave the user's terminal stuck on our palette color.
 pub(crate) const OSC_RESET_BG: &str = "\x1b]111\x1b\\";
+
+/// Owns the terminal modes enabled by the TUI and restores them on every
+/// return path (including an error from the render loop).
+struct TerminalSession;
+
+impl TerminalSession {
+    fn enter() -> Result<Self> {
+        enable_raw_mode()?;
+        let mut stdout = io::stdout();
+        if let Err(error) = stdout.execute(EnterAlternateScreen) {
+            let _ = disable_raw_mode();
+            return Err(error.into());
+        }
+        if let Err(error) = input::enable_keyboard_protocol(&mut stdout) {
+            let _ = stdout.execute(LeaveAlternateScreen);
+            let _ = disable_raw_mode();
+            return Err(error.into());
+        }
+        Ok(Self)
+    }
+}
+
+impl Drop for TerminalSession {
+    fn drop(&mut self) {
+        let mut stdout = io::stdout();
+        let _ = input::disable_keyboard_protocol(&mut stdout);
+        let _ = disable_raw_mode();
+        let _ = stdout.execute(LeaveAlternateScreen);
+        reset_terminal_bg();
+    }
+}
 
 /// Write OSC 11 to stdout (no-op when stdout isn't a TTY — pipes, CI,
 /// captured output). Errors are swallowed: a terminal that doesn't
@@ -69,40 +100,33 @@ pub fn run() -> Result<()> {
     let config = crate::config::load_config().unwrap_or_default();
     let mut model = Model::from_config(config.clone());
     model.theme = theme_watch::resolve_active(&model.config.settings.theme);
-    apply_terminal_bg(model.theme.palette_background());
 
     let (tx, rx) = channel::<Msg>();
     let event_reading_enabled = Arc::new(AtomicBool::new(true));
-    spawn_event_reader(tx.clone(), event_reading_enabled.clone());
     spawn_ticker(tx.clone());
     theme_watch::spawn_theme_watcher(tx.clone());
-    client.spawn_reader(tx)?;
+    client.spawn_reader(tx.clone())?;
 
-    enable_raw_mode()?;
-    let mut stdout = io::stdout();
-    stdout.execute(EnterAlternateScreen)?;
+    let _terminal_session = TerminalSession::enter()?;
+    apply_terminal_bg(model.theme.palette_background());
+    let stdout = io::stdout();
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
+    input::spawn_event_reader(tx, event_reading_enabled.clone());
 
     let mut log_tailer = LogTailer::new(vec![
         (crate::paths::app_log_path(), "[app]"),
         (crate::paths::singbox_log_path(), "[sb]"),
     ]);
 
-    let result = run_loop(
+    run_loop(
         &mut terminal,
         &mut model,
         rx,
         &mut client,
         &mut log_tailer,
         event_reading_enabled,
-    );
-
-    disable_raw_mode()?;
-    terminal.backend_mut().execute(LeaveAlternateScreen)?;
-    reset_terminal_bg();
-
-    result
+    )
 }
 
 fn run_loop(
@@ -182,9 +206,7 @@ fn run_loop(
                         enable_raw_mode()?;
                         terminal.backend_mut().execute(EnterAlternateScreen)?;
                         terminal.clear()?;
-                        while event::poll(Duration::ZERO).unwrap_or(false) {
-                            let _ = event::read();
-                        }
+                        input::discard_pending_input();
                         event_reading_enabled.store(true, Ordering::Relaxed);
                         match result {
                             Ok(_) => {
@@ -300,35 +322,6 @@ fn apply_snapshot(model: &mut Model, snapshot: crate::app::msg::StateSnapshot) {
     if model.theme.palette_background() != prev_bg {
         apply_terminal_bg(model.theme.palette_background());
     }
-}
-
-fn spawn_event_reader(tx: Sender<Msg>, reading_enabled: Arc<AtomicBool>) {
-    thread::spawn(move || {
-        loop {
-            if !reading_enabled.load(Ordering::Relaxed) {
-                thread::sleep(Duration::from_millis(50));
-                continue;
-            }
-            match event::poll(Duration::from_millis(100)) {
-                Ok(true) => match event::read() {
-                    Ok(event::Event::Key(key)) => {
-                        if tx.send(Msg::Key(key)).is_err() {
-                            break;
-                        }
-                    }
-                    Ok(event::Event::Resize(_, _)) => {
-                        if tx.send(Msg::Resize).is_err() {
-                            break;
-                        }
-                    }
-                    Ok(_) => {}
-                    Err(_) => break,
-                },
-                Ok(false) => {}
-                Err(_) => break,
-            }
-        }
-    });
 }
 
 fn spawn_ticker(tx: Sender<Msg>) {
