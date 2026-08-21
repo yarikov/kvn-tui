@@ -61,13 +61,13 @@ enum Command {
 
 /// Run the embedded Omarchy integration installer script.
 fn install_omarchy() -> Result<()> {
-    let script = include_str!("../contrib/install-omarchy.sh");
-    let tmp = std::env::temp_dir().join("kvn-tui-install-omarchy.sh");
+    let script = include_str!("../contrib/setup-omarchy.sh");
+    let tmp = std::env::temp_dir().join("kvn-tui-setup-omarchy.sh");
     std::fs::write(&tmp, script)?;
     let status = std::process::Command::new("bash").arg(&tmp).status()?;
     std::fs::remove_file(&tmp).ok();
     if !status.success() {
-        anyhow::bail!("install-omarchy.sh exited with status {}", status);
+        anyhow::bail!("setup-omarchy.sh exited with status {}", status);
     }
     Ok(())
 }
@@ -90,32 +90,32 @@ fn clean_omarchy() -> Result<()> {
 
 /// Run the embedded polkit rule installer script.
 fn install_polkit() -> Result<()> {
-    let script = include_str!("../contrib/install-polkit.sh");
-    let tmp = std::env::temp_dir().join("kvn-tui-install-polkit.sh");
+    let script = include_str!("../contrib/setup-polkit.sh");
+    let tmp = std::env::temp_dir().join("kvn-tui-setup-polkit.sh");
     std::fs::write(&tmp, script)?;
     let status = std::process::Command::new("bash")
         .arg(&tmp)
         .status()
-        .context("failed to run install-polkit.sh")?;
+        .context("failed to run setup-polkit.sh")?;
     std::fs::remove_file(&tmp).ok();
     if !status.success() {
-        anyhow::bail!("install-polkit.sh exited with status {}", status);
+        anyhow::bail!("setup-polkit.sh exited with status {}", status);
     }
     Ok(())
 }
 
 /// Run the embedded kill switch installer script.
 fn install_killswitch() -> Result<()> {
-    let script = include_str!("../contrib/install-killswitch.sh");
-    let tmp = std::env::temp_dir().join("kvn-tui-install-killswitch.sh");
+    let script = include_str!("../contrib/setup-killswitch.sh");
+    let tmp = std::env::temp_dir().join("kvn-tui-setup-killswitch.sh");
     std::fs::write(&tmp, script)?;
     let status = std::process::Command::new("bash")
         .arg(&tmp)
         .status()
-        .context("failed to run install-killswitch.sh")?;
+        .context("failed to run setup-killswitch.sh")?;
     std::fs::remove_file(&tmp).ok();
     if !status.success() {
-        anyhow::bail!("install-killswitch.sh exited with status {}", status);
+        anyhow::bail!("setup-killswitch.sh exited with status {}", status);
     }
     Ok(())
 }
@@ -211,8 +211,8 @@ mod tests {
     }
 
     fn run_installer(root: &TempDir, home: &Path, input: &str) -> std::process::Output {
-        let script = root.path().join("install-omarchy.sh");
-        fs::write(&script, include_str!("../contrib/install-omarchy.sh")).unwrap();
+        let script = root.path().join("setup-omarchy.sh");
+        fs::write(&script, include_str!("../contrib/setup-omarchy.sh")).unwrap();
         let path = format!(
             "{}:{}",
             root.path().join("bin").display(),
@@ -234,6 +234,32 @@ mod tests {
             .write_all(input.as_bytes())
             .unwrap();
         child.wait_with_output().unwrap()
+    }
+
+    fn run_omarchy_cleanup(root: &TempDir, home: &Path) -> std::process::Output {
+        let script = root.path().join("clean-omarchy.sh");
+        fs::write(&script, include_str!("../contrib/clean-omarchy.sh")).unwrap();
+        ProcessCommand::new("bash")
+            .arg(&script)
+            .env("HOME", home)
+            .output()
+            .unwrap()
+    }
+
+    fn backup_files(path: &Path) -> Vec<PathBuf> {
+        let file_name = path.file_name().unwrap().to_string_lossy();
+        let prefix = format!("{file_name}.bak.before-kvn-tui");
+        let mut backups = fs::read_dir(path.parent().unwrap())
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter_map(|entry| {
+                let name = entry.file_name();
+                let name = name.to_string_lossy();
+                (name == prefix || name.starts_with(&format!("{prefix}."))).then_some(entry.path())
+            })
+            .collect::<Vec<_>>();
+        backups.sort();
+        backups
     }
 
     fn assert_success(output: &std::process::Output) {
@@ -397,10 +423,73 @@ mod tests {
         let launcher = fs::read_to_string(home.join(".local/bin/omarchy-launch-kvn-tui")).unwrap();
         assert!(launcher.contains("omarchy-launch-or-focus-tui"));
         assert!(launcher.contains("--app-id=org.omarchy.kvn-tui"));
-        assert!(omarchy.join("shell.json.bak.before-kvn-tui").is_file());
+        let shell_backups = backup_files(&omarchy.join("shell.json"));
+        assert_eq!(shell_backups.len(), 1);
+        assert!(
+            shell_backups[0]
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with("shell.json.bak.before-kvn-tui.")
+        );
         for file in ["bindings.lua", "hyprland.lua"] {
-            assert!(hypr.join(format!("{file}.bak.before-kvn-tui")).is_file());
+            assert_eq!(backup_files(&hypr.join(file)).len(), 1);
         }
+    }
+
+    #[test]
+    fn omarchy_installer_keeps_only_five_backups_per_changed_file() {
+        let (root, home) = installer_fixture(4);
+        let shell_config = home.join(".config/omarchy/shell.json");
+        write_omarchy_v4_config(&home);
+        let legacy = shell_config.with_file_name("shell.json.bak.before-kvn-tui");
+        fs::write(&legacy, "legacy backup").unwrap();
+
+        assert_success(&run_installer(&root, &home, "y\n\n"));
+        assert!(legacy.is_file());
+        assert_eq!(backup_files(&shell_config).len(), 2);
+
+        for revision in 1..=5 {
+            let mut shell: serde_json::Value =
+                serde_json::from_slice(&fs::read(&shell_config).unwrap()).unwrap();
+            shell["test_revision"] = revision.into();
+            fs::write(&shell_config, serde_json::to_vec_pretty(&shell).unwrap()).unwrap();
+            assert_success(&run_installer(&root, &home, ""));
+        }
+
+        let backups = backup_files(&shell_config);
+        assert_eq!(backups.len(), 5);
+        assert!(!legacy.exists());
+        let contents = backups
+            .iter()
+            .map(|path| fs::read_to_string(path).unwrap())
+            .collect::<Vec<_>>();
+        for revision in 1..=5 {
+            assert!(
+                contents
+                    .iter()
+                    .any(|content| content.contains(&format!("\"test_revision\": {revision}")))
+            );
+        }
+    }
+
+    #[test]
+    fn clean_omarchy_removes_legacy_and_timestamp_backups_only() {
+        let (root, home) = installer_fixture(4);
+        let omarchy = home.join(".config/omarchy");
+        fs::create_dir_all(&omarchy).unwrap();
+        let legacy = omarchy.join("shell.json.bak.before-kvn-tui");
+        let timestamped = omarchy.join("shell.json.bak.before-kvn-tui.20260821143012");
+        let unrelated = omarchy.join("shell.json.bak.before-kvn-tui.notes");
+        fs::write(&legacy, "legacy").unwrap();
+        fs::write(&timestamped, "timestamped").unwrap();
+        fs::write(&unrelated, "keep").unwrap();
+
+        assert_success(&run_omarchy_cleanup(&root, &home));
+
+        assert!(!legacy.exists());
+        assert!(!timestamped.exists());
+        assert!(unrelated.exists());
     }
 
     #[test]
@@ -464,5 +553,35 @@ mod tests {
                 .unwrap()
                 .contains("org.omarchy.kvn-tui")
         );
+    }
+
+    #[test]
+    fn omarchy_v3_failure_restores_the_current_run_snapshot() {
+        let (root, home) = installer_fixture(3);
+        let waybar = home.join(".config/waybar");
+        fs::create_dir_all(&waybar).unwrap();
+        let config = waybar.join("config.jsonc");
+        let style = waybar.join("style.css");
+        let original_config = "{\n  \"modules-right\": [\n    \"bluetooth\"\n  ]\n}\n";
+        let original_style = "* { color: white; }\n";
+        fs::write(&config, original_config).unwrap();
+        fs::write(&style, original_style).unwrap();
+        fs::write(
+            waybar.join("config.jsonc.bak.before-kvn-tui"),
+            "stale config backup",
+        )
+        .unwrap();
+        fs::write(
+            waybar.join("style.css.bak.before-kvn-tui"),
+            "stale style backup",
+        )
+        .unwrap();
+        write_executable(&root.path().join("bin/pgrep"), "#!/bin/bash\nexit 1\n");
+
+        let output = run_installer(&root, &home, "n\n");
+
+        assert!(!output.status.success());
+        assert_eq!(fs::read_to_string(config).unwrap(), original_config);
+        assert_eq!(fs::read_to_string(style).unwrap(), original_style);
     }
 }

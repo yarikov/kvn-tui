@@ -15,12 +15,18 @@ FILES=(
 
 removed=0
 for file in "${FILES[@]}"; do
-  backup="${file}${BACKUP_SUFFIX}"
-  if [ -f "$backup" ]; then
+  for backup in "${file}${BACKUP_SUFFIX}" "${file}${BACKUP_SUFFIX}."*; do
+    if [[ ! -f $backup ]]; then
+      continue
+    fi
+    if [[ $backup != "${file}${BACKUP_SUFFIX}" ]]; then
+      suffix=${backup#"${file}${BACKUP_SUFFIX}."}
+      [[ $suffix =~ ^[0-9]{14}$ ]] || continue
+    fi
     rm -- "$backup"
     echo "Removed $backup"
     removed=$((removed + 1))
-  fi
+  done
 done
 
 if [ "$removed" -eq 0 ]; then
