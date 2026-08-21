@@ -40,17 +40,12 @@ pub fn update(model: &mut Model, msg: Msg) -> Vec<Effect> {
             vec![Effect::BroadcastState]
         }
         Msg::SystemResumed => {
-            if model.connection == ConnectionState::Connected {
-                let profile = model.selected_profile().cloned();
-                let settings = model.config.settings.clone();
-                let mut effects = profile
-                    .map(|p| {
-                        vec![Effect::Connect {
-                            profile: p,
-                            settings,
-                        }]
-                    })
-                    .unwrap_or_default();
+            if model.connection == ConnectionState::Connected
+                && model
+                    .active_profile_id
+                    .is_some_and(|id| queue_connect(model, id))
+            {
+                let mut effects = vec![];
                 push_status(
                     &mut effects,
                     model,
@@ -64,6 +59,7 @@ pub fn update(model: &mut Model, msg: Msg) -> Vec<Effect> {
         Msg::Connected { pid, profile_id } => {
             model.singbox_pid = Some(pid);
             model.connection = ConnectionState::Connected;
+            model.connecting_profile_id = None;
             model.overlay = Overlay::None;
             // Fresh sing-box → fresh counters. Drop the previous sample so the
             // first delta is computed against zero rather than a stale value.
@@ -129,8 +125,7 @@ pub fn update(model: &mut Model, msg: Msg) -> Vec<Effect> {
                 .active_profile_id
                 .and_then(|id| model.config.profiles.iter().find(|p| p.id == id).cloned());
             if let Some(profile) = active {
-                let settings = model.config.settings.clone();
-                model.connection = ConnectionState::Connecting;
+                queue_connect(model, profile.id);
                 push_status(
                     &mut effects,
                     model,
@@ -138,7 +133,6 @@ pub fn update(model: &mut Model, msg: Msg) -> Vec<Effect> {
                         "Service routing changed — reconnecting".into(),
                     ),
                 );
-                effects.push(Effect::Connect { profile, settings });
             } else {
                 push_status(
                     &mut effects,
@@ -152,6 +146,7 @@ pub fn update(model: &mut Model, msg: Msg) -> Vec<Effect> {
         }
         Msg::ConnectFailed(err) => {
             model.connection = ConnectionState::Idle;
+            model.connecting_profile_id = None;
             model.traffic = TrafficStats::default();
             model.last_traffic_sample_at_ms = 0;
             model.last_traffic_fetch_at = None;
@@ -304,11 +299,25 @@ fn handle_config_reloaded(
 ) -> Vec<Effect> {
     match result {
         Ok(config) => {
+            let active_missing = model.connection == ConnectionState::Connected
+                && model
+                    .active_profile_id
+                    .is_some_and(|id| !config.profiles.iter().any(|profile| profile.id == id));
+            let connecting_missing = model.connection == ConnectionState::Connecting
+                && model
+                    .connecting_profile_id
+                    .is_some_and(|id| !config.profiles.iter().any(|profile| profile.id == id));
             let region_changed = model.config.settings.geo_routing.current_region
                 != config.settings.geo_routing.current_region;
             model.selected = crate::app::model::row_for_profile(&config, config.resolve_selected());
             model.config = config;
             let mut effects = vec![Effect::BroadcastState];
+            if active_missing {
+                effects.push(Effect::Disconnect);
+            } else if connecting_missing {
+                model.connection = ConnectionState::Idle;
+                model.connecting_profile_id = None;
+            }
             if region_changed {
                 model.geo_last_updated = None;
                 model.geo_last_checked_at = None;
@@ -345,7 +354,15 @@ fn handle_tick(model: &mut Model) -> Vec<Effect> {
 
     // Connection handling
     if model.connection == ConnectionState::Connecting {
-        if let Some(profile) = model.selected_profile().cloned() {
+        let profile = model.connecting_profile_id.take().and_then(|id| {
+            model
+                .config
+                .profiles
+                .iter()
+                .find(|profile| profile.id == id)
+                .cloned()
+        });
+        if let Some(profile) = profile {
             let settings = model.config.settings.clone();
             effects.push(Effect::Connect { profile, settings });
         } else {
@@ -385,6 +402,21 @@ fn handle_tick(model: &mut Model) -> Vec<Effect> {
     }
 
     effects
+}
+
+pub(super) fn queue_connect(model: &mut Model, profile_id: Uuid) -> bool {
+    if model
+        .config
+        .profiles
+        .iter()
+        .any(|profile| profile.id == profile_id)
+    {
+        model.connecting_profile_id = Some(profile_id);
+        model.connection = ConnectionState::Connecting;
+        true
+    } else {
+        false
+    }
 }
 
 fn geo_update_due(model: &Model, now: chrono::DateTime<Local>) -> bool {
@@ -692,11 +724,13 @@ fn handle_geo_result(model: &mut Model, result: GeoResult) -> Vec<Effect> {
                 model,
                 crate::app::model::AppStatus::Info("Geo databases updated".into()),
             );
-            if model.connection == ConnectionState::Connected {
+            if model.connection == ConnectionState::Connected
+                && let Some(active_id) = model.active_profile_id
+                && queue_connect(model, active_id)
+            {
                 model
                     .logs
                     .push_back("Reconnecting to apply new geo databases".into());
-                model.connection = ConnectionState::Connecting;
             }
             log_effects
         }
@@ -782,15 +816,23 @@ mod tests {
 
     #[test]
     fn normal_mode_enter_connects() {
-        let mut model = model_with_profiles(vec![Profile::new_vless(
-            "A".to_string(),
-            "1.1.1.1".to_string(),
-            443,
-            "u1".to_string(),
-        )]);
+        let a = Profile::new_vless("A".into(), "1.1.1.1".into(), 443, "u1".into());
+        let b = Profile::new_vless("B".into(), "2.2.2.2".into(), 443, "u2".into());
+        let a_id = a.id;
+        let mut model = model_with_profiles(vec![a, b]);
         let effects = handle_sources(&mut model, KeyEvent::from(KeyCode::Enter));
         assert_eq!(model.connection, ConnectionState::Connecting);
+        assert_eq!(model.connecting_profile_id, Some(a_id));
         assert_eq!(effects, vec![app_log_info("Connecting to A…")]);
+
+        // Moving the cursor before the daemon tick must not retarget the attempt.
+        model.select_next();
+        let effects = handle_tick(&mut model);
+        assert!(
+            effects.iter().any(
+                |effect| matches!(effect, Effect::Connect { profile, .. } if profile.id == a_id)
+            )
+        );
     }
 
     #[test]
@@ -951,6 +993,41 @@ mod tests {
     }
 
     #[test]
+    fn config_reload_disconnects_when_active_profile_was_removed() {
+        let profile = Profile::new_vless("A".into(), "1.1.1.1".into(), 443, "u1".into());
+        let profile_id = profile.id;
+        let mut model = model_with_profiles(vec![profile]);
+        model.connection = ConnectionState::Connected;
+        model.active_profile_id = Some(profile_id);
+        let mut config = model.config.clone();
+        config.profiles.clear();
+
+        let effects = update(&mut model, Msg::ConfigReloaded(Box::new(Ok(config))));
+
+        assert!(effects.contains(&Effect::Disconnect));
+    }
+
+    #[test]
+    fn config_reload_cancels_missing_queued_connection() {
+        let profile = Profile::new_vless("A".into(), "1.1.1.1".into(), 443, "u1".into());
+        let profile_id = profile.id;
+        let mut model = model_with_profiles(vec![profile]);
+        assert!(queue_connect(&mut model, profile_id));
+        let mut config = model.config.clone();
+        config.profiles.clear();
+
+        let effects = update(&mut model, Msg::ConfigReloaded(Box::new(Ok(config))));
+
+        assert_eq!(model.connection, ConnectionState::Idle);
+        assert_eq!(model.connecting_profile_id, None);
+        assert!(
+            !effects
+                .iter()
+                .any(|effect| matches!(effect, Effect::Connect { .. }))
+        );
+    }
+
+    #[test]
     fn ipc_command_key_navigates() {
         let mut model = model_with_profiles(vec![
             Profile::new_vless(
@@ -1076,6 +1153,24 @@ mod tests {
     }
 
     #[test]
+    fn routing_mode_change_queues_active_profile_not_cursor() {
+        let a = Profile::new_vless("A".into(), "1.1.1.1".into(), 443, "u1".into());
+        let b = Profile::new_vless("B".into(), "2.2.2.2".into(), 443, "u2".into());
+        let active_id = a.id;
+        let mut model = model_with_profiles(vec![a, b]);
+        model.config.settings.geo_routing.set_region(GeoRegion::Ru);
+        model.connection = ConnectionState::Connected;
+        model.active_profile_id = Some(active_id);
+        model.select_next();
+        model.overlay = Overlay::RoutingMode;
+        model.routing_selected = 1;
+
+        handle_routing_mode(&mut model, KeyEvent::from(KeyCode::Enter));
+
+        assert_eq!(model.connecting_profile_id, Some(active_id));
+    }
+
+    #[test]
     fn routing_mode_esc_cancels() {
         let mut model = model_with_profiles(vec![]);
         model.config.settings.geo_routing.set_region(GeoRegion::Ru);
@@ -1132,6 +1227,26 @@ mod tests {
                 Effect::DownloadGeoIfMissing,
             ]
         );
+    }
+
+    #[test]
+    fn geo_region_change_queues_active_profile_not_cursor() {
+        let a = Profile::new_vless("A".into(), "1.1.1.1".into(), 443, "u1".into());
+        let b = Profile::new_vless("B".into(), "2.2.2.2".into(), 443, "u2".into());
+        let active_id = a.id;
+        let mut model = model_with_profiles(vec![a, b]);
+        model.config.settings.geo_routing.set_region(GeoRegion::Ru);
+        model.config.settings.auto_connect = true;
+        model.config.settings.last_connected_profile = Some(model.config.profiles[1].id);
+        model.connection = ConnectionState::Connected;
+        model.active_profile_id = Some(active_id);
+        model.select_next();
+        model.overlay = Overlay::GeoRegions;
+        model.geo_region_selected = 1;
+
+        handle_geo_region(&mut model, KeyEvent::from(KeyCode::Enter));
+
+        assert_eq!(model.connecting_profile_id, Some(active_id));
     }
 
     #[test]
@@ -1283,6 +1398,7 @@ mod tests {
             Some(GeoRegion::Ru)
         );
         assert_eq!(model.connection, ConnectionState::Connecting);
+        assert_eq!(model.connecting_profile_id, Some(id));
         assert_eq!(model.selected, 0);
         assert!(model.status.text().contains("Auto-connecting"));
         assert_eq!(
@@ -1380,6 +1496,28 @@ mod tests {
                 Effect::BroadcastState
             ]
         );
+    }
+
+    #[test]
+    fn geo_update_queues_active_profile_not_cursor() {
+        let a = Profile::new_vless("A".into(), "1.1.1.1".into(), 443, "u1".into());
+        let b = Profile::new_vless("B".into(), "2.2.2.2".into(), 443, "u2".into());
+        let active_id = a.id;
+        let mut model = model_with_profiles(vec![a, b]);
+        model.connection = ConnectionState::Connected;
+        model.active_profile_id = Some(active_id);
+        model.select_next();
+
+        update(
+            &mut model,
+            Msg::GeoUpdated(GeoResult::Updated {
+                parts: vec!["geoip".into()],
+                last_updated: None,
+                checked_at: Local::now(),
+            }),
+        );
+
+        assert_eq!(model.connecting_profile_id, Some(active_id));
     }
 
     #[test]
@@ -1585,17 +1723,18 @@ mod tests {
 
     #[test]
     fn connected_mode_r_reconnects() {
-        let mut model = model_with_profiles(vec![Profile::new_vless(
-            "A".to_string(),
-            "1.1.1.1".to_string(),
-            443,
-            "u1".to_string(),
-        )]);
+        let a = Profile::new_vless("A".into(), "1.1.1.1".into(), 443, "u1".into());
+        let b = Profile::new_vless("B".into(), "2.2.2.2".into(), 443, "u2".into());
+        let a_id = a.id;
+        let mut model = model_with_profiles(vec![a, b]);
         model.connection = ConnectionState::Connected;
+        model.active_profile_id = Some(a_id);
         model.overlay = Overlay::None;
+        model.select_next();
         let effects = handle_key(&mut model, key('r'));
         assert_eq!(effects, vec![app_log_info("Reconnecting to A…")]);
         assert_eq!(model.connection, ConnectionState::Connecting);
+        assert_eq!(model.connecting_profile_id, Some(a_id));
     }
 
     #[test]
@@ -1699,6 +1838,54 @@ mod tests {
     }
 
     #[test]
+    fn system_resumed_reconnects_active_profile_not_cursor() {
+        let a = Profile::new_vless(
+            "A".to_string(),
+            "1.1.1.1".to_string(),
+            443,
+            "u1".to_string(),
+        );
+        let b = Profile::new_vless(
+            "B".to_string(),
+            "2.2.2.2".to_string(),
+            443,
+            "u2".to_string(),
+        );
+        let a_id = a.id;
+        let mut model = model_with_profiles(vec![a, b]);
+        model.connection = ConnectionState::Connected;
+        model.active_profile_id = Some(a_id);
+        model.select_next();
+
+        let effects = update(&mut model, Msg::SystemResumed);
+
+        assert_eq!(model.connecting_profile_id, Some(a_id));
+        assert!(effects.contains(&app_log_info("Resumed — reconnecting…")));
+        let tick_effects = handle_tick(&mut model);
+        assert!(
+            tick_effects.iter().any(
+                |effect| matches!(effect, Effect::Connect { profile, .. } if profile.id == a_id)
+            )
+        );
+    }
+
+    #[test]
+    fn system_resumed_without_resolvable_active_profile_is_noop() {
+        let mut model = model_with_profiles(vec![Profile::new_vless(
+            "A".to_string(),
+            "1.1.1.1".to_string(),
+            443,
+            "u1".to_string(),
+        )]);
+        model.connection = ConnectionState::Connected;
+        model.active_profile_id = Some(Uuid::new_v4());
+
+        let effects = update(&mut model, Msg::SystemResumed);
+
+        assert!(effects.is_empty());
+    }
+
+    #[test]
     fn connected_fetches_service_rule_sets_only_when_enabled() {
         use crate::config::profile::{RoutedService, ServiceRoute};
 
@@ -1763,10 +1950,12 @@ mod tests {
         model.pending_service_reconnect = true;
         // Cursor rests on profile B — the reconnect must still target A.
         model.select_next();
-        let effects = update(&mut model, Msg::ServiceRuleSetsReady);
+        update(&mut model, Msg::ServiceRuleSetsReady);
         assert!(!model.pending_service_reconnect, "flag is consumed");
         assert_eq!(model.connection, ConnectionState::Connecting);
-        let connect_id = effects.iter().find_map(|e| match e {
+        assert_eq!(model.connecting_profile_id, Some(active_id));
+        let tick_effects = handle_tick(&mut model);
+        let connect_id = tick_effects.iter().find_map(|e| match e {
             Effect::Connect { profile, .. } => Some(profile.id),
             _ => None,
         });

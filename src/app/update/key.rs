@@ -144,17 +144,25 @@ pub(super) fn handle_sources(model: &mut Model, key: KeyEvent) -> Vec<Effect> {
                 .unwrap_or(0);
         }
         KeyCode::Char('r') if model.connection == ConnectionState::Connected => {
-            if let Some(profile) = model.selected_profile() {
+            if let Some(profile) = model.active_profile_id.and_then(|id| {
+                model
+                    .config
+                    .profiles
+                    .iter()
+                    .find(|profile| profile.id == id)
+            }) {
+                let profile_id = profile.id;
+                let profile_name = profile.name.clone();
                 push_status(
                     &mut effects,
                     model,
                     crate::app::model::AppStatus::Info(format!(
                         "Reconnecting to {}…",
-                        profile.name
+                        profile_name
                     )),
                 );
+                queue_connect(model, profile_id);
             }
-            model.connection = ConnectionState::Connecting;
         }
         KeyCode::Char('s') if model.connection == ConnectionState::Connected => {
             return vec![Effect::Disconnect];
@@ -234,15 +242,17 @@ pub(super) fn handle_sources(model: &mut Model, key: KeyEvent) -> Vec<Effect> {
 pub(super) fn handle_enter_on_sources(model: &mut Model) -> Vec<Effect> {
     let mut effects = Vec::new();
     if let Some(profile) = model.selected_profile() {
-        if model.active_profile_id == Some(profile.id) {
+        let profile_id = profile.id;
+        let profile_name = profile.name.clone();
+        if model.active_profile_id == Some(profile_id) {
             return effects;
         }
         push_status(
             &mut effects,
             model,
-            crate::app::model::AppStatus::Info(format!("Connecting to {}…", profile.name)),
+            crate::app::model::AppStatus::Info(format!("Connecting to {}…", profile_name)),
         );
-        model.connection = ConnectionState::Connecting;
+        queue_connect(model, profile_id);
     } else if let Some(sub) = model.selected_subscription() {
         let id = sub.id;
         let name = sub.name.clone();
@@ -451,8 +461,11 @@ pub(super) fn handle_routing_mode(model: &mut Model, key: KeyEvent) -> Vec<Effec
                     crate::app::model::AppStatus::Info(format!("Routing mode: {}", mode)),
                 );
 
-                if changed && model.connection == ConnectionState::Connected {
-                    model.connection = ConnectionState::Connecting;
+                if changed
+                    && model.connection == ConnectionState::Connected
+                    && let Some(active_id) = model.active_profile_id
+                    && queue_connect(model, active_id)
+                {
                     push_status(
                         &mut effects,
                         model,
@@ -598,15 +611,17 @@ pub(super) fn handle_geo_region(model: &mut Model, key: KeyEvent) -> Vec<Effect>
 
                 // Trigger auto-connect immediately after picking a region
                 // so the user does not have to restart the app.
-                if model.config.settings.auto_connect
+                if model.connection == ConnectionState::Idle
+                    && model.config.settings.auto_connect
+                    && let Some(profile_id) = model.config.settings.last_connected_profile
                     && let Some(idx) = model
                         .config
-                        .settings
-                        .last_connected_profile
-                        .and_then(|id| model.config.profiles.iter().position(|p| p.id == id))
+                        .profiles
+                        .iter()
+                        .position(|p| p.id == profile_id)
                 {
                     model.selected = crate::app::model::row_for_profile(&model.config, idx);
-                    model.connection = ConnectionState::Connecting;
+                    queue_connect(model, profile_id);
                     if let Some(profile) = model.config.profiles.get(idx) {
                         push_status(
                             &mut effects,
@@ -619,8 +634,11 @@ pub(super) fn handle_geo_region(model: &mut Model, key: KeyEvent) -> Vec<Effect>
                     }
                 }
 
-                if changed && model.connection == ConnectionState::Connected {
-                    model.connection = ConnectionState::Connecting;
+                if changed
+                    && model.connection == ConnectionState::Connected
+                    && let Some(active_id) = model.active_profile_id
+                    && queue_connect(model, active_id)
+                {
                     model.logs.push_back("Region changed — reconnecting".into());
                 }
                 return effects;
@@ -872,16 +890,14 @@ fn apply_dns_item(model: &mut Model, item: DnsSettingsItem) -> Vec<Effect> {
         effects.push(Effect::SaveConfig);
         effects.push(Effect::BroadcastState);
         if model.connection == ConnectionState::Connected
-            && let Some(profile) = model.selected_profile().cloned()
+            && let Some(active_id) = model.active_profile_id
+            && queue_connect(model, active_id)
         {
-            let settings = model.config.settings.clone();
-            model.connection = ConnectionState::Connecting;
             push_status(
                 &mut effects,
                 model,
                 AppStatus::Info("DNS changed — reconnecting…".into()),
             );
-            effects.push(Effect::Connect { profile, settings });
         }
     }
 
@@ -1293,19 +1309,19 @@ mod tests {
 
     #[test]
     fn dns_settings_changing_preset_while_connected_triggers_reconnect() {
-        let mut model = model_with_profiles(vec![Profile::new_vless(
-            "A".into(),
-            "1.1.1.1".into(),
-            443,
-            "u".into(),
-        )]);
+        let a = Profile::new_vless("A".into(), "1.1.1.1".into(), 443, "u1".into());
+        let b = Profile::new_vless("B".into(), "2.2.2.2".into(), 443, "u2".into());
+        let active_id = a.id;
+        let mut model = model_with_profiles(vec![a, b]);
+        model.select_next();
         model.overlay = Overlay::DnsSettings;
         model.connection = ConnectionState::Connected;
-        model.active_profile_id = Some(model.config.profiles[0].id);
+        model.active_profile_id = Some(active_id);
         model.dns_selected = 1; // Google DoT
         let effects = handle_dns_settings(&mut model, enter());
         assert_eq!(model.connection, ConnectionState::Connecting);
-        assert!(effects.iter().any(|e| matches!(e, Effect::Connect { .. })));
+        assert_eq!(model.connecting_profile_id, Some(active_id));
+        assert!(!effects.iter().any(|e| matches!(e, Effect::Connect { .. })));
     }
 
     #[test]
