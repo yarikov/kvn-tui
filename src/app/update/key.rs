@@ -710,10 +710,16 @@ pub(super) fn handle_dns_settings(model: &mut Model, key: KeyEvent) -> Vec<Effec
             model.dns_strategy_draft = Some(base.prev());
         }
         KeyCode::Char('l') | KeyCode::Right if on_fakeip => {
-            model.dns_fakeip_draft = Some(true);
+            let current = model
+                .dns_fakeip_draft
+                .unwrap_or(model.config.settings.dns.fakeip_enabled);
+            model.dns_fakeip_draft = Some(!current);
         }
         KeyCode::Char('h') | KeyCode::Left if on_fakeip => {
-            model.dns_fakeip_draft = Some(false);
+            let current = model
+                .dns_fakeip_draft
+                .unwrap_or(model.config.settings.dns.fakeip_enabled);
+            model.dns_fakeip_draft = Some(!current);
         }
         KeyCode::Enter => {
             let Some(item) = DnsSettingsItem::from_index(model.dns_selected) else {
@@ -1267,6 +1273,25 @@ mod tests {
         handle_dns_settings(&mut model, key('h'));
         handle_dns_settings(&mut model, enter());
         assert!(!model.config.settings.dns.fakeip_enabled);
+    }
+
+    #[test]
+    fn dns_settings_fakeip_cycles_in_both_directions() {
+        let mut model = with_dns_overlay();
+        model.dns_selected = DnsSettingsItem::ALL
+            .iter()
+            .position(|i| *i == DnsSettingsItem::ToggleFakeIp)
+            .unwrap();
+
+        handle_dns_settings(&mut model, key('l'));
+        assert_eq!(model.dns_fakeip_draft, Some(true));
+        handle_dns_settings(&mut model, KeyEvent::from(KeyCode::Right));
+        assert_eq!(model.dns_fakeip_draft, Some(false));
+
+        handle_dns_settings(&mut model, key('h'));
+        assert_eq!(model.dns_fakeip_draft, Some(true));
+        handle_dns_settings(&mut model, KeyEvent::from(KeyCode::Left));
+        assert_eq!(model.dns_fakeip_draft, Some(false));
     }
 
     #[test]
