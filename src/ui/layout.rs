@@ -7,7 +7,10 @@ use unicode_width::UnicodeWidthChar;
 
 use crate::app::model::{ConnectionState, Model, Overlay, SourceRow};
 use crate::ui::styles::Theme;
-use crate::ui::widgets::{StatusBar, format_bps, format_bytes};
+use crate::ui::widgets::{
+    StatusBar, format_bps_field, format_bytes_field, format_connections_field,
+    format_connections_padding,
+};
 
 /// Height (including borders) of the full-width traffic header rendered at
 /// the very top of the UI when the VPN is connected. One content row plus
@@ -111,20 +114,21 @@ fn draw_traffic_panel(frame: &mut Frame, model: &Model, area: Rect) {
     let t = &model.traffic;
     let line = Line::from(vec![
         Span::styled("↑ ", theme.success()),
-        Span::styled(format_bps(t.up_rate_bps), theme.normal()),
-        Span::raw("   "),
+        Span::styled(format_bps_field(t.up_rate_bps), theme.normal()),
+        Span::raw("  "),
         Span::styled("↓ ", theme.accent()),
-        Span::styled(format_bps(t.down_rate_bps), theme.normal()),
-        Span::raw("     "),
-        Span::styled("Total ", theme.border()),
+        Span::styled(format_bps_field(t.down_rate_bps), theme.normal()),
+        Span::raw("    "),
+        Span::styled("Total: ", theme.border()),
         Span::styled("↑ ", theme.success()),
-        Span::styled(format_bytes(t.up_total), theme.normal()),
-        Span::raw("   "),
+        Span::styled(format_bytes_field(t.up_total), theme.normal()),
+        Span::raw("  "),
         Span::styled("↓ ", theme.accent()),
-        Span::styled(format_bytes(t.down_total), theme.normal()),
-        Span::raw("     "),
-        Span::styled(format!("{}", t.conn_count), theme.accent()),
+        Span::styled(format_bytes_field(t.down_total), theme.normal()),
+        Span::raw("    "),
+        Span::styled(format_connections_field(t.conn_count), theme.accent()),
         Span::styled(" connections", theme.normal()),
+        Span::raw(format_connections_padding(t.conn_count)),
     ]);
     let block = Block::default()
         .title(" Traffic ")

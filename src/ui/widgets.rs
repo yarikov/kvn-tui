@@ -19,38 +19,77 @@ impl<'a> StatusBar<'a> {
 
 /// Render a bytes-per-second rate as a short human-readable string.
 /// Uses 1024-based units (KiB-style) to match typical bandwidth-monitor
-/// conventions. Examples: `0 → "0 B/s"`, `1024 → "1.0 KB/s"`,
+/// conventions. Rates always use at least KB/s so the unit stays aligned.
+/// Examples: `0 → "0.0 KB/s"`, `1024 → "1.0 KB/s"`,
 /// `1_500_000 → "1.4 MB/s"`.
 pub fn format_bps(bps: u64) -> String {
-    const KB: u64 = 1024;
-    const MB: u64 = KB * 1024;
-    const GB: u64 = MB * 1024;
-    if bps >= GB {
-        format!("{:.1} GB/s", bps as f64 / GB as f64)
-    } else if bps >= MB {
-        format!("{:.1} MB/s", bps as f64 / MB as f64)
-    } else if bps >= KB {
-        format!("{:.1} KB/s", bps as f64 / KB as f64)
+    format_quantity(bps, true)
+}
+
+fn format_quantity(bytes: u64, per_second: bool) -> String {
+    const UNITS: [&str; 7] = ["B", "KB", "MB", "GB", "TB", "PB", "EB"];
+
+    let (mut value, mut unit_index) = if per_second {
+        (bytes as f64 / 1024.0, 1)
     } else {
-        format!("{} B/s", bps)
+        (bytes as f64, 0)
+    };
+    while value >= 999.5 && unit_index < UNITS.len() - 1 {
+        value /= 1024.0;
+        unit_index += 1;
     }
+
+    let number = if unit_index == 0 {
+        bytes.to_string()
+    } else if value < 9.95 {
+        format!("{value:.1}")
+    } else {
+        format!("{value:.0}")
+    };
+    let suffix = if per_second { "/s" } else { "" };
+    format!("{number} {}{suffix}", UNITS[unit_index])
 }
 
 /// Render a cumulative byte count as a short human-readable string (no `/s`
 /// suffix). 1024-based units. Examples: `0 → "0 B"`, `1_500_000 → "1.4 MB"`.
 pub fn format_bytes(bytes: u64) -> String {
-    const KB: u64 = 1024;
-    const MB: u64 = KB * 1024;
-    const GB: u64 = MB * 1024;
-    if bytes >= GB {
-        format!("{:.1} GB", bytes as f64 / GB as f64)
-    } else if bytes >= MB {
-        format!("{:.1} MB", bytes as f64 / MB as f64)
-    } else if bytes >= KB {
-        format!("{:.1} KB", bytes as f64 / KB as f64)
+    format_quantity(bytes, false)
+}
+
+const TRAFFIC_RATE_WIDTH: usize = 8;
+const TRAFFIC_TOTAL_WIDTH: usize = 6;
+const TRAFFIC_CONNECTIONS_COUNT_WIDTH: usize = 6;
+
+fn fixed_width_field(value: String, width: usize, overflow: &str) -> String {
+    let value = if value.len() > width {
+        overflow
     } else {
-        format!("{} B", bytes)
+        &value
+    };
+    format!("{value:>width$}")
+}
+
+/// Format a traffic rate into the fixed-width column used by the traffic panel.
+pub fn format_bps_field(bps: u64) -> String {
+    fixed_width_field(format_bps(bps), TRAFFIC_RATE_WIDTH, ">9 EB/s")
+}
+
+/// Format a cumulative traffic total into the fixed-width traffic panel column.
+pub fn format_bytes_field(bytes: u64) -> String {
+    fixed_width_field(format_bytes(bytes), TRAFFIC_TOTAL_WIDTH, ">9 EB")
+}
+
+/// Format the active connection count without allowing its column to grow.
+pub fn format_connections_field(connections: usize) -> String {
+    if connections > 99_999 {
+        "99999+".to_string()
+    } else {
+        connections.to_string()
     }
+}
+
+pub fn format_connections_padding(connections: usize) -> String {
+    " ".repeat(TRAFFIC_CONNECTIONS_COUNT_WIDTH - format_connections_field(connections).len())
 }
 
 /// Truncate a string to fit within a visual width, appending "..." if truncated.
@@ -247,21 +286,62 @@ mod tests {
 
     #[test]
     fn format_bps_boundaries() {
-        assert_eq!(format_bps(0), "0 B/s");
-        assert_eq!(format_bps(1023), "1023 B/s");
+        assert_eq!(format_bps(0), "0.0 KB/s");
+        assert_eq!(format_bps(850), "0.8 KB/s");
+        assert_eq!(format_bps(999), "1.0 KB/s");
+        assert_eq!(format_bps(1000), "1.0 KB/s");
+        assert_eq!(format_bps(1023), "1.0 KB/s");
         assert_eq!(format_bps(1024), "1.0 KB/s");
         assert_eq!(format_bps(1500), "1.5 KB/s");
         assert_eq!(format_bps(1_500_000), "1.4 MB/s");
+        assert_eq!(format_bps(10 * 1024), "10 KB/s");
+        assert_eq!(format_bps(100 * 1024), "100 KB/s");
+        assert_eq!(format_bps(999 * 1024), "999 KB/s");
+        assert_eq!(format_bps(1000 * 1024), "1.0 MB/s");
         assert_eq!(format_bps(2 * 1024 * 1024 * 1024), "2.0 GB/s");
+        assert_eq!(format_bps(1000 * 1024 * 1024 * 1024), "1.0 TB/s");
     }
 
     #[test]
     fn format_bytes_boundaries() {
         assert_eq!(format_bytes(0), "0 B");
-        assert_eq!(format_bytes(1023), "1023 B");
+        assert_eq!(format_bytes(999), "999 B");
+        assert_eq!(format_bytes(1000), "1.0 KB");
+        assert_eq!(format_bytes(1023), "1.0 KB");
         assert_eq!(format_bytes(1024), "1.0 KB");
         assert_eq!(format_bytes(1_500_000), "1.4 MB");
+        assert_eq!(format_bytes(10 * 1024), "10 KB");
+        assert_eq!(format_bytes(100 * 1024), "100 KB");
+        assert_eq!(format_bytes(999 * 1024), "999 KB");
+        assert_eq!(format_bytes(1000 * 1024), "1.0 MB");
         assert_eq!(format_bytes(3 * 1024 * 1024 * 1024), "3.0 GB");
+        assert_eq!(format_bytes(1000 * 1024 * 1024 * 1024), "1.0 TB");
+    }
+
+    #[test]
+    fn traffic_fields_have_fixed_widths() {
+        for bps in [0, 1023, 1024, 1_500_000, 2 * 1024 * 1024 * 1024] {
+            assert_eq!(format_bps_field(bps).len(), TRAFFIC_RATE_WIDTH);
+        }
+        for bytes in [0, 1023, 1024, 1_500_000, 3 * 1024 * 1024 * 1024] {
+            assert_eq!(format_bytes_field(bytes).len(), TRAFFIC_TOTAL_WIDTH);
+        }
+        assert_eq!(format_bps_field(0), "0.0 KB/s");
+        assert_eq!(format_bps_field(12 * 1024), " 12 KB/s");
+        assert_eq!(format_bytes_field(0), "   0 B");
+    }
+
+    #[test]
+    fn traffic_fields_handle_overflow_without_growing() {
+        assert_eq!(format_bps_field(u64::MAX), " 16 EB/s");
+        assert_eq!(format_bytes_field(u64::MAX), " 16 EB");
+        assert_eq!(format_connections_field(18), "18");
+        assert_eq!(format_connections_field(99_999), "99999");
+        assert_eq!(format_connections_field(100_000), "99999+");
+        assert_eq!(
+            format_connections_field(18).len() + format_connections_padding(18).len(),
+            TRAFFIC_CONNECTIONS_COUNT_WIDTH
+        );
     }
 
     #[test]

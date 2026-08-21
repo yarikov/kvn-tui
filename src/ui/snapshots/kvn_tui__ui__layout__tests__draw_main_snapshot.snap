@@ -3,7 +3,7 @@ source: src/ui/layout.rs
 expression: "snapshot_terminal(&model, 80, 20)"
 ---
 ┌ Traffic ─────────────────────────────────────────────────────────────────────┐
-│↑ 0 B/s   ↓ 0 B/s     Total ↑ 0 B   ↓ 0 B     0 connections                   │
+│↑ 0.0 KB/s  ↓ 0.0 KB/s    Total: ↑    0 B  ↓    0 B    0 connections          │
 └──────────────────────────────────────────────────────────────────────────────┘
 ┌ Sources ─────────────────────────────┐┌ Logs ────────────────────────────────┐
 │Standalone profiles (1)               ││log line 1                            │
