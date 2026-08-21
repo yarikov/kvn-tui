@@ -211,6 +211,7 @@ mod tests {
     }
 
     fn run_installer(root: &TempDir, home: &Path, input: &str) -> std::process::Output {
+        let _lock = crate::test_helpers::ENV_LOCK.lock().unwrap();
         let script = root.path().join("setup-omarchy.sh");
         fs::write(&script, include_str!("../contrib/setup-omarchy.sh")).unwrap();
         let path = format!(
@@ -237,6 +238,7 @@ mod tests {
     }
 
     fn run_omarchy_cleanup(root: &TempDir, home: &Path) -> std::process::Output {
+        let _lock = crate::test_helpers::ENV_LOCK.lock().unwrap();
         let script = root.path().join("clean-omarchy.sh");
         fs::write(&script, include_str!("../contrib/clean-omarchy.sh")).unwrap();
         ProcessCommand::new("bash")
