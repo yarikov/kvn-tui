@@ -309,8 +309,7 @@ fn handle_config_reloaded(
                     .is_some_and(|id| !config.profiles.iter().any(|profile| profile.id == id));
             let region_changed = model.config.settings.geo_routing.current_region
                 != config.settings.geo_routing.current_region;
-            model.selected = crate::app::model::row_for_profile(&config, config.resolve_selected());
-            model.config = config;
+            model.replace_config_preserving_selection(config);
             let mut effects = vec![Effect::BroadcastState];
             if active_missing {
                 effects.push(Effect::Disconnect);
@@ -974,6 +973,34 @@ mod tests {
             effects,
             vec![Effect::BroadcastState, app_log_info("Profiles reloaded")]
         );
+    }
+
+    #[test]
+    fn config_reloaded_preserves_selected_profile() {
+        let mut model = model_with_profiles(vec![
+            Profile::new_vless(
+                "A".to_string(),
+                "1.1.1.1".to_string(),
+                443,
+                "u1".to_string(),
+            ),
+            Profile::new_vless(
+                "B".to_string(),
+                "2.2.2.2".to_string(),
+                443,
+                "u2".to_string(),
+            ),
+        ]);
+        model.selected = 1;
+        let selected_id = model.selected_profile().unwrap().id;
+        let mut config = model.config.clone();
+        config.profiles[1].name = "B edited".to_string();
+
+        update(&mut model, Msg::ConfigReloaded(Box::new(Ok(config))));
+
+        assert_eq!(model.selected, 1);
+        assert_eq!(model.selected_profile().unwrap().id, selected_id);
+        assert_eq!(model.selected_profile().unwrap().name, "B edited");
     }
 
     #[test]

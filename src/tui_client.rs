@@ -215,11 +215,7 @@ fn run_loop(
                         match result {
                             Ok(_) => {
                                 if let Ok(config) = crate::config::load_config() {
-                                    model.selected = crate::app::model::row_for_profile(
-                                        &config,
-                                        config.resolve_selected(),
-                                    );
-                                    model.config = config;
+                                    model.replace_config_preserving_selection(config);
                                 }
                                 client.send(&IpcCommand::ReloadConfig)?;
                             }

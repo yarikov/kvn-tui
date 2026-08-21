@@ -1359,15 +1359,6 @@ impl Default for Config {
 }
 
 impl Config {
-    /// Resolve the selected profile index from `settings.default_profile`.
-    /// Returns the index of the default profile if it exists, otherwise `0`.
-    pub fn resolve_selected(&self) -> usize {
-        self.settings
-            .default_profile
-            .and_then(|id| self.profiles.iter().position(|p| p.id == id))
-            .unwrap_or(0)
-    }
-
     /// Validate semantic constraints that serde cannot enforce.
     ///
     /// Checks:
