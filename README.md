@@ -247,6 +247,12 @@ Typical first connection:
 
 Press `?` at any time to see the full key map.
 
+On terminals that support the Kitty keyboard protocol (including Kitty, Foot,
+Ghostty, and recent Alacritty versions), letter shortcuts follow their physical
+US key positions and keep working regardless of the active keyboard layout.
+On older terminals, Latin shortcuts and the arrow-key alternatives remain
+available.
+
 > **Detach vs quit:** `q` or `Esc` exits only the TUI; the daemon and active VPN connection keep running. `Ctrl+C` stops the daemon, disconnects sing-box, and exits completely.
 
 ### Default Key Bindings
