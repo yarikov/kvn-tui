@@ -29,19 +29,13 @@ pub fn format_bps(bps: u64) -> String {
 fn format_quantity(bytes: u64, per_second: bool) -> String {
     const UNITS: [&str; 7] = ["B", "KB", "MB", "GB", "TB", "PB", "EB"];
 
-    let (mut value, mut unit_index) = if per_second {
-        (bytes as f64 / 1024.0, 1)
-    } else {
-        (bytes as f64, 0)
-    };
+    let (mut value, mut unit_index) = (bytes as f64 / 1024.0, 1);
     while value >= 999.5 && unit_index < UNITS.len() - 1 {
         value /= 1024.0;
         unit_index += 1;
     }
 
-    let number = if unit_index == 0 {
-        bytes.to_string()
-    } else if value < 9.95 {
+    let number = if value < 9.95 {
         format!("{value:.1}")
     } else {
         format!("{value:.0}")
@@ -51,7 +45,8 @@ fn format_quantity(bytes: u64, per_second: bool) -> String {
 }
 
 /// Render a cumulative byte count as a short human-readable string (no `/s`
-/// suffix). 1024-based units. Examples: `0 → "0 B"`, `1_500_000 → "1.4 MB"`.
+/// suffix). Totals always use at least KB. Examples: `0 → "0.0 KB"`,
+/// `1_500_000 → "1.4 MB"`.
 pub fn format_bytes(bytes: u64) -> String {
     format_quantity(bytes, false)
 }
@@ -304,8 +299,9 @@ mod tests {
 
     #[test]
     fn format_bytes_boundaries() {
-        assert_eq!(format_bytes(0), "0 B");
-        assert_eq!(format_bytes(999), "999 B");
+        assert_eq!(format_bytes(0), "0.0 KB");
+        assert_eq!(format_bytes(850), "0.8 KB");
+        assert_eq!(format_bytes(999), "1.0 KB");
         assert_eq!(format_bytes(1000), "1.0 KB");
         assert_eq!(format_bytes(1023), "1.0 KB");
         assert_eq!(format_bytes(1024), "1.0 KB");
@@ -328,7 +324,7 @@ mod tests {
         }
         assert_eq!(format_bps_field(0), "0.0 KB/s");
         assert_eq!(format_bps_field(12 * 1024), " 12 KB/s");
-        assert_eq!(format_bytes_field(0), "   0 B");
+        assert_eq!(format_bytes_field(0), "0.0 KB");
     }
 
     #[test]

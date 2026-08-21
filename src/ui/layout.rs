@@ -5,7 +5,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph, Row, Table, Wrap};
 use unicode_width::UnicodeWidthChar;
 
-use crate::app::model::{ConnectionState, Model, Overlay, SourceRow};
+use crate::app::model::{Model, Overlay, SourceRow};
 use crate::ui::styles::Theme;
 use crate::ui::widgets::{
     StatusBar, format_bps_field, format_bytes_field, format_connections_field,
@@ -27,9 +27,10 @@ pub fn draw(frame: &mut Frame, model: &Model) {
     // override with their own `popup_bg()` (currently the same color).
     frame.render_widget(Block::default().style(model.theme.background()), area);
 
-    // Top-level vertical layout: optional traffic header, main content, status bar.
-    let show_traffic =
-        model.connection == ConnectionState::Connected && area.height > TRAFFIC_PANEL_HEIGHT + 5;
+    // Top-level vertical layout: traffic header, main content, status bar. Keep
+    // the header visible while disconnected so the layout does not jump when
+    // the connection state changes; only hide it in very short terminals.
+    let show_traffic = area.height > TRAFFIC_PANEL_HEIGHT + 5;
     let (traffic_area, main_area, status_area) = if show_traffic {
         let split = Layout::default()
             .direction(Direction::Vertical)
@@ -1014,25 +1015,17 @@ mod tests {
     }
 
     #[test]
-    fn draw_main_hides_traffic_panel_when_idle() {
-        let mut model = model_with_profiles(vec![Profile::new_vless(
+    fn draw_main_shows_zeroed_traffic_panel_when_idle() {
+        let model = model_with_profiles(vec![Profile::new_vless(
             "Alpha".to_string(),
             "1.1.1.1".to_string(),
             443,
             "u1".to_string(),
         )]);
-        // Connection state Idle → traffic panel must not appear.
-        model.traffic = crate::app::model::TrafficStats {
-            up_rate_bps: 1000,
-            down_rate_bps: 1000,
-            up_total: 1000,
-            down_total: 1000,
-            conn_count: 4,
-        };
         let output = snapshot_terminal(&model, 100, 20);
         assert!(
-            !output.contains("Traffic"),
-            "traffic panel must be hidden when not connected: {}",
+            output.contains("Traffic") && output.contains("0.0 KB/s"),
+            "traffic panel must show zeroed stats while disconnected: {}",
             output
         );
     }

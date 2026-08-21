@@ -1,14 +1,13 @@
 ---
 source: src/ui/layout.rs
-assertion_line: 1119
 expression: "snapshot_terminal(&model, 80, 24)"
 ---
+┌ Traffic ─────────────────────────────────────────────────────────────────────┐
+│↑ 0.0 KB/s  ↓ 0.0 KB/s    Total: ↑ 0.0 KB  ↓ 0.0 KB    0 connections          │
+└──────────────────────────────────────────────────────────────────────────────┘
 ┌ Sources ─────────────────────────────┐┌ Logs ────────────────────────────────┐
 │No sources. Press p to paste a profile││                                      │
 │or subscription URL from clipboard.   ││                                      │
-│                                      ││                                      │
-│                                      ││                                      │
-│                                      ││                                      │
 │               ┌ Services ────────────────────────────────────┐               │
 │               │                Service routing               │               │
 │               │                                              │               │
