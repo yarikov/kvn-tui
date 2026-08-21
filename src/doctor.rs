@@ -1,6 +1,7 @@
 //! Read-only diagnostics for the runtime environment.
 
 use std::env;
+use std::io::{self, IsTerminal, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
@@ -56,7 +57,7 @@ impl Check {
 /// is not usable.
 pub fn run() -> Result<()> {
     let checks = collect();
-    print_report(&checks);
+    print_report(&checks)?;
     let failures = checks
         .iter()
         .filter(|check| check.level == Level::Failure)
@@ -93,8 +94,13 @@ fn collect() -> Vec<Check> {
     checks
 }
 
-fn print_report(checks: &[Check]) {
-    println!("kvn-tui doctor\n");
+fn print_report(checks: &[Check]) -> io::Result<()> {
+    let stdout = io::stdout();
+    let use_color = stdout.is_terminal();
+    write_report(stdout.lock(), checks, use_color)
+}
+
+fn write_report(mut writer: impl Write, checks: &[Check], use_color: bool) -> io::Result<()> {
     for check in checks {
         let symbol = match check.level {
             Level::Pass => "✓",
@@ -102,11 +108,22 @@ fn print_report(checks: &[Check]) {
             Level::Failure => "✗",
             Level::Optional => "○",
         };
-        println!("{symbol} {}", check.message);
+        let symbol = if use_color {
+            match check.level {
+                Level::Pass => format!("\x1b[38;5;10m{symbol}\x1b[39m"),
+                Level::Warning => format!("\x1b[38;5;11m{symbol}\x1b[39m"),
+                Level::Failure => format!("\x1b[38;5;9m{symbol}\x1b[39m"),
+                Level::Optional => format!("\x1b[38;5;15m{symbol}\x1b[39m"),
+            }
+        } else {
+            symbol.to_owned()
+        };
+        writeln!(writer, "{symbol} {}", check.message)?;
         if let Some(remedy) = &check.remedy {
-            println!("  Fix: {remedy}");
+            writeln!(writer, "  Fix: {remedy}")?;
         }
     }
+    Ok(())
 }
 
 fn find_singbox() -> Option<PathBuf> {
@@ -337,8 +354,9 @@ fn check_polkit() -> Check {
         Some(0) => Check::pass("polkit authorization for DNS changes is active"),
         // 1 means denied. 2 means authorization would require interaction;
         // doctor deliberately never opens an authentication prompt.
-        Some(1 | 2) => Check::optional(
-            "passwordless polkit authorization for DNS changes is not active (optional)",
+        Some(1 | 2) => Check::warning(
+            "passwordless polkit authorization for DNS changes is not active (recommended)",
+            "Run `sudo kvn-tui setup --polkit`.",
         ),
         _ => {
             let error = String::from_utf8_lossy(&output.stderr);
@@ -590,7 +608,12 @@ mod tests {
         executable(dir.path(), "pkcheck", "exit 0");
         assert_eq!(check_polkit().level, Level::Pass);
         executable(dir.path(), "pkcheck", "exit 2");
-        assert_eq!(check_polkit().level, Level::Optional);
+        let check = check_polkit();
+        assert_eq!(check.level, Level::Warning);
+        assert_eq!(
+            check.remedy.as_deref(),
+            Some("Run `sudo kvn-tui setup --polkit`.")
+        );
         executable(dir.path(), "pkcheck", "echo unavailable >&2; exit 127");
         assert_eq!(check_polkit().level, Level::Warning);
     }
@@ -604,17 +627,52 @@ mod tests {
     }
 
     #[test]
-    fn report_helpers_cover_all_levels() {
+    fn report_without_color_is_plain_text() {
         let checks = [
             Check::pass("ready"),
             Check::warning("warning", "fix"),
             Check::failure("failure", "fix"),
             Check::optional("optional"),
         ];
-        print_report(&checks);
+        let mut output = Vec::new();
+
+        write_report(&mut output, &checks, false).unwrap();
+
         assert_eq!(
-            checks.iter().filter(|c| c.level == Level::Failure).count(),
-            1
+            String::from_utf8(output).unwrap(),
+            concat!(
+                "✓ ready\n",
+                "! warning\n",
+                "  Fix: fix\n",
+                "✗ failure\n",
+                "  Fix: fix\n",
+                "○ optional\n",
+            )
+        );
+    }
+
+    #[test]
+    fn report_colors_only_status_symbols() {
+        let checks = [
+            Check::pass("ready"),
+            Check::warning("warning", "fix"),
+            Check::failure("failure", "fix"),
+            Check::optional("optional"),
+        ];
+        let mut output = Vec::new();
+
+        write_report(&mut output, &checks, true).unwrap();
+
+        assert_eq!(
+            String::from_utf8(output).unwrap(),
+            concat!(
+                "\x1b[38;5;10m✓\x1b[39m ready\n",
+                "\x1b[38;5;11m!\x1b[39m warning\n",
+                "  Fix: fix\n",
+                "\x1b[38;5;9m✗\x1b[39m failure\n",
+                "  Fix: fix\n",
+                "\x1b[38;5;15m○\x1b[39m optional\n",
+            )
         );
     }
 
