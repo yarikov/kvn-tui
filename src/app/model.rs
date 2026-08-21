@@ -529,6 +529,35 @@ impl Model {
         }
     }
 
+    /// Replace the config while keeping the cursor on the same source item.
+    /// If the selected item was removed, clamp the previous row to the new list.
+    pub fn replace_config_preserving_selection(&mut self, config: Config) {
+        let selected_row = self.selected;
+        let selected_profile_id = self.selected_profile().map(|profile| profile.id);
+        let selected_subscription_id = self.selected_subscription().map(|sub| sub.id);
+
+        self.config = config;
+        self.selected = selected_profile_id
+            .and_then(|id| {
+                self.config
+                    .profiles
+                    .iter()
+                    .position(|profile| profile.id == id)
+            })
+            .map(|idx| row_for_profile(&self.config, idx))
+            .or_else(|| {
+                selected_subscription_id
+                    .and_then(|id| {
+                        self.config
+                            .subscriptions
+                            .iter()
+                            .position(|sub| sub.id == id)
+                    })
+                    .map(|idx| row_for_subscription_header(&self.config, idx))
+            })
+            .unwrap_or_else(|| selected_row.min(self.source_rows().len().saturating_sub(1)));
+    }
+
     /// Remove the currently selected source item after confirmation.
     pub fn delete_selected(&mut self) {
         let rows = self.source_rows();
