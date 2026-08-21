@@ -2,6 +2,9 @@
 source: src/ui/layout.rs
 expression: "snapshot_terminal(&model, 80, 20)"
 ---
+┌ Traffic ─────────────────────────────────────────────────────────────────────┐
+│↑ 0.0 KB/s  ↓ 0.0 KB/s    Total: ↑ 0.0 KB  ↓ 0.0 KB    0 connections          │
+└──────────────────────────────────────────────────────────────────────────────┘
 ┌ Sources ─────────────────────────────┐┌ Logs ────────────────────────────────┐
 │Standalone profiles (2)               ││                                      │
 │├ Alpha             vless  1.1.1.1:443││                                      │
@@ -10,9 +13,6 @@ expression: "snapshot_terminal(&model, 80, 20)"
 │Subscription: Example (2) [🗘 1h]      ││                                      │
 │├ Gamma             vless  3.3.3.3:443││                                      │
 │└ Delta             vless  4.4.4.4:443││                                      │
-│                                      ││                                      │
-│                                      ││                                      │
-│                                      ││                                      │
 │                                      ││                                      │
 │                                      ││                                      │
 │                                      ││                                      │

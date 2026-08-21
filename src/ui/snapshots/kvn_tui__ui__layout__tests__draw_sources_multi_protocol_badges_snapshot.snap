@@ -2,6 +2,9 @@
 source: src/ui/layout.rs
 expression: "snapshot_terminal(&model, 80, 26)"
 ---
+┌ Traffic ─────────────────────────────────────────────────────────────────────┐
+│↑ 0.0 KB/s  ↓ 0.0 KB/s    Total: ↑ 0.0 KB  ↓ 0.0 KB    0 connections          │
+└──────────────────────────────────────────────────────────────────────────────┘
 ┌ Sources ─────────────────────────────┐┌ Logs ────────────────────────────────┐
 │Standalone profiles (11)              ││                                      │
 │├ A-vless         vless  1.1.1.1:443  ││                                      │
@@ -15,9 +18,6 @@ expression: "snapshot_terminal(&model, 80, 26)"
 │├ I-socks         socks  9.9.9.9:1080 ││                                      │
 │├ J-http          http   10.0.0.1:8080││                                      │
 │└ K-ssh           ssh    10.0.0.2:22  ││                                      │
-│                                      ││                                      │
-│                                      ││                                      │
-│                                      ││                                      │
 │                                      ││                                      │
 │                                      ││                                      │
 │                                      ││                                      │
