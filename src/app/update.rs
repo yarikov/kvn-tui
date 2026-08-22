@@ -56,7 +56,14 @@ pub fn update(model: &mut Model, msg: Msg) -> Vec<Effect> {
                 vec![]
             }
         }
-        Msg::Connected { pid, profile_id } => {
+        Msg::Connected {
+            pid,
+            profile_id,
+            attempt_id,
+        } => {
+            if attempt_id != model.connect_attempt_id {
+                return vec![];
+            }
             model.singbox_pid = Some(pid);
             model.connection = ConnectionState::Connected;
             model.connecting_profile_id = None;
@@ -65,6 +72,8 @@ pub fn update(model: &mut Model, msg: Msg) -> Vec<Effect> {
             // first delta is computed against zero rather than a stale value.
             model.traffic = TrafficStats::default();
             model.last_traffic_sample_at_ms = 0;
+            model.traffic_request_id = 0;
+            model.last_traffic_response_id = 0;
             model.last_traffic_fetch_at = None;
             let mut effects = vec![Effect::WriteState];
             // The tunnel is up — fetch rule-sets for enabled service routes
@@ -144,17 +153,24 @@ pub fn update(model: &mut Model, msg: Msg) -> Vec<Effect> {
             }
             effects
         }
-        Msg::ConnectFailed(err) => {
+        Msg::ConnectFailed { attempt_id, error } => {
+            if attempt_id != model.connect_attempt_id {
+                return vec![];
+            }
             model.connection = ConnectionState::Idle;
             model.connecting_profile_id = None;
+            model.singbox_pid = None;
+            model.active_profile_id = None;
             model.traffic = TrafficStats::default();
             model.last_traffic_sample_at_ms = 0;
+            model.traffic_request_id = 0;
+            model.last_traffic_response_id = 0;
             model.last_traffic_fetch_at = None;
             let mut effects = vec![Effect::BroadcastState];
             push_status(
                 &mut effects,
                 model,
-                crate::app::model::AppStatus::Error(format!("Connection failed: {}", err)),
+                crate::app::model::AppStatus::Error(format!("Connection failed: {}", error)),
             );
             effects
         }
@@ -170,11 +186,21 @@ pub fn update(model: &mut Model, msg: Msg) -> Vec<Effect> {
             handle_kill_switch_applied(model, enabled, error)
         }
         Msg::TrafficStatsUpdated {
+            attempt_id,
+            request_id,
             up_total,
             down_total,
             conn_count,
             sampled_at_ms,
-        } => handle_traffic_stats_updated(model, up_total, down_total, conn_count, sampled_at_ms),
+        } => handle_traffic_stats_updated(
+            model,
+            attempt_id,
+            request_id,
+            up_total,
+            down_total,
+            conn_count,
+            sampled_at_ms,
+        ),
         Msg::ThemeChanged(theme) => {
             // Manual picker override wins: ignore Omarchy watcher events
             // unless the user has explicitly opted into auto-follow.
@@ -207,11 +233,19 @@ pub(crate) fn compute_rate(prev_total: u64, curr_total: u64, elapsed_ms: u64) ->
 
 fn handle_traffic_stats_updated(
     model: &mut Model,
+    attempt_id: u64,
+    request_id: u64,
     up_total: u64,
     down_total: u64,
     conn_count: usize,
     sampled_at_ms: u64,
 ) -> Vec<Effect> {
+    if model.connection != ConnectionState::Connected
+        || attempt_id != model.connect_attempt_id
+        || request_id <= model.last_traffic_response_id
+    {
+        return vec![];
+    }
     let prev_at_ms = model.last_traffic_sample_at_ms;
     // No prior sample yet — record totals but leave rates at zero. The next
     // tick produces the first instantaneous reading against this baseline.
@@ -232,6 +266,7 @@ fn handle_traffic_stats_updated(
         conn_count,
     };
     model.last_traffic_sample_at_ms = sampled_at_ms;
+    model.last_traffic_response_id = request_id;
     vec![Effect::BroadcastState]
 }
 
@@ -240,6 +275,10 @@ fn handle_kill_switch_applied(
     enabled: bool,
     error: Option<crate::app::msg::IpcError>,
 ) -> Vec<Effect> {
+    if model.kill_switch_pending != Some(enabled) {
+        return Vec::new();
+    }
+    model.kill_switch_pending = None;
     let mut effects = Vec::new();
     match error {
         None => {
@@ -298,24 +337,70 @@ fn handle_config_reloaded(
     result: Result<crate::config::profile::Config, crate::app::msg::IpcError>,
 ) -> Vec<Effect> {
     match result {
-        Ok(config) => {
+        Ok(mut config) => {
+            let old_settings = model.config.settings.clone();
+            let kill_switch_ignored = config.settings.kill_switch != old_settings.kill_switch;
+            // The persisted flag is not the source of truth for the live
+            // firewall. Only ApplyKillSwitch may change it after the helper
+            // succeeds, so an editor reload must not create config/systemd
+            // drift.
+            config.settings.kill_switch = old_settings.kill_switch;
+            let runtime_settings_changed =
+                connection_settings_changed(&old_settings, &config.settings);
+            let service_routes_changed = old_settings.geo_routing.service_routes
+                != config.settings.geo_routing.service_routes;
+            let active_profile_changed = model.active_profile_id.is_some_and(|id| {
+                profile_runtime_changed_for_id(&model.config.profiles, &config.profiles, id)
+            });
+            let connecting_profile_changed = model.connecting_profile_id.is_some_and(|id| {
+                profile_runtime_changed_for_id(&model.config.profiles, &config.profiles, id)
+            });
             let active_missing = model.connection == ConnectionState::Connected
                 && model
                     .active_profile_id
                     .is_some_and(|id| !config.profiles.iter().any(|profile| profile.id == id));
-            let connecting_missing = model.connection == ConnectionState::Connecting
-                && model
-                    .connecting_profile_id
-                    .is_some_and(|id| !config.profiles.iter().any(|profile| profile.id == id));
+            let connecting_missing = matches!(
+                model.connection,
+                ConnectionState::Connecting | ConnectionState::ConnectPending
+            ) && model
+                .connecting_profile_id
+                .is_some_and(|id| !config.profiles.iter().any(|profile| profile.id == id));
             let region_changed = model.config.settings.geo_routing.current_region
                 != config.settings.geo_routing.current_region;
             model.replace_config_preserving_selection(config);
             let mut effects = vec![Effect::BroadcastState];
-            if active_missing {
+            if active_missing || connecting_missing {
                 effects.push(Effect::Disconnect);
-            } else if connecting_missing {
-                model.connection = ConnectionState::Idle;
-                model.connecting_profile_id = None;
+            } else {
+                let runtime_changed = runtime_settings_changed
+                    || match model.connection {
+                        ConnectionState::Connected => active_profile_changed,
+                        ConnectionState::Connecting | ConnectionState::ConnectPending => {
+                            connecting_profile_changed
+                        }
+                        _ => false,
+                    };
+                if runtime_changed {
+                    match model.connection {
+                        ConnectionState::Connected if service_routes_changed => {
+                            model.pending_service_reconnect = true;
+                            effects.push(Effect::DownloadServiceRuleSetsIfMissing);
+                        }
+                        ConnectionState::Connected => {
+                            if let Some(id) = model.active_profile_id {
+                                queue_connect(model, id);
+                            }
+                        }
+                        ConnectionState::ConnectPending => {
+                            if let Some(id) = model.connecting_profile_id {
+                                queue_connect(model, id);
+                            }
+                        }
+                        // A queued attempt has not captured its Profile and
+                        // Settings yet; the next Tick reads the new config.
+                        ConnectionState::Connecting | ConnectionState::Idle => {}
+                    }
+                }
             }
             if region_changed {
                 model.geo_last_updated = None;
@@ -323,11 +408,27 @@ fn handle_config_reloaded(
                 model.geo_last_attempt_at = None;
                 effects.push(Effect::RefreshGeoLastUpdated);
             }
-            push_status(
-                &mut effects,
-                model,
-                AppStatus::Info("Profiles reloaded".into()),
-            );
+            let reconnecting = model.connection == ConnectionState::Connecting
+                && (active_profile_changed
+                    || connecting_profile_changed
+                    || runtime_settings_changed);
+            let status = if kill_switch_ignored && reconnecting {
+                "Kill switch edit ignored (use K); configuration changed — reconnecting"
+            } else if kill_switch_ignored
+                && model.pending_service_reconnect
+                && service_routes_changed
+            {
+                "Kill switch edit ignored (use K); configuration changed — updating rule-sets"
+            } else if kill_switch_ignored {
+                "Kill switch edit ignored — use K to change it"
+            } else if reconnecting {
+                "Configuration changed — reconnecting"
+            } else if model.pending_service_reconnect && service_routes_changed {
+                "Configuration changed — updating rule-sets"
+            } else {
+                "Profiles reloaded"
+            };
+            push_status(&mut effects, model, AppStatus::Info(status.into()));
             effects
         }
         Err(e) => {
@@ -342,6 +443,30 @@ fn handle_config_reloaded(
     }
 }
 
+fn profile_runtime_changed_for_id(old: &[Profile], new: &[Profile], id: Uuid) -> bool {
+    let old = old.iter().find(|profile| profile.id == id);
+    let new = new.iter().find(|profile| profile.id == id);
+    match (old, new) {
+        (Some(old), Some(new)) => profile_runtime_changed(old, new),
+        _ => false,
+    }
+}
+
+fn profile_runtime_changed(old: &Profile, new: &Profile) -> bool {
+    old.address != new.address || old.port != new.port || old.config != new.config
+}
+
+fn connection_settings_changed(
+    old: &crate::config::profile::Settings,
+    new: &crate::config::profile::Settings,
+) -> bool {
+    old.tun_interface != new.tun_interface
+        || old.dns != new.dns
+        || old.geo_routing.mode() != new.geo_routing.mode()
+        || old.geo_routing.service_routes != new.geo_routing.service_routes
+        || old.log_level != new.log_level
+}
+
 fn handle_tick(model: &mut Model) -> Vec<Effect> {
     let mut effects = Vec::new();
 
@@ -353,7 +478,7 @@ fn handle_tick(model: &mut Model) -> Vec<Effect> {
 
     // Connection handling
     if model.connection == ConnectionState::Connecting {
-        let profile = model.connecting_profile_id.take().and_then(|id| {
+        let profile = model.connecting_profile_id.and_then(|id| {
             model
                 .config
                 .profiles
@@ -363,9 +488,14 @@ fn handle_tick(model: &mut Model) -> Vec<Effect> {
         });
         if let Some(profile) = profile {
             let settings = model.config.settings.clone();
-            effects.push(Effect::Connect { profile, settings });
+            effects.push(Effect::Connect {
+                profile,
+                settings,
+                attempt_id: model.connect_attempt_id,
+            });
         } else {
             model.connection = ConnectionState::Idle;
+            model.connecting_profile_id = None;
             model.overlay = Overlay::None;
             effects.push(Effect::BroadcastState);
         }
@@ -392,10 +522,10 @@ fn handle_tick(model: &mut Model) -> Vec<Effect> {
         };
         if due {
             model.last_traffic_fetch_at = Some(now);
+            model.traffic_request_id = model.traffic_request_id.wrapping_add(1);
             effects.push(Effect::FetchTrafficStats {
-                prev_up_total: model.traffic.up_total,
-                prev_down_total: model.traffic.down_total,
-                prev_sampled_at_ms: model.last_traffic_sample_at_ms,
+                attempt_id: model.connect_attempt_id,
+                request_id: model.traffic_request_id,
             });
         }
     }
@@ -411,6 +541,7 @@ pub(super) fn queue_connect(model: &mut Model, profile_id: Uuid) -> bool {
         .any(|profile| profile.id == profile_id)
     {
         model.connecting_profile_id = Some(profile_id);
+        model.connect_attempt_id = model.connect_attempt_id.wrapping_add(1);
         model.connection = ConnectionState::Connecting;
         true
     } else {
@@ -579,6 +710,12 @@ fn handle_subscription_result(
     // Remember where the cursor is so we can restore it to the subscription
     // header after import (add_profile moves selection on every call).
     let saved_selected = model.selected;
+    let old_active_profile = model
+        .active_profile_id
+        .and_then(|id| model.config.profiles.iter().find(|p| p.id == id).cloned());
+    let old_connecting_profile = model
+        .connecting_profile_id
+        .and_then(|id| model.config.profiles.iter().find(|p| p.id == id).cloned());
 
     // Capture old dedup_key → UUID mapping before removing subscription profiles,
     // so we can reuse UUIDs for servers that survive the update.
@@ -590,19 +727,20 @@ fn handle_subscription_result(
         .map(|p| (p.dedup_key(), p.id))
         .collect();
 
-    if managed {
-        if let Some(sub) = model.config.subscriptions.iter_mut().find(|s| s.id == id) {
-            sub.last_updated = Some(Local::now());
-        }
-        // Replace previously imported profiles from this subscription.
-        model
-            .config
-            .profiles
-            .retain(|p| p.subscription_id != Some(id));
-    }
-
     let mut effects = match result {
         Ok(profiles) => {
+            if managed {
+                if let Some(sub) = model.config.subscriptions.iter_mut().find(|s| s.id == id) {
+                    sub.last_updated = Some(Local::now());
+                }
+                // Only replace the previous snapshot after the fetch and parse
+                // succeeded. A transient subscription error must leave the
+                // user's working profiles and update timestamp untouched.
+                model
+                    .config
+                    .profiles
+                    .retain(|p| p.subscription_id != Some(id));
+            }
             let mut imported = 0;
             for mut profile in profiles {
                 let key = profile.dedup_key();
@@ -666,9 +804,6 @@ fn handle_subscription_result(
         }
         Err(err) => {
             let mut effects = Vec::new();
-            if managed {
-                effects.push(Effect::SaveConfig);
-            }
             push_status(
                 &mut effects,
                 model,
@@ -678,12 +813,50 @@ fn handle_subscription_result(
         }
     };
 
-    // If the active profile was removed from the subscription, disconnect so the
-    // tunnel doesn't run against a profile that no longer exists.
-    if let Some(active_id) = model.active_profile_id
-        && !model.config.profiles.iter().any(|p| p.id == active_id)
-    {
+    // If either the active or in-flight profile was removed from the
+    // subscription, invalidate the attempt and stop any process it spawned.
+    let active_missing = model
+        .active_profile_id
+        .is_some_and(|id| !model.config.profiles.iter().any(|p| p.id == id));
+    let connecting_missing = matches!(
+        model.connection,
+        ConnectionState::Connecting | ConnectionState::ConnectPending
+    ) && model
+        .connecting_profile_id
+        .is_some_and(|id| !model.config.profiles.iter().any(|p| p.id == id));
+    if active_missing || connecting_missing {
         effects.push(Effect::Disconnect);
+    } else {
+        let active_changed = old_active_profile.as_ref().is_some_and(|old| {
+            model
+                .config
+                .profiles
+                .iter()
+                .find(|p| p.id == old.id)
+                .is_some_and(|new| profile_runtime_changed(old, new))
+        });
+        let connecting_changed = old_connecting_profile.as_ref().is_some_and(|old| {
+            model
+                .config
+                .profiles
+                .iter()
+                .find(|p| p.id == old.id)
+                .is_some_and(|new| profile_runtime_changed(old, new))
+        });
+        let reconnect_id = match model.connection {
+            ConnectionState::Connected if active_changed => model.active_profile_id,
+            ConnectionState::ConnectPending if connecting_changed => model.connecting_profile_id,
+            _ => None,
+        };
+        if let Some(id) = reconnect_id
+            && queue_connect(model, id)
+        {
+            push_status(
+                &mut effects,
+                model,
+                AppStatus::Info("Subscription changed — reconnecting".into()),
+            );
+        }
     }
 
     // Restore cursor to the subscription header (add_profile moves it on every
@@ -1045,13 +1218,220 @@ mod tests {
 
         let effects = update(&mut model, Msg::ConfigReloaded(Box::new(Ok(config))));
 
-        assert_eq!(model.connection, ConnectionState::Idle);
-        assert_eq!(model.connecting_profile_id, None);
+        assert_eq!(model.connection, ConnectionState::Connecting);
+        assert_eq!(model.connecting_profile_id, Some(profile_id));
+        assert!(effects.contains(&Effect::Disconnect));
         assert!(
             !effects
                 .iter()
                 .any(|effect| matches!(effect, Effect::Connect { .. }))
         );
+    }
+
+    #[test]
+    fn config_reload_disconnects_missing_connect_pending_profile() {
+        let profile = Profile::new_vless("A".into(), "1.1.1.1".into(), 443, "u1".into());
+        let profile_id = profile.id;
+        let mut model = model_with_profiles(vec![profile]);
+        assert!(queue_connect(&mut model, profile_id));
+        let connect_effects = handle_tick(&mut model);
+        assert!(
+            connect_effects
+                .iter()
+                .any(|effect| matches!(effect, Effect::Connect { .. }))
+        );
+        model.connection = ConnectionState::ConnectPending;
+        let mut config = model.config.clone();
+        config.profiles.clear();
+
+        let effects = update(&mut model, Msg::ConfigReloaded(Box::new(Ok(config))));
+
+        assert_eq!(model.connecting_profile_id, Some(profile_id));
+        assert!(effects.contains(&Effect::Disconnect));
+    }
+
+    #[test]
+    fn config_reload_keeps_connect_pending_profile_with_same_id() {
+        let profile = Profile::new_vless("A".into(), "1.1.1.1".into(), 443, "u1".into());
+        let profile_id = profile.id;
+        let mut model = model_with_profiles(vec![profile]);
+        assert!(queue_connect(&mut model, profile_id));
+        model.connection = ConnectionState::ConnectPending;
+        let mut config = model.config.clone();
+        config.profiles[0].name = "A renamed".into();
+
+        let effects = update(&mut model, Msg::ConfigReloaded(Box::new(Ok(config))));
+
+        assert!(!effects.contains(&Effect::Disconnect));
+        assert_eq!(model.connecting_profile_id, Some(profile_id));
+    }
+
+    #[test]
+    fn config_reload_reconnects_changed_active_profile() {
+        let profile = Profile::new_vless("A".into(), "1.1.1.1".into(), 443, "u1".into());
+        let profile_id = profile.id;
+        let mut model = model_with_profiles(vec![profile]);
+        model.connection = ConnectionState::Connected;
+        model.active_profile_id = Some(profile_id);
+        let mut config = model.config.clone();
+        config.profiles[0].address = "2.2.2.2".into();
+
+        let effects = update(&mut model, Msg::ConfigReloaded(Box::new(Ok(config))));
+
+        assert_eq!(model.connection, ConnectionState::Connecting);
+        assert_eq!(model.connecting_profile_id, Some(profile_id));
+        assert_eq!(model.status.text(), "Configuration changed — reconnecting");
+        assert!(!effects.contains(&Effect::Disconnect));
+    }
+
+    #[test]
+    fn config_reload_does_not_reconnect_for_profile_metadata() {
+        let profile = Profile::new_vless("A".into(), "1.1.1.1".into(), 443, "u1".into());
+        let profile_id = profile.id;
+        let mut model = model_with_profiles(vec![profile]);
+        model.connection = ConnectionState::Connected;
+        model.active_profile_id = Some(profile_id);
+        let mut config = model.config.clone();
+        config.profiles[0].name = "Renamed".into();
+        config.profiles[0].tags.push("metadata".into());
+
+        let effects = update(&mut model, Msg::ConfigReloaded(Box::new(Ok(config))));
+
+        assert_eq!(model.connection, ConnectionState::Connected);
+        assert_eq!(model.connecting_profile_id, None);
+        assert_eq!(model.status.text(), "Profiles reloaded");
+        assert!(!effects.contains(&Effect::Disconnect));
+    }
+
+    #[test]
+    fn config_reload_reconnects_for_runtime_settings_only() {
+        let profile = Profile::new_vless("A".into(), "1.1.1.1".into(), 443, "u1".into());
+        let profile_id = profile.id;
+        let mut model = model_with_profiles(vec![profile]);
+        model.connection = ConnectionState::Connected;
+        model.active_profile_id = Some(profile_id);
+        let mut config = model.config.clone();
+        config.settings.tun_interface = "tun9".into();
+
+        update(&mut model, Msg::ConfigReloaded(Box::new(Ok(config))));
+
+        assert_eq!(model.connection, ConnectionState::Connecting);
+        assert_eq!(model.connecting_profile_id, Some(profile_id));
+    }
+
+    #[test]
+    fn connection_settings_comparison_covers_singbox_inputs() {
+        use crate::config::profile::{DnsStrategy, GeoRegion, RoutedService, ServiceRoute};
+
+        let original = crate::config::profile::Settings::default();
+        let mut changed = original.clone();
+        changed.dns.strategy = DnsStrategy::OnlyIpv6;
+        assert!(connection_settings_changed(&original, &changed));
+
+        let mut changed = original.clone();
+        changed.log_level = "debug".into();
+        assert!(connection_settings_changed(&original, &changed));
+
+        let mut changed = original.clone();
+        changed.geo_routing.set_region(GeoRegion::Ru);
+        changed
+            .geo_routing
+            .set_mode(crate::config::profile::RoutingMode::Only(GeoRegion::Ru));
+        assert!(connection_settings_changed(&original, &changed));
+
+        let mut changed = original.clone();
+        changed
+            .geo_routing
+            .service_routes
+            .insert(RoutedService::Steam, ServiceRoute::Proxy);
+        assert!(connection_settings_changed(&original, &changed));
+    }
+
+    #[test]
+    fn config_reload_ignores_ui_settings_and_external_kill_switch_value() {
+        let profile = Profile::new_vless("A".into(), "1.1.1.1".into(), 443, "u1".into());
+        let profile_id = profile.id;
+        let mut model = model_with_profiles(vec![profile]);
+        model.connection = ConnectionState::Connected;
+        model.active_profile_id = Some(profile_id);
+        let mut config = model.config.clone();
+        config.settings.theme = "gruvbox".into();
+        config.settings.auto_connect = !config.settings.auto_connect;
+        config.settings.kill_switch = !config.settings.kill_switch;
+
+        update(&mut model, Msg::ConfigReloaded(Box::new(Ok(config))));
+
+        assert_eq!(model.connection, ConnectionState::Connected);
+        assert!(!model.config.settings.kill_switch);
+        assert_eq!(
+            model.status.text(),
+            "Kill switch edit ignored — use K to change it"
+        );
+    }
+
+    #[test]
+    fn config_reload_reports_ignored_kill_switch_alongside_reconnect() {
+        let profile = Profile::new_vless("A".into(), "1.1.1.1".into(), 443, "u1".into());
+        let profile_id = profile.id;
+        let mut model = model_with_profiles(vec![profile]);
+        model.connection = ConnectionState::Connected;
+        model.active_profile_id = Some(profile_id);
+        let mut config = model.config.clone();
+        config.settings.kill_switch = true;
+        config.settings.tun_interface = "tun9".into();
+
+        let effects = update(&mut model, Msg::ConfigReloaded(Box::new(Ok(config))));
+
+        assert_eq!(model.connection, ConnectionState::Connecting);
+        assert!(!model.config.settings.kill_switch);
+        assert_eq!(
+            model.status.text(),
+            "Kill switch edit ignored (use K); configuration changed — reconnecting"
+        );
+        assert!(effects.contains(&app_log_info(
+            "Kill switch edit ignored (use K); configuration changed — reconnecting"
+        )));
+    }
+
+    #[test]
+    fn config_reload_requeues_changed_connect_pending_attempt() {
+        let profile = Profile::new_vless("A".into(), "1.1.1.1".into(), 443, "u1".into());
+        let profile_id = profile.id;
+        let mut model = model_with_profiles(vec![profile]);
+        assert!(queue_connect(&mut model, profile_id));
+        model.connection = ConnectionState::ConnectPending;
+        let old_attempt = model.connect_attempt_id;
+        let mut config = model.config.clone();
+        config.profiles[0].port = 8443;
+
+        update(&mut model, Msg::ConfigReloaded(Box::new(Ok(config))));
+
+        assert_eq!(model.connection, ConnectionState::Connecting);
+        assert_eq!(model.connect_attempt_id, old_attempt + 1);
+        assert_eq!(model.connecting_profile_id, Some(profile_id));
+    }
+
+    #[test]
+    fn config_reload_defers_service_route_reconnect_until_assets_ready() {
+        use crate::config::profile::{RoutedService, ServiceRoute};
+
+        let profile = Profile::new_vless("A".into(), "1.1.1.1".into(), 443, "u1".into());
+        let profile_id = profile.id;
+        let mut model = model_with_profiles(vec![profile]);
+        model.connection = ConnectionState::Connected;
+        model.active_profile_id = Some(profile_id);
+        let mut config = model.config.clone();
+        config
+            .settings
+            .geo_routing
+            .service_routes
+            .insert(RoutedService::Steam, ServiceRoute::Proxy);
+
+        let effects = update(&mut model, Msg::ConfigReloaded(Box::new(Ok(config))));
+
+        assert_eq!(model.connection, ConnectionState::Connected);
+        assert!(model.pending_service_reconnect);
+        assert!(effects.contains(&Effect::DownloadServiceRuleSetsIfMissing));
     }
 
     #[test]
@@ -1777,11 +2157,24 @@ mod tests {
     #[test]
     fn connect_failed_sets_status_error() {
         let mut model = Model::test_new(crate::config::profile::Config::default());
+        model.connection = ConnectionState::ConnectPending;
+        model.connect_attempt_id = 7;
+        model.singbox_pid = Some(99);
+        model.active_profile_id = Some(Uuid::new_v4());
+        model.traffic_request_id = 4;
+        model.last_traffic_response_id = 3;
         let effects = update(
             &mut model,
-            Msg::ConnectFailed(crate::app::msg::IpcError::new("timeout")),
+            Msg::ConnectFailed {
+                attempt_id: 7,
+                error: crate::app::msg::IpcError::new("timeout"),
+            },
         );
         assert_eq!(model.connection, ConnectionState::Idle);
+        assert_eq!(model.singbox_pid, None);
+        assert_eq!(model.active_profile_id, None);
+        assert_eq!(model.traffic_request_id, 0);
+        assert_eq!(model.last_traffic_response_id, 0);
         assert!(model.status.is_error());
         assert!(model.status.text().contains("Connection failed: timeout"));
         assert_eq!(
@@ -1791,6 +2184,71 @@ mod tests {
                 app_log_error("Connection failed: timeout")
             ]
         );
+    }
+
+    #[test]
+    fn stale_connect_failed_does_not_override_newer_connection() {
+        let profile_id = Uuid::new_v4();
+        let mut model = Model::test_new(crate::config::profile::Config::default());
+        model.connection = ConnectionState::Connected;
+        model.connect_attempt_id = 2;
+        model.active_profile_id = Some(profile_id);
+        model.singbox_pid = Some(42);
+
+        let effects = update(
+            &mut model,
+            Msg::ConnectFailed {
+                attempt_id: 1,
+                error: crate::app::msg::IpcError::new("old timeout"),
+            },
+        );
+
+        assert!(effects.is_empty());
+        assert_eq!(model.connection, ConnectionState::Connected);
+        assert_eq!(model.active_profile_id, Some(profile_id));
+        assert_eq!(model.singbox_pid, Some(42));
+    }
+
+    #[test]
+    fn stale_connected_does_not_override_newer_attempt() {
+        let mut model = Model::test_new(crate::config::profile::Config::default());
+        model.connection = ConnectionState::ConnectPending;
+        model.connect_attempt_id = 2;
+
+        let effects = update(
+            &mut model,
+            Msg::Connected {
+                pid: 42,
+                profile_id: Uuid::new_v4(),
+                attempt_id: 1,
+            },
+        );
+
+        assert!(effects.is_empty());
+        assert_eq!(model.connection, ConnectionState::ConnectPending);
+        assert_eq!(model.singbox_pid, None);
+        assert_eq!(model.active_profile_id, None);
+    }
+
+    #[test]
+    fn queued_connect_carries_new_attempt_id() {
+        let mut model = model_with_profiles(vec![Profile::new_vless(
+            "A".into(),
+            "1.1.1.1".into(),
+            443,
+            "u1".into(),
+        )]);
+        let profile_id = model.config.profiles[0].id;
+
+        assert!(queue_connect(&mut model, profile_id));
+        assert_eq!(model.connect_attempt_id, 1);
+        let effects = handle_tick(&mut model);
+
+        assert_eq!(model.connecting_profile_id, Some(profile_id));
+        assert!(matches!(
+            effects.as_slice(),
+            [Effect::Connect { attempt_id: 1, .. }]
+        ));
     }
 
     #[test]
@@ -1816,6 +2274,7 @@ mod tests {
             Msg::Connected {
                 pid: 12345,
                 profile_id: id,
+                attempt_id: 0,
             },
         );
         assert_eq!(model.connection, ConnectionState::Connected);
@@ -1857,6 +2316,7 @@ mod tests {
             Msg::Connected {
                 pid: 1,
                 profile_id: a_id,
+                attempt_id: 0,
             },
         );
         assert_eq!(model.active_profile_id, Some(a_id));
@@ -1923,6 +2383,7 @@ mod tests {
             Msg::Connected {
                 pid: 1,
                 profile_id: uuid::Uuid::new_v4(),
+                attempt_id: 0,
             },
         );
         assert!(
@@ -1943,6 +2404,7 @@ mod tests {
             Msg::Connected {
                 pid: 1,
                 profile_id: uuid::Uuid::new_v4(),
+                attempt_id: 0,
             },
         );
         assert!(effects.contains(&Effect::DownloadServiceRuleSetsIfMissing));
@@ -1961,6 +2423,7 @@ mod tests {
             Msg::Connected {
                 pid: 1,
                 profile_id: uuid::Uuid::new_v4(),
+                attempt_id: 0,
             },
         );
         assert!(!effects.contains(&Effect::DownloadServiceRuleSetsIfMissing));
@@ -2050,6 +2513,7 @@ mod tests {
             Msg::Connected {
                 pid: 12345,
                 profile_id: id,
+                attempt_id: 0,
             },
         );
         assert_eq!(model.connection, ConnectionState::Connected);
@@ -2096,6 +2560,7 @@ mod tests {
         let effects = handle_sources(&mut model, key('K'));
         // Bool is NOT flipped synchronously — it waits for KillSwitchApplied.
         assert!(!model.config.settings.kill_switch);
+        assert_eq!(model.kill_switch_pending, Some(true));
         assert!(model.status.text().contains("enabling"));
         assert_eq!(
             effects,
@@ -2107,8 +2572,23 @@ mod tests {
     }
 
     #[test]
+    fn repeated_kill_switch_toggle_is_ignored_while_pending() {
+        let mut model = model_with_profiles(vec![]);
+        let first = handle_sources(&mut model, key('K'));
+        let status = model.status.clone();
+
+        let second = handle_sources(&mut model, key('K'));
+
+        assert!(first.contains(&Effect::ApplyKillSwitch { enabled: true }));
+        assert!(second.is_empty());
+        assert_eq!(model.kill_switch_pending, Some(true));
+        assert_eq!(model.status, status);
+    }
+
+    #[test]
     fn kill_switch_applied_success_flips_and_saves() {
         let mut model = model_with_profiles(vec![]);
+        model.kill_switch_pending = Some(true);
         let effects = update(
             &mut model,
             Msg::KillSwitchApplied {
@@ -2117,6 +2597,7 @@ mod tests {
             },
         );
         assert!(model.config.settings.kill_switch);
+        assert_eq!(model.kill_switch_pending, None);
         assert!(model.status.text().contains("enabled"));
         assert_eq!(
             effects,
@@ -2131,6 +2612,7 @@ mod tests {
     #[test]
     fn kill_switch_applied_error_keeps_bool_unchanged() {
         let mut model = model_with_profiles(vec![]);
+        model.kill_switch_pending = Some(true);
         let effects = update(
             &mut model,
             Msg::KillSwitchApplied {
@@ -2139,8 +2621,40 @@ mod tests {
             },
         );
         assert!(!model.config.settings.kill_switch);
+        assert_eq!(model.kill_switch_pending, None);
         assert!(model.status.text().contains("helper missing"));
         assert!(!effects.iter().any(|e| matches!(e, Effect::SaveConfig)));
+    }
+
+    #[test]
+    fn stale_kill_switch_result_is_ignored() {
+        let mut model = model_with_profiles(vec![]);
+        model.kill_switch_pending = Some(true);
+        let status = model.status.clone();
+
+        let effects = update(
+            &mut model,
+            Msg::KillSwitchApplied {
+                enabled: false,
+                error: None,
+            },
+        );
+
+        assert!(effects.is_empty());
+        assert!(!model.config.settings.kill_switch);
+        assert_eq!(model.kill_switch_pending, Some(true));
+        assert_eq!(model.status, status);
+    }
+
+    #[test]
+    fn kill_switch_disable_uses_pending_false() {
+        let mut model = model_with_profiles(vec![]);
+        model.config.settings.kill_switch = true;
+
+        let effects = handle_sources(&mut model, key('K'));
+
+        assert_eq!(model.kill_switch_pending, Some(false));
+        assert!(effects.contains(&Effect::ApplyKillSwitch { enabled: false }));
     }
 
     #[test]
@@ -2387,15 +2901,38 @@ mod tests {
 
     #[test]
     fn subscription_fetched_error_logs_failure() {
-        let mut model = model_with_profiles(vec![]);
+        let sub_id = Uuid::new_v4();
+        let mut existing = Profile::new_vless(
+            "Existing".to_string(),
+            "1.1.1.1".to_string(),
+            443,
+            "u1".to_string(),
+        );
+        existing.subscription_id = Some(sub_id);
+        let existing_id = existing.id;
+        let last_updated = Local::now() - chrono::Duration::try_hours(2).unwrap();
+        let mut model = model_with_profiles(vec![existing]);
+        model.config.subscriptions.push(Subscription {
+            id: sub_id,
+            name: "Sub".to_string(),
+            url: "http://example.com/sub".to_string(),
+            auto_update: SubscriptionAutoUpdate::Every1h,
+            last_updated: Some(last_updated),
+        });
 
         let effects = handle_subscription_result(
             &mut model,
-            Uuid::nil(),
+            sub_id,
             Err(crate::app::msg::IpcError::new("network down")),
         );
 
         assert!(!model.subscription_fetching);
+        assert_eq!(model.config.profiles.len(), 1);
+        assert_eq!(model.config.profiles[0].id, existing_id);
+        assert_eq!(
+            model.config.subscriptions[0].last_updated,
+            Some(last_updated)
+        );
         assert_eq!(
             effects,
             vec![app_log_error("Subscription failed: network down")]
@@ -2522,6 +3059,71 @@ mod tests {
         assert_eq!(model.config.profiles.len(), 1);
         assert_eq!(model.config.profiles[0].id, old_profile_id);
         assert_eq!(model.active_profile_id, Some(old_profile_id));
+    }
+
+    #[test]
+    fn subscription_fetched_reconnects_changed_active_profile() {
+        let sub_id = Uuid::new_v4();
+        let mut existing = Profile::new_vless(
+            "Server".to_string(),
+            "1.1.1.1".to_string(),
+            443,
+            "same-uuid".to_string(),
+        );
+        existing.subscription_id = Some(sub_id);
+        let old_profile_id = existing.id;
+        let mut model = model_with_profiles(vec![existing]);
+        model.config.subscriptions.push(Subscription {
+            id: sub_id,
+            name: "Sub".into(),
+            url: "http://example.com/sub".into(),
+            auto_update: SubscriptionAutoUpdate::Off,
+            last_updated: None,
+        });
+        model.connection = ConnectionState::Connected;
+        model.active_profile_id = Some(old_profile_id);
+        let mut updated = Profile::new_vless(
+            "Server".to_string(),
+            "1.1.1.1".to_string(),
+            443,
+            "same-uuid".to_string(),
+        );
+        if let crate::config::profile::ProtocolConfig::Vless(config) = &mut updated.config {
+            config.flow = Some(crate::config::profile::Flow::XtlsRprxVision);
+        }
+
+        let effects = handle_subscription_result(&mut model, sub_id, Ok(vec![updated]));
+
+        assert_eq!(model.connection, ConnectionState::Connecting);
+        assert_eq!(model.connecting_profile_id, Some(old_profile_id));
+        assert!(effects.contains(&app_log_info("Subscription changed — reconnecting")));
+    }
+
+    #[test]
+    fn subscription_update_disconnects_when_connecting_profile_is_removed() {
+        let sub_id = Uuid::new_v4();
+        let mut existing = Profile::new_vless(
+            "Server".to_string(),
+            "1.1.1.1".to_string(),
+            443,
+            "old-uuid".to_string(),
+        );
+        existing.subscription_id = Some(sub_id);
+        let profile_id = existing.id;
+        let mut model = model_with_profiles(vec![existing]);
+        model.config.subscriptions.push(Subscription {
+            id: sub_id,
+            name: "Sub".into(),
+            url: "http://example.com/sub".into(),
+            auto_update: SubscriptionAutoUpdate::Off,
+            last_updated: None,
+        });
+        assert!(queue_connect(&mut model, profile_id));
+        model.connection = ConnectionState::ConnectPending;
+
+        let effects = handle_subscription_result(&mut model, sub_id, Ok(vec![]));
+
+        assert!(effects.contains(&Effect::Disconnect));
     }
 
     #[test]
@@ -2772,7 +3374,8 @@ mod tests {
     #[test]
     fn traffic_stats_updated_first_sample_records_zero_rate() {
         let mut model = model_with_profiles(vec![]);
-        let effects = handle_traffic_stats_updated(&mut model, 10_000, 50_000, 3, 1_000);
+        model.connection = ConnectionState::Connected;
+        let effects = handle_traffic_stats_updated(&mut model, 0, 1, 10_000, 50_000, 3, 1_000);
         assert_eq!(model.traffic.up_total, 10_000);
         assert_eq!(model.traffic.down_total, 50_000);
         assert_eq!(model.traffic.conn_count, 3);
@@ -2780,16 +3383,18 @@ mod tests {
         assert_eq!(model.traffic.up_rate_bps, 0);
         assert_eq!(model.traffic.down_rate_bps, 0);
         assert_eq!(model.last_traffic_sample_at_ms, 1_000);
+        assert_eq!(model.last_traffic_response_id, 1);
         assert_eq!(effects, vec![Effect::BroadcastState]);
     }
 
     #[test]
     fn traffic_stats_updated_second_sample_computes_rate() {
         let mut model = model_with_profiles(vec![]);
+        model.connection = ConnectionState::Connected;
         // Prime with a first sample.
-        handle_traffic_stats_updated(&mut model, 0, 0, 0, 1_000);
+        handle_traffic_stats_updated(&mut model, 0, 1, 0, 0, 0, 1_000);
         // 5000 ↑ + 12000 ↓ over 1 second.
-        let effects = handle_traffic_stats_updated(&mut model, 5_000, 12_000, 7, 2_000);
+        let effects = handle_traffic_stats_updated(&mut model, 0, 2, 5_000, 12_000, 7, 2_000);
         assert_eq!(model.traffic.up_rate_bps, 5_000);
         assert_eq!(model.traffic.down_rate_bps, 12_000);
         assert_eq!(model.traffic.conn_count, 7);
@@ -2799,9 +3404,10 @@ mod tests {
     #[test]
     fn traffic_stats_updated_handles_singbox_restart() {
         let mut model = model_with_profiles(vec![]);
-        handle_traffic_stats_updated(&mut model, 10_000, 50_000, 5, 1_000);
+        model.connection = ConnectionState::Connected;
+        handle_traffic_stats_updated(&mut model, 0, 1, 10_000, 50_000, 5, 1_000);
         // sing-box restarts → counters reset, but we still get a sample.
-        handle_traffic_stats_updated(&mut model, 100, 200, 1, 2_000);
+        handle_traffic_stats_updated(&mut model, 0, 2, 100, 200, 1, 2_000);
         // Rate saturates to 0 for this transition sample.
         assert_eq!(model.traffic.up_rate_bps, 0);
         assert_eq!(model.traffic.down_rate_bps, 0);
@@ -2820,15 +3426,53 @@ mod tests {
             effects.iter().any(|e| matches!(
                 e,
                 Effect::FetchTrafficStats {
-                    prev_up_total: 0,
-                    prev_down_total: 0,
-                    prev_sampled_at_ms: 0,
+                    attempt_id: 0,
+                    request_id: 1,
                 }
             )),
             "expected Effect::FetchTrafficStats, got {:?}",
             effects
         );
         assert!(model.last_traffic_fetch_at.is_some());
+        assert_eq!(model.traffic_request_id, 1);
+    }
+
+    #[test]
+    fn traffic_stats_ignore_previous_connection_attempt() {
+        let mut model = model_with_profiles(vec![]);
+        model.connection = ConnectionState::Connected;
+        model.connect_attempt_id = 2;
+
+        let effects = handle_traffic_stats_updated(&mut model, 1, 1, 10, 20, 3, 1_000);
+
+        assert!(effects.is_empty());
+        assert_eq!(model.traffic, TrafficStats::default());
+        assert_eq!(model.last_traffic_response_id, 0);
+    }
+
+    #[test]
+    fn traffic_stats_ignore_response_when_not_connected() {
+        let mut model = model_with_profiles(vec![]);
+
+        let effects = handle_traffic_stats_updated(&mut model, 0, 1, 10, 20, 3, 1_000);
+
+        assert!(effects.is_empty());
+        assert_eq!(model.traffic, TrafficStats::default());
+    }
+
+    #[test]
+    fn traffic_stats_do_not_roll_back_on_out_of_order_response() {
+        let mut model = model_with_profiles(vec![]);
+        model.connection = ConnectionState::Connected;
+        handle_traffic_stats_updated(&mut model, 0, 2, 200, 400, 4, 2_000);
+
+        let effects = handle_traffic_stats_updated(&mut model, 0, 1, 100, 200, 2, 1_000);
+
+        assert!(effects.is_empty());
+        assert_eq!(model.traffic.up_total, 200);
+        assert_eq!(model.traffic.down_total, 400);
+        assert_eq!(model.last_traffic_sample_at_ms, 2_000);
+        assert_eq!(model.last_traffic_response_id, 2);
     }
 
     #[test]
@@ -2875,17 +3519,22 @@ mod tests {
         model.traffic.up_rate_bps = 100;
         model.last_traffic_sample_at_ms = 1_000;
         model.last_traffic_fetch_at = Some(Instant::now());
+        model.traffic_request_id = 4;
+        model.last_traffic_response_id = 3;
         let id = model.config.profiles[0].id;
         let _ = update(
             &mut model,
             Msg::Connected {
                 pid: 1234,
                 profile_id: id,
+                attempt_id: 0,
             },
         );
         assert_eq!(model.traffic, TrafficStats::default());
         assert_eq!(model.last_traffic_sample_at_ms, 0);
         assert!(model.last_traffic_fetch_at.is_none());
+        assert_eq!(model.traffic_request_id, 0);
+        assert_eq!(model.last_traffic_response_id, 0);
     }
 
     /// `t` opens the theme picker overlay and positions the cursor on the
