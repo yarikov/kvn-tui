@@ -18,7 +18,7 @@
 
 - [Features](#features)
 - [Supported Protocols](#supported-protocols)
-- [Quick Start](#quick-start)
+- [First Connection](#first-connection)
 - [Installation (Arch Linux)](#installation-arch-linux)
   - [AUR](#aur-recommended)
   - [Polkit setup](#polkit-setup-recommended)
@@ -72,7 +72,9 @@ exported with `y`.
 
 ---
 
-## Quick Start
+## First Connection
+
+After installation, launch kvn-tui:
 
 ```bash
 kvn-tui
