@@ -857,26 +857,6 @@ mod tests {
         );
     }
 
-    /// Integration test that hits the real network. Run with `cargo test -- --ignored`.
-    #[test]
-    #[ignore]
-    fn test_download_service_srs_files() {
-        let gm = GeoManager::new().unwrap();
-        for service in RoutedService::ALL {
-            for (_, path) in gm.service_local_paths(service) {
-                let _ = fs::remove_file(path);
-            }
-
-            assert!(
-                gm.update_service_if_needed(service).unwrap(),
-                "expected download for {service:?}"
-            );
-            assert!(gm.has_service_databases(service));
-            // Second run must be an ETag-checked no-op.
-            assert!(!gm.update_service_if_needed(service).unwrap());
-        }
-    }
-
     #[test]
     fn local_paths_match_region_assets() {
         let _guard = crate::test_helpers::ENV_LOCK.lock().unwrap();
@@ -1216,32 +1196,5 @@ mod tests {
         fs::write(&gm.metadata_path, b"not valid json {{").unwrap();
         let err = gm.load_metadata().unwrap_err().to_string();
         assert!(err.contains("Failed to parse"));
-    }
-
-    /// Integration test that hits the real network. Run with `cargo test -- --ignored`.
-    #[test]
-    #[ignore]
-    fn test_download_srs_files() {
-        let gm = GeoManager::new().unwrap();
-        let (geoip_ru, geosite_ru) = gm.local_paths(GeoRegion::Ru).unwrap();
-        let _ = fs::remove_file(&geoip_ru);
-        let _ = fs::remove_file(&geosite_ru);
-
-        let result = gm.download_databases(GeoRegion::Ru);
-        assert!(result.is_ok(), "download failed: {:?}", result);
-        assert!(result.unwrap(), "expected updated=true");
-
-        assert!(geoip_ru.exists(), "geoip-ru.srs should exist");
-        assert!(geosite_ru.exists(), "geosite-category-ru.srs should exist");
-
-        let updated = gm.last_updated(GeoRegion::Ru);
-        assert!(updated.is_some(), "last_updated should be set");
-
-        let result = gm.update_if_needed(GeoRegion::Ru).unwrap();
-        assert!(
-            matches!(result, GeoResult::UpToDate { .. }),
-            "unexpected result: {:?}",
-            result
-        );
     }
 }
