@@ -1,4 +1,7 @@
 use crate::app::model::{AppState, Model};
+use anyhow::{Context, Result};
+use std::os::unix::fs::MetadataExt;
+use std::time::{Duration, Instant};
 
 /// Write current connection state to the state JSON file.
 pub fn write_state(model: &Model) {
@@ -66,20 +69,78 @@ pub fn read_state() -> AppState {
     read_state_from(&path)
 }
 
-/// Check whether a background sing-box session is still alive.
+/// Stop a sing-box process left behind by a crashed daemon.
 ///
-/// Returns `(pid, active_profile_id, profile_name)` if a valid session exists.
-pub fn detect_background_session() -> Option<(u32, uuid::Uuid, String)> {
+/// A healthy daemon retains the child handle and keeps running when the TUI
+/// detaches, so finding a live PID in `state.json` during daemon startup means
+/// the previous daemon died. The new daemon cannot safely manage that process
+/// as a `Child`; terminate it before applying the normal auto-connect policy.
+pub fn cleanup_stale_session() -> Result<Option<u32>> {
     let state = read_state();
-    let pid = state.singbox_pid?;
+    let Some(pid) = state.singbox_pid else {
+        return Ok(None);
+    };
     if !is_singbox_alive(pid) {
-        return None;
+        return Ok(None);
     }
-    let id = state
-        .active_profile_id
-        .and_then(|s| uuid::Uuid::parse_str(&s).ok())?;
-    let name = state.profile_name.unwrap_or_else(|| "unknown".to_string());
-    Some((pid, id, name))
+
+    let proc_dir = std::path::PathBuf::from(format!("/proc/{pid}"));
+    let owner = match std::fs::metadata(&proc_dir) {
+        Ok(metadata) => metadata.uid(),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => {
+            return Err(e).with_context(|| format!("Failed to inspect stale sing-box PID {pid}"));
+        }
+    };
+    // SAFETY: getuid has no preconditions and does not dereference pointers.
+    #[allow(unsafe_code)]
+    let current_uid = unsafe { libc::getuid() };
+    anyhow::ensure!(
+        owner == current_uid,
+        "Refusing to stop stale sing-box PID {pid}: owned by UID {owner}, current UID is {current_uid}"
+    );
+
+    signal_process(pid, libc::SIGTERM)?;
+    if wait_until_stopped(pid, Duration::from_secs(1)) {
+        return Ok(Some(pid));
+    }
+
+    // Re-check identity before escalating so a rapidly reused PID cannot make
+    // us signal an unrelated process.
+    anyhow::ensure!(
+        is_singbox_alive(pid),
+        "Stale sing-box PID {pid} changed identity while stopping"
+    );
+    signal_process(pid, libc::SIGKILL)?;
+    anyhow::ensure!(
+        wait_until_stopped(pid, Duration::from_secs(1)),
+        "Stale sing-box PID {pid} did not stop"
+    );
+    Ok(Some(pid))
+}
+
+fn signal_process(pid: u32, signal: i32) -> Result<()> {
+    let pid = i32::try_from(pid).context("sing-box PID exceeds i32")?;
+    // SAFETY: kill does not dereference pointers. PID ownership and process
+    // identity are checked immediately before this helper is called.
+    #[allow(unsafe_code)]
+    let result = unsafe { libc::kill(pid, signal) };
+    if result == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error()).context("Failed to signal stale sing-box process")
+    }
+}
+
+fn wait_until_stopped(pid: u32, timeout: Duration) -> bool {
+    let deadline = Instant::now() + timeout;
+    while Instant::now() < deadline {
+        if !is_singbox_alive(pid) {
+            return true;
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    !is_singbox_alive(pid)
 }
 
 /// Print waybar status JSON to stdout.
@@ -108,8 +169,24 @@ pub fn is_singbox_alive(pid: u32) -> bool {
     // blocks read_link on /proc/{pid}/exe for processes with file
     // capabilities (cap_net_admin,cap_net_raw=ep) even for the owning user.
     let comm = std::path::PathBuf::from(format!("/proc/{pid}/comm"));
-    std::fs::read_to_string(&comm)
+    let named_singbox = std::fs::read_to_string(&comm)
         .map(|name| name.trim() == "sing-box")
+        .unwrap_or(false);
+    if !named_singbox {
+        return false;
+    }
+
+    // A terminated child remains in /proc as a zombie until its parent reaps
+    // it. It no longer owns the TUN or routes and must not be reported as a
+    // live VPN session during monitoring or crash recovery.
+    let status = std::path::PathBuf::from(format!("/proc/{pid}/status"));
+    std::fs::read_to_string(status)
+        .map(|contents| {
+            !contents
+                .lines()
+                .find(|line| line.starts_with("State:"))
+                .is_some_and(|line| line.split_whitespace().nth(1) == Some("Z"))
+        })
         .unwrap_or(false)
 }
 
@@ -203,6 +280,36 @@ mod tests {
     #[test]
     fn is_singbox_alive_false_for_systemd() {
         assert!(!is_singbox_alive(1));
+    }
+
+    #[test]
+    fn cleanup_stale_session_stops_owned_singbox_process() {
+        let _guard = crate::test_helpers::ENV_LOCK.lock().unwrap();
+        let config = tempfile::tempdir().unwrap();
+        let _config = crate::test_helpers::EnvVarGuard::set("XDG_CONFIG_HOME", config.path());
+        crate::paths::ensure_config_dirs().unwrap();
+
+        let executable = config.path().join("sing-box");
+        std::fs::copy("/usr/bin/sleep", &executable).unwrap();
+        let mut child = std::process::Command::new(&executable)
+            .arg("30")
+            .spawn()
+            .unwrap();
+        let pid = child.id();
+        write_state_to(
+            &AppState {
+                connected: true,
+                profile_name: Some("Stale".into()),
+                active_profile_id: Some("550e8400-e29b-41d4-a716-446655440000".to_string()),
+                singbox_pid: Some(pid),
+            },
+            crate::paths::state_json_path(),
+        )
+        .unwrap();
+
+        assert_eq!(cleanup_stale_session().unwrap(), Some(pid));
+        child.wait().unwrap();
+        assert!(!is_singbox_alive(pid));
     }
 
     #[test]

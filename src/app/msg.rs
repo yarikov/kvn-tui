@@ -65,6 +65,14 @@ pub enum Msg {
         attempt_id: u64,
         error: IpcError,
     },
+    /// The managed sing-box child exited after passing its initial readiness
+    /// check. Bound to the connection generation so a late notification from
+    /// an old process cannot tear down a newer connection.
+    SingBoxExited {
+        attempt_id: u64,
+        code: Option<i32>,
+        signal: Option<i32>,
+    },
     /// A service rule-set download pass finished (files may still be missing
     /// if individual downloads failed — absence degrades to "no rule for
     /// that service"). Consumed by the reducer to run the reconnect that a
