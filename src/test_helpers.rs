@@ -1,13 +1,61 @@
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::buffer::Buffer;
-use std::sync::Mutex;
+use std::convert::Infallible;
+use std::ffi::{OsStr, OsString};
+use std::sync::{Mutex, MutexGuard};
 
 use crate::app::model::Model;
 use crate::config::profile::{Config, Profile};
 
+/// Mutex that recovers after a test panics while holding the lock.
+///
+/// A failed environment-sensitive test must not turn every later test into a
+/// `PoisonError`. Returning an infallible `Result` preserves the familiar
+/// `ENV_LOCK.lock().unwrap()` call sites while making them poison-tolerant.
+pub struct RecoverableMutex(Mutex<()>);
+
+impl RecoverableMutex {
+    pub const fn new() -> Self {
+        Self(Mutex::new(()))
+    }
+
+    pub fn lock(&self) -> Result<MutexGuard<'_, ()>, Infallible> {
+        Ok(self
+            .0
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()))
+    }
+}
+
 /// Global lock for tests that mutate environment variables.
 /// Prevents race conditions when running tests in parallel.
-pub static ENV_LOCK: Mutex<()> = Mutex::new(());
+pub static ENV_LOCK: RecoverableMutex = RecoverableMutex::new();
+
+/// Restores an environment variable when an environment-sensitive test ends,
+/// including during panic unwinding.
+pub struct EnvVarGuard {
+    key: &'static str,
+    previous: Option<OsString>,
+}
+
+impl EnvVarGuard {
+    pub fn set(key: &'static str, value: impl AsRef<OsStr>) -> Self {
+        let previous = std::env::var_os(key);
+        unsafe { std::env::set_var(key, value) };
+        Self { key, previous }
+    }
+}
+
+impl Drop for EnvVarGuard {
+    fn drop(&mut self) {
+        unsafe {
+            match self.previous.take() {
+                Some(value) => std::env::set_var(self.key, value),
+                None => std::env::remove_var(self.key),
+            }
+        }
+    }
+}
 
 /// Convert a ratatui Buffer to a multi-line string for snapshot testing.
 pub fn buffer_to_string(buffer: &Buffer) -> String {

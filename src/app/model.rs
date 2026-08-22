@@ -153,6 +153,14 @@ pub struct Model {
     /// Explicit target for a queued connection attempt. This must never be
     /// inferred from `selected`, which is only the UI cursor.
     pub connecting_profile_id: Option<Uuid>,
+    /// Monotonic token identifying the only connection attempt whose result
+    /// may still mutate the model. Incremented for every queued connection
+    /// and invalidated by the daemon on disconnect.
+    pub connect_attempt_id: u64,
+    /// Desired kill-switch state while the privileged helper is running.
+    /// Prevents repeated `K` presses from launching concurrent systemd/nft
+    /// operations whose replies could arrive out of order.
+    pub kill_switch_pending: Option<bool>,
     pub routing_selected: usize,
     pub geo_region_selected: usize,
     pub dns_selected: usize,
@@ -197,6 +205,11 @@ pub struct Model {
     /// epoch. Used by the pure reducer to compute rate deltas. Set to 0
     /// when there is no prior sample.
     pub last_traffic_sample_at_ms: u64,
+    /// Monotonic ID assigned to the next Clash API poll for this connection.
+    pub traffic_request_id: u64,
+    /// Newest traffic response accepted by the reducer. Older replies from
+    /// overlapping workers are ignored instead of rolling counters back.
+    pub last_traffic_response_id: u64,
     /// When the daemon last issued an `Effect::FetchTrafficStats`. Used by
     /// `handle_tick` to throttle Clash-API polling to ~1 Hz. Not serialized —
     /// clients don't need it.
@@ -320,6 +333,8 @@ impl Model {
             singbox_pid: bg_pid,
             active_profile_id: bg_id,
             connecting_profile_id,
+            connect_attempt_id: u64::from(connecting_profile_id.is_some()),
+            kill_switch_pending: None,
             routing_selected: 0,
             geo_region_selected: 0,
             dns_selected: 0,
@@ -340,6 +355,8 @@ impl Model {
             geo_last_attempt_at: None,
             traffic: TrafficStats::default(),
             last_traffic_sample_at_ms: 0,
+            traffic_request_id: 0,
+            last_traffic_response_id: 0,
             last_traffic_fetch_at: None,
             theme: Theme::legacy(),
             theme_selected: 0,
@@ -389,6 +406,8 @@ impl Model {
             singbox_pid: None,
             active_profile_id: None,
             connecting_profile_id: None,
+            connect_attempt_id: 0,
+            kill_switch_pending: None,
             routing_selected: 0,
             geo_region_selected: 0,
             dns_selected: 0,
@@ -409,6 +428,8 @@ impl Model {
             geo_last_attempt_at: None,
             traffic: TrafficStats::default(),
             last_traffic_sample_at_ms: 0,
+            traffic_request_id: 0,
+            last_traffic_response_id: 0,
             last_traffic_fetch_at: None,
             theme: Theme::legacy(),
             theme_selected: 0,
@@ -617,6 +638,8 @@ impl Model {
             singbox_pid: None,
             active_profile_id: None,
             connecting_profile_id: None,
+            connect_attempt_id: 0,
+            kill_switch_pending: None,
             routing_selected: 0,
             geo_region_selected: 0,
             dns_selected: 0,
@@ -637,6 +660,8 @@ impl Model {
             geo_last_attempt_at: None,
             traffic: TrafficStats::default(),
             last_traffic_sample_at_ms: 0,
+            traffic_request_id: 0,
+            last_traffic_response_id: 0,
             last_traffic_fetch_at: None,
             theme: Theme::legacy(),
             theme_selected: 0,

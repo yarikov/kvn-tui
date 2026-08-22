@@ -14,6 +14,11 @@ use crate::app::update::update;
 use crate::ipc::{IpcServer, cleanup_socket};
 use crate::singbox::process_handle::ProcessHandle;
 
+struct ProcessSlot {
+    attempt_id: u64,
+    handle: Option<ProcessHandle>,
+}
+
 /// Run the daemon main loop.
 pub fn run(mut model: Model) -> Result<()> {
     let (tx, rx) = channel::<Msg>();
@@ -27,12 +32,26 @@ pub fn run(mut model: Model) -> Result<()> {
 
     reconcile_kill_switch_state(&mut model);
 
-    let process_slot = Arc::new(Mutex::new(None));
+    let process_slot = Arc::new(Mutex::new(ProcessSlot {
+        attempt_id: model.connect_attempt_id,
+        handle: None,
+    }));
+    let connect_coordinator = Arc::new(Mutex::new(()));
 
-    let result = run_loop(&mut model, rx, &tx, process_slot.clone(), &ipc_server);
+    let result = run_loop(
+        &mut model,
+        rx,
+        &tx,
+        process_slot.clone(),
+        connect_coordinator.clone(),
+        &ipc_server,
+    );
 
     // Cleanup
-    if let Some(mut handle) = lock_process_slot(&process_slot).take()
+    let _coordinator = connect_coordinator
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
+    if let Some(mut handle) = lock_process_slot(&process_slot).handle.take()
         && let Err(e) = handle.kill_and_wait()
     {
         tracing::warn!("Failed to stop sing-box on exit: {}", e);
@@ -51,12 +70,17 @@ fn run_loop(
     model: &mut Model,
     rx: std::sync::mpsc::Receiver<Msg>,
     tx: &Sender<Msg>,
-    process_slot: Arc<Mutex<Option<ProcessHandle>>>,
+    process_slot: Arc<Mutex<ProcessSlot>>,
+    connect_coordinator: Arc<Mutex<()>>,
     ipc_server: &IpcServer,
 ) -> Result<()> {
     loop {
         let msg = rx.recv()?;
         let effects = update(model, msg);
+        // `queue_connect` advances the generation before the next Tick emits
+        // `Effect::Connect`. Publish that invalidation immediately so an old
+        // worker cannot install its process during the intervening 250 ms.
+        lock_process_slot(&process_slot).attempt_id = model.connect_attempt_id;
         let mut should_broadcast = false;
 
         for effect in &effects {
@@ -76,7 +100,7 @@ fn run_loop(
         }
 
         for effect in effects {
-            execute_daemon_effect(effect, tx, model, &process_slot)?;
+            execute_daemon_effect(effect, tx, model, &process_slot, &connect_coordinator)?;
         }
 
         if model.should_quit {
@@ -94,12 +118,21 @@ fn execute_daemon_effect(
     effect: Effect,
     tx: &Sender<Msg>,
     model: &mut Model,
-    process_slot: &Arc<Mutex<Option<ProcessHandle>>>,
+    process_slot: &Arc<Mutex<ProcessSlot>>,
+    connect_coordinator: &Arc<Mutex<()>>,
 ) -> Result<()> {
     match effect {
-        Effect::Connect { profile, settings } => {
-            model.connecting_profile_id = None;
-            if let Some(mut handle) = lock_process_slot(process_slot).take()
+        Effect::Connect {
+            profile,
+            settings,
+            attempt_id,
+        } => {
+            let previous = {
+                let mut slot = lock_process_slot(process_slot);
+                slot.attempt_id = attempt_id;
+                slot.handle.take()
+            };
+            if let Some(mut handle) = previous
                 && let Err(e) = handle.kill_and_wait()
             {
                 tracing::warn!("Failed to stop sing-box process: {}", e);
@@ -107,15 +140,26 @@ fn execute_daemon_effect(
             model.connection = ConnectionState::ConnectPending;
             let tx = tx.clone();
             let slot = process_slot.clone();
+            let coordinator = connect_coordinator.clone();
             let kill_switch = model.config.settings.kill_switch;
             let dns = settings.dns.clone();
             thread::spawn(move || {
+                let _coordinator = coordinator.lock().unwrap_or_else(|p| p.into_inner());
+                if !is_current_attempt(&slot, attempt_id) {
+                    return;
+                }
                 if kill_switch {
                     if let Err(e) = crate::services::killswitch::revoke() {
                         let err = crate::app::msg::IpcError::from(
                             e.context("failed to clear stale kill switch exceptions"),
                         );
-                        let _ = tx.send(Msg::ConnectFailed(err));
+                        let _ = tx.send(Msg::ConnectFailed {
+                            attempt_id,
+                            error: err,
+                        });
+                        return;
+                    }
+                    if !is_current_attempt(&slot, attempt_id) {
                         return;
                     }
                     if let Err(e) = open_handshake_window(&profile, &dns) {
@@ -128,17 +172,36 @@ fn execute_daemon_effect(
                         let err = crate::app::msg::IpcError::from(
                             e.context("kill switch handshake setup failed"),
                         );
-                        let _ = tx.send(Msg::ConnectFailed(err));
+                        let _ = tx.send(Msg::ConnectFailed {
+                            attempt_id,
+                            error: err,
+                        });
                         return;
                     }
+                }
+                if !is_current_attempt(&slot, attempt_id) {
+                    return;
                 }
                 match crate::singbox::runner::start(&profile, &settings) {
                     Ok(handle) => {
                         let pid = handle.pid;
-                        *lock_process_slot(&slot) = Some(handle);
+                        let stale_handle = {
+                            let mut slot = lock_process_slot(&slot);
+                            if slot.attempt_id == attempt_id {
+                                slot.handle = Some(handle);
+                                None
+                            } else {
+                                Some(handle)
+                            }
+                        };
+                        if let Some(mut handle) = stale_handle {
+                            let _ = handle.kill_and_wait();
+                            return;
+                        }
                         let _ = tx.send(Msg::Connected {
                             pid,
                             profile_id: profile.id,
+                            attempt_id,
                         });
                     }
                     Err(e) => {
@@ -150,13 +213,30 @@ fn execute_daemon_effect(
                                 cleanup_err
                             );
                         }
-                        let _ = tx.send(Msg::ConnectFailed(crate::app::msg::IpcError::from(e)));
+                        let _ = tx.send(Msg::ConnectFailed {
+                            attempt_id,
+                            error: crate::app::msg::IpcError::from(e),
+                        });
                     }
                 }
             });
         }
         Effect::Disconnect => {
-            if let Some(mut handle) = lock_process_slot(process_slot).take()
+            model.connect_attempt_id = model.connect_attempt_id.wrapping_add(1);
+            {
+                let mut slot = lock_process_slot(process_slot);
+                slot.attempt_id = model.connect_attempt_id;
+            }
+            // Wait for an in-flight setup to observe invalidation and stop
+            // before flushing its temporary kill-switch exceptions.
+            let _coordinator = connect_coordinator
+                .lock()
+                .unwrap_or_else(|p| p.into_inner());
+            let previous = {
+                let mut slot = lock_process_slot(process_slot);
+                slot.handle.take()
+            };
+            if let Some(mut handle) = previous
                 && let Err(e) = handle.kill_and_wait()
             {
                 tracing::warn!("Failed to stop sing-box process: {}", e);
@@ -167,6 +247,8 @@ fn execute_daemon_effect(
             model.singbox_pid = None;
             model.traffic = TrafficStats::default();
             model.last_traffic_sample_at_ms = 0;
+            model.traffic_request_id = 0;
+            model.last_traffic_response_id = 0;
             model.last_traffic_fetch_at = None;
             model.set_status(AppStatus::Info("Disconnected".into()));
             model.overlay = Overlay::None;
@@ -302,6 +384,8 @@ fn execute_daemon_effect(
         }
         Effect::BroadcastState => {}
         Effect::Quit => {
+            model.connect_attempt_id = model.connect_attempt_id.wrapping_add(1);
+            lock_process_slot(process_slot).attempt_id = model.connect_attempt_id;
             model.should_quit = true;
         }
         Effect::AppendAppLog { level, message } => {
@@ -325,13 +409,18 @@ fn execute_daemon_effect(
                 let _ = tx.send(Msg::KillSwitchApplied { enabled, error });
             });
         }
-        Effect::FetchTrafficStats { .. } => {
+        Effect::FetchTrafficStats {
+            attempt_id,
+            request_id,
+        } => {
             let tx = tx.clone();
             thread::spawn(
                 move || match crate::singbox::clash_api::fetch_connections() {
                     Ok(snap) => {
                         let sampled_at_ms = unix_now_ms();
                         let _ = tx.send(Msg::TrafficStatsUpdated {
+                            attempt_id,
+                            request_id,
                             up_total: snap.up_total,
                             down_total: snap.down_total,
                             conn_count: snap.conn_count,
@@ -682,10 +771,12 @@ fn spawn_ticker(tx: Sender<Msg>) {
 /// chance to kill sing-box on shutdown. The invariant we care about — an
 /// `Option<ProcessHandle>` — cannot be left half-written across an `unwind`
 /// boundary, so taking the inner guard is safe.
-fn lock_process_slot(
-    slot: &Arc<Mutex<Option<ProcessHandle>>>,
-) -> std::sync::MutexGuard<'_, Option<ProcessHandle>> {
+fn lock_process_slot(slot: &Arc<Mutex<ProcessSlot>>) -> std::sync::MutexGuard<'_, ProcessSlot> {
     slot.lock().unwrap_or_else(|p| p.into_inner())
+}
+
+fn is_current_attempt(slot: &Arc<Mutex<ProcessSlot>>, attempt_id: u64) -> bool {
+    lock_process_slot(slot).attempt_id == attempt_id
 }
 
 fn spawn_suspend_watcher(tx: Sender<Msg>) {
