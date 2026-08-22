@@ -18,6 +18,7 @@
 
 - [Features](#features)
 - [Supported Protocols](#supported-protocols)
+- [Quick Start](#quick-start)
 - [Installation (Arch Linux)](#installation-arch-linux)
   - [AUR](#aur-recommended)
   - [Polkit setup](#polkit-setup-recommended)
@@ -25,7 +26,6 @@
   - [Omarchy](#omarchy-optional)
   - [Build from source](#build-from-source)
 - [Diagnostics](#diagnostics)
-- [Quick Start](#quick-start)
 - [Default Key Bindings](#default-key-bindings)
 - [Configuration](#configuration)
 - [Technology Stack](#technology-stack)
@@ -72,7 +72,28 @@ exported with `y`.
 
 ---
 
+## Quick Start
+
+```bash
+kvn-tui
+```
+
+Choose a regional routing preset on first launch, then:
+
+1. Copy a share link (`vless://`, `ss://`, `hysteria2://`, …) or a subscription URL to the clipboard.
+2. Press `p` to import it.
+3. Select a profile with `j` / `k` and press `Enter` to connect.
+
+Clipboard import requires `wl-clipboard` on Wayland or `xclip` / `xsel` on X11.
+Press `?` at any time to see the full key map.
+
+---
+
 ## Installation (Arch Linux)
+
+Optional setup commands modify system or desktop configuration. See
+[system integration details](docs/system-integration.md) for installed files,
+permissions, and removal instructions.
 
 ### AUR (recommended)
 
@@ -105,6 +126,9 @@ not active:
 sudo pacman -S nftables
 sudo kvn-tui setup --killswitch
 ```
+
+If setup adds you to the `network` group, run `newgrp network` or log out and
+back in.
 
 Toggle it with `K`; the status bar shows `[KS]` while it is enabled. Polkit and
 the kill switch can also be installed together:
@@ -175,21 +199,7 @@ unusable.
 
 ---
 
-## Quick Start
-
-```bash
-kvn-tui
-```
-
-Choose a regional routing preset on first launch, then:
-
-1. Copy a share link (`vless://`, `ss://`, `hysteria2://`, …) or a subscription URL to the clipboard.
-2. Press `p` to import it.
-3. Select a profile with `j` / `k` and press `Enter` to connect.
-
-Press `?` at any time to see the full key map.
-
-### Default Key Bindings
+## Default Key Bindings
 
 **Navigation**
 
@@ -236,6 +246,9 @@ Press `?` at any time to see the full key map.
 | `q` / `Esc` | Close the active overlay; otherwise exit only the TUI — the daemon and VPN keep running |
 | `Ctrl+C` | Stop the daemon, disconnect the VPN, and exit completely |
 | `?` | Show help |
+
+On terminals supporting the Kitty keyboard protocol, letter shortcuts follow
+their physical US key positions regardless of the active keyboard layout.
 
 ---
 
