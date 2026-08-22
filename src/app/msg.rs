@@ -51,6 +51,7 @@ pub enum Msg {
     GeoMetadataRefreshed {
         last_updated: Option<String>,
         last_checked_at: Option<chrono::DateTime<chrono::Local>>,
+        retry_state: Option<crate::geo::GeoRetryState>,
     },
     SystemResumed,
     Connected {
@@ -125,7 +126,10 @@ pub enum GeoResult {
     UpToDate {
         checked_at: Option<chrono::DateTime<chrono::Local>>,
     },
-    Error(String),
+    Error {
+        message: String,
+        retry_state: Option<crate::geo::GeoRetryState>,
+    },
 }
 
 /// Commands sent from the TUI client to the daemon over the Unix socket.

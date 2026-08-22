@@ -139,6 +139,14 @@ struct GeoMetadata {
     /// Last successful HTTP check, including checks that found no changes.
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     checked_at: HashMap<GeoRegion, DateTime<Local>>,
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    retry_states: HashMap<GeoRegion, GeoRetryState>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub struct GeoRetryState {
+    pub consecutive_failures: u32,
+    pub retry_at: DateTime<Local>,
 }
 
 /// Deserialization shape that also accepts the legacy per-country etag fields
@@ -151,6 +159,8 @@ struct GeoMetadataRaw {
     updated_at: HashMap<GeoRegion, DateTime<Local>>,
     #[serde(default)]
     checked_at: HashMap<GeoRegion, DateTime<Local>>,
+    #[serde(default)]
+    retry_states: HashMap<GeoRegion, GeoRetryState>,
     #[serde(default)]
     geoip_ru_etag: Option<String>,
     #[serde(default)]
@@ -183,6 +193,7 @@ impl From<GeoMetadataRaw> for GeoMetadata {
             etags,
             updated_at: raw.updated_at,
             checked_at: raw.checked_at,
+            retry_states: raw.retry_states,
         }
     }
 }
@@ -353,6 +364,53 @@ impl GeoManager {
             return None;
         }
         self.load_metadata().ok()?.checked_at.get(&region).copied()
+    }
+
+    pub fn retry_state(&self, region: GeoRegion) -> Option<GeoRetryState> {
+        self.load_metadata()
+            .ok()?
+            .retry_states
+            .get(&region)
+            .copied()
+    }
+
+    pub fn record_update_failure(&self, region: GeoRegion) -> Result<GeoRetryState> {
+        self.record_update_failure_at(region, Local::now())
+    }
+
+    fn record_update_failure_at(
+        &self,
+        region: GeoRegion,
+        now: DateTime<Local>,
+    ) -> Result<GeoRetryState> {
+        let _guard = METADATA_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let mut meta = self.load_metadata().unwrap_or_default();
+        let failures = meta
+            .retry_states
+            .get(&region)
+            .map_or(1, |state| state.consecutive_failures.saturating_add(1));
+        let delay = match failures {
+            1 => 1,
+            2 => 5,
+            3 => 15,
+            _ => 60,
+        };
+        let state = GeoRetryState {
+            consecutive_failures: failures,
+            retry_at: now + chrono::Duration::minutes(delay),
+        };
+        meta.retry_states.insert(region, state);
+        self.save_metadata(&meta)?;
+        Ok(state)
+    }
+
+    pub fn clear_retry_state(&self, region: GeoRegion) -> Result<()> {
+        let _guard = METADATA_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let mut meta = self.load_metadata().unwrap_or_default();
+        if meta.retry_states.remove(&region).is_some() {
+            self.save_metadata(&meta)?;
+        }
+        Ok(())
     }
 
     /// Check whether rule-sets have updates available for the given region.
@@ -805,6 +863,7 @@ mod tests {
             etags,
             updated_at,
             checked_at: HashMap::new(),
+            retry_states: HashMap::new(),
         };
         gm.save_metadata(&meta).unwrap();
         let loaded = gm.load_metadata().unwrap();
@@ -840,6 +899,31 @@ mod tests {
         assert_eq!(gm.last_checked_at(GeoRegion::Cn), Some(cn_checked));
         assert_eq!(gm.last_checked_at(GeoRegion::Ir), None);
         assert_eq!(gm.last_checked_at(GeoRegion::Global), None);
+    }
+
+    #[test]
+    fn retry_backoff_persists_per_region_and_clears_independently() {
+        let _guard = crate::test_helpers::ENV_LOCK.lock().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        unsafe { std::env::set_var("XDG_CONFIG_HOME", dir.path()) };
+        let gm = GeoManager::new().unwrap();
+        let now = Local::now();
+
+        for (failures, delay) in [(1, 1), (2, 5), (3, 15), (4, 60), (5, 60)] {
+            let state = gm.record_update_failure_at(GeoRegion::Ru, now).unwrap();
+            assert_eq!(state.consecutive_failures, failures);
+            assert_eq!(state.retry_at, now + chrono::Duration::minutes(delay));
+        }
+        let cn = gm.record_update_failure_at(GeoRegion::Cn, now).unwrap();
+        assert_eq!(cn.consecutive_failures, 1);
+        assert_eq!(
+            gm.retry_state(GeoRegion::Ru).unwrap().consecutive_failures,
+            5
+        );
+
+        gm.clear_retry_state(GeoRegion::Ru).unwrap();
+        assert!(gm.retry_state(GeoRegion::Ru).is_none());
+        assert_eq!(gm.retry_state(GeoRegion::Cn), Some(cn));
     }
 
     #[test]

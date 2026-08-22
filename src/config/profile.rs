@@ -931,6 +931,41 @@ pub struct Subscription {
     pub auto_update: SubscriptionAutoUpdate,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_updated: Option<DateTime<Local>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retry_state: Option<SubscriptionRetryState>,
+}
+
+/// Persisted retry metadata for an auto-updating subscription.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct SubscriptionRetryState {
+    pub consecutive_failures: u32,
+    pub retry_at: DateTime<Local>,
+}
+
+impl Subscription {
+    /// Record a failed fetch and schedule the next retry using the bounded
+    /// 1/5/15/60-minute backoff sequence.
+    pub fn record_fetch_failure(&mut self, now: DateTime<Local>) {
+        let consecutive_failures = self
+            .retry_state
+            .as_ref()
+            .map_or(1, |state| state.consecutive_failures.saturating_add(1));
+        let delay_minutes = match consecutive_failures {
+            1 => 1,
+            2 => 5,
+            3 => 15,
+            _ => 60,
+        };
+        self.retry_state = Some(SubscriptionRetryState {
+            consecutive_failures,
+            retry_at: now + chrono::Duration::minutes(delay_minutes),
+        });
+    }
+
+    pub fn clear_retry_state(&mut self) {
+        self.retry_state = None;
+    }
 }
 
 #[test]
@@ -952,6 +987,46 @@ fn subscription_auto_update_cycles_and_labels() {
 
     assert_eq!(SubscriptionAutoUpdate::Off.label(), "✕");
     assert_eq!(SubscriptionAutoUpdate::Every1h.label(), "🗘 1h");
+}
+
+#[test]
+fn subscription_retry_backoff_is_bounded_and_serializable() {
+    use chrono::TimeZone;
+
+    let now = Local.with_ymd_and_hms(2026, 8, 22, 12, 0, 0).unwrap();
+    let mut sub = Subscription {
+        id: Uuid::nil(),
+        name: "Sub".into(),
+        url: "https://example.com/sub".into(),
+        auto_update: SubscriptionAutoUpdate::Every1h,
+        last_updated: None,
+        retry_state: None,
+    };
+
+    for (failures, delay) in [(1, 1), (2, 5), (3, 15), (4, 60), (5, 60)] {
+        sub.record_fetch_failure(now);
+        let state = sub.retry_state.as_ref().unwrap();
+        assert_eq!(state.consecutive_failures, failures);
+        assert_eq!(state.retry_at, now + chrono::Duration::minutes(delay));
+    }
+
+    let json = serde_json::to_string(&sub).unwrap();
+    let restored: Subscription = serde_json::from_str(&json).unwrap();
+    assert_eq!(restored, sub);
+}
+
+#[test]
+fn subscription_without_retry_state_remains_backward_compatible() {
+    let json = r#"{
+        "id":"00000000-0000-0000-0000-000000000000",
+        "name":"Sub",
+        "url":"https://example.com/sub",
+        "auto_update":"every1h"
+    }"#;
+
+    let sub: Subscription = serde_json::from_str(json).unwrap();
+    assert!(sub.retry_state.is_none());
+    assert!(!serde_json::to_string(&sub).unwrap().contains("retry_state"));
 }
 
 #[test]

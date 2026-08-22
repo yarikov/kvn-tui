@@ -279,18 +279,21 @@ fn execute_daemon_effect(
                 .current_region
                 .unwrap_or(crate::config::profile::GeoRegion::Global);
             let services = model.config.settings.geo_routing.enabled_services();
+            let retry_enabled = model.config.settings.geo_routing.auto_update
+                != crate::config::profile::GeoAutoUpdate::Off;
             thread::spawn(move || {
                 let gm = match crate::geo::GeoManager::new() {
                     Ok(gm) => gm,
                     Err(e) => {
-                        let _ = tx.send(Msg::GeoUpdated(GeoResult::Error(e.to_string())));
+                        let _ = tx.send(Msg::GeoUpdated(GeoResult::Error {
+                            message: e.to_string(),
+                            retry_state: None,
+                        }));
                         return;
                     }
                 };
-                let result = match gm.update_if_needed(region) {
-                    Ok(geo_result) => geo_result,
-                    Err(e) => GeoResult::Error(e.to_string()),
-                };
+                let result =
+                    finalize_geo_result(&gm, region, gm.update_if_needed(region), retry_enabled);
                 let _ = tx.send(Msg::GeoUpdated(result));
                 // Service rule-sets refresh only after the regional result is
                 // reported: they can take minutes on a slow link and must not
@@ -338,12 +341,21 @@ fn execute_daemon_effect(
             thread::spawn(move || {
                 let manager = crate::geo::GeoManager::new().ok();
                 let last_updated = manager.as_ref().and_then(|g| g.last_updated(region));
-                let last_checked_at = manager.and_then(|g| g.last_checked_at(region));
+                let last_checked_at = manager.as_ref().and_then(|g| g.last_checked_at(region));
+                let retry_state = manager.and_then(|g| g.retry_state(region));
                 let _ = tx.send(Msg::GeoMetadataRefreshed {
                     last_updated,
                     last_checked_at,
+                    retry_state,
                 });
             });
+        }
+        Effect::ClearGeoRetryState { region } => {
+            if let Ok(manager) = crate::geo::GeoManager::new()
+                && let Err(e) = manager.clear_retry_state(region)
+            {
+                tracing::warn!("Failed to clear geo retry state: {e}");
+            }
         }
         Effect::DownloadGeoIfMissing => {
             model.geo_updating = true;
@@ -354,21 +366,29 @@ fn execute_daemon_effect(
                 .geo_routing
                 .current_region
                 .unwrap_or(crate::config::profile::GeoRegion::Global);
+            let retry_enabled = model.config.settings.geo_routing.auto_update
+                != crate::config::profile::GeoAutoUpdate::Off;
             thread::spawn(move || {
                 let result = match crate::geo::GeoManager::new() {
                     Ok(gm) => {
                         if gm.has_databases(region) {
+                            let _ = gm.clear_retry_state(region);
                             GeoResult::UpToDate {
                                 checked_at: gm.last_checked_at(region),
                             }
                         } else {
-                            match gm.update_if_needed(region) {
-                                Ok(geo_result) => geo_result,
-                                Err(e) => GeoResult::Error(e.to_string()),
-                            }
+                            finalize_geo_result(
+                                &gm,
+                                region,
+                                gm.update_if_needed(region),
+                                retry_enabled,
+                            )
                         }
                     }
-                    Err(e) => GeoResult::Error(e.to_string()),
+                    Err(e) => GeoResult::Error {
+                        message: e.to_string(),
+                        retry_state: None,
+                    },
                 };
                 let _ = tx.send(Msg::GeoUpdated(result));
             });
@@ -597,6 +617,31 @@ fn refresh_service_rule_sets(
     for service in services {
         if let Err(e) = gm.update_service_if_needed(*service) {
             tracing::warn!("Failed to update {} rule-sets: {e:#}", service.label());
+        }
+    }
+}
+
+fn finalize_geo_result(
+    manager: &crate::geo::GeoManager,
+    region: crate::config::profile::GeoRegion,
+    result: anyhow::Result<GeoResult>,
+    retry_enabled: bool,
+) -> GeoResult {
+    match result {
+        Ok(result) => {
+            if let Err(e) = manager.clear_retry_state(region) {
+                tracing::warn!("Failed to clear geo retry state: {e}");
+            }
+            result
+        }
+        Err(e) => {
+            let retry_state = retry_enabled
+                .then(|| manager.record_update_failure(region).ok())
+                .flatten();
+            GeoResult::Error {
+                message: e.to_string(),
+                retry_state,
+            }
         }
     }
 }

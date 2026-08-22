@@ -106,6 +106,10 @@ pub(super) fn handle_sources(model: &mut Model, key: KeyEvent) -> Vec<Effect> {
             let schedule = model.config.settings.geo_routing.auto_update.next();
             model.config.settings.geo_routing.auto_update = schedule;
             let mut effects = vec![Effect::SaveConfig];
+            if let Some(region) = model.config.settings.geo_routing.current_region {
+                model.geo_retry_state = None;
+                effects.push(Effect::ClearGeoRetryState { region });
+            }
             push_status(
                 &mut effects,
                 model,
@@ -117,6 +121,7 @@ pub(super) fn handle_sources(model: &mut Model, key: KeyEvent) -> Vec<Effect> {
             if let Some(idx) = model.selected_subscription_index() {
                 let (name, label) = if let Some(sub) = model.config.subscriptions.get_mut(idx) {
                     sub.auto_update = sub.auto_update.next();
+                    sub.clear_retry_state();
                     (sub.name.clone(), sub.auto_update.label())
                 } else {
                     return effects;
@@ -1408,6 +1413,7 @@ mod tests {
             url: "http://s".into(),
             auto_update: SubscriptionAutoUpdate::Off,
             last_updated: None,
+            retry_state: None,
         });
         model.connection = ConnectionState::Connected;
         model.active_profile_id = Some(model.config.profiles[0].id);
@@ -1584,6 +1590,7 @@ mod tests {
             url: "http://e".into(),
             auto_update: SubscriptionAutoUpdate::Off,
             last_updated: None,
+            retry_state: None,
         });
         model.overlay = Overlay::ConfirmDelete;
         model.selected = crate::app::model::row_for_subscription_header(&model.config, 0);

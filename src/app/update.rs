@@ -33,10 +33,12 @@ pub fn update(model: &mut Model, msg: Msg) -> Vec<Effect> {
         Msg::GeoMetadataRefreshed {
             last_updated,
             last_checked_at,
+            retry_state,
         } => {
             model.geo_last_updated = last_updated;
             model.geo_last_checked_at = last_checked_at;
             model.geo_last_attempt_at = None;
+            model.geo_retry_state = retry_state;
             vec![Effect::BroadcastState]
         }
         Msg::SystemResumed => {
@@ -611,6 +613,9 @@ fn geo_update_due(model: &Model, now: chrono::DateTime<Local>) -> bool {
     if interval == 0 {
         return false;
     }
+    if let Some(retry) = model.geo_retry_state {
+        return now >= retry.retry_at;
+    }
     let reference = match (model.geo_last_checked_at, model.geo_last_attempt_at) {
         (Some(checked), Some(attempt)) => Some(checked.max(attempt)),
         (Some(checked), None) => Some(checked),
@@ -621,6 +626,10 @@ fn geo_update_due(model: &Model, now: chrono::DateTime<Local>) -> bool {
 }
 
 fn check_due_subscriptions(model: &mut Model) -> Vec<Effect> {
+    check_due_subscriptions_at(model, Local::now())
+}
+
+fn check_due_subscriptions_at(model: &mut Model, now: chrono::DateTime<Local>) -> Vec<Effect> {
     // Subscription fetches use ordinary application networking, so with the
     // kill switch active they must wait until sing-box has created the TUN.
     if model.config.settings.kill_switch && model.connection != ConnectionState::Connected {
@@ -628,7 +637,6 @@ fn check_due_subscriptions(model: &mut Model) -> Vec<Effect> {
     }
 
     let mut effects = Vec::new();
-    let now = Local::now();
     for sub in &model.config.subscriptions {
         let interval = sub.auto_update.interval_minutes();
         if interval == 0 {
@@ -637,12 +645,15 @@ fn check_due_subscriptions(model: &mut Model) -> Vec<Effect> {
         if model.subscription_updates.contains(&sub.id) {
             continue;
         }
-        let due = match sub.last_updated {
-            None => true,
-            Some(last) => {
-                let elapsed = now.signed_duration_since(last);
-                elapsed.num_minutes() >= interval as i64
-            }
+        let due = match &sub.retry_state {
+            Some(state) => now >= state.retry_at,
+            None => match sub.last_updated {
+                None => true,
+                Some(last) => {
+                    let elapsed = now.signed_duration_since(last);
+                    elapsed.num_minutes() >= interval as i64
+                }
+            },
         };
         if due {
             model.subscription_updates.insert(sub.id);
@@ -711,6 +722,7 @@ fn add_and_fetch_subscription(model: &mut Model, url: &str) -> Vec<Effect> {
         url: url.to_string(),
         auto_update: SubscriptionAutoUpdate::default(),
         last_updated: None,
+        retry_state: None,
     };
     model.config.subscriptions.push(sub);
     model.selected = crate::app::model::row_for_subscription_header(
@@ -736,6 +748,15 @@ fn handle_subscription_result(
     model: &mut Model,
     id: Uuid,
     result: Result<Vec<Profile>, crate::app::msg::IpcError>,
+) -> Vec<Effect> {
+    handle_subscription_result_at(model, id, result, Local::now())
+}
+
+fn handle_subscription_result_at(
+    model: &mut Model,
+    id: Uuid,
+    result: Result<Vec<Profile>, crate::app::msg::IpcError>,
+    now: chrono::DateTime<Local>,
 ) -> Vec<Effect> {
     let managed = !id.is_nil();
     model.subscription_updates.remove(&id);
@@ -767,7 +788,8 @@ fn handle_subscription_result(
         Ok(profiles) => {
             if managed {
                 if let Some(sub) = model.config.subscriptions.iter_mut().find(|s| s.id == id) {
-                    sub.last_updated = Some(Local::now());
+                    sub.last_updated = Some(now);
+                    sub.clear_retry_state();
                 }
                 // Only replace the previous snapshot after the fetch and parse
                 // succeeded. A transient subscription error must leave the
@@ -839,7 +861,18 @@ fn handle_subscription_result(
             effects
         }
         Err(err) => {
-            let mut effects = Vec::new();
+            let mut effects = if managed {
+                if let Some(sub) = model.config.subscriptions.iter_mut().find(|s| s.id == id)
+                    && sub.auto_update != SubscriptionAutoUpdate::Off
+                {
+                    sub.record_fetch_failure(now);
+                    vec![Effect::SaveConfig]
+                } else {
+                    Vec::new()
+                }
+            } else {
+                Vec::new()
+            };
             push_status(
                 &mut effects,
                 model,
@@ -916,6 +949,7 @@ fn handle_geo_result(model: &mut Model, result: GeoResult) -> Vec<Effect> {
             last_updated,
             checked_at,
         } => {
+            model.geo_retry_state = None;
             model.geo_last_updated = last_updated;
             model.geo_last_checked_at = Some(checked_at);
             let mut log_effects = Vec::new();
@@ -943,6 +977,7 @@ fn handle_geo_result(model: &mut Model, result: GeoResult) -> Vec<Effect> {
             log_effects
         }
         GeoResult::UpToDate { checked_at } => {
+            model.geo_retry_state = None;
             model.geo_last_checked_at = checked_at;
             let mut effects = Vec::new();
             push_status(
@@ -952,12 +987,16 @@ fn handle_geo_result(model: &mut Model, result: GeoResult) -> Vec<Effect> {
             );
             effects
         }
-        GeoResult::Error(err) => {
+        GeoResult::Error {
+            message,
+            retry_state,
+        } => {
+            model.geo_retry_state = retry_state;
             let mut effects = Vec::new();
             push_status(
                 &mut effects,
                 model,
-                crate::app::model::AppStatus::Error(err),
+                crate::app::model::AppStatus::Error(message),
             );
             effects
         }
@@ -1074,6 +1113,7 @@ mod tests {
             url: "http://example.com".to_string(),
             auto_update: SubscriptionAutoUpdate::Every1h,
             last_updated: None,
+            retry_state: None,
         });
         model.selected = 0; // subscription header
         let effects = handle_sources(&mut model, KeyEvent::from(KeyCode::Enter));
@@ -1094,6 +1134,7 @@ mod tests {
             url: "http://example.com".to_string(),
             auto_update: SubscriptionAutoUpdate::Every1h,
             last_updated: None,
+            retry_state: None,
         });
         model.selected = 0; // subscription header
         let effects = handle_sources(&mut model, KeyEvent::from(KeyCode::Enter));
@@ -1897,6 +1938,7 @@ mod tests {
             Msg::GeoMetadataRefreshed {
                 last_updated: Some("2026-06-15 08:00".to_string()),
                 last_checked_at: None,
+                retry_state: None,
             },
         );
         assert_eq!(model.geo_last_updated, Some("2026-06-15 08:00".to_string()));
@@ -1987,11 +2029,19 @@ mod tests {
     fn geo_result_error_broadcasts_state() {
         let mut model = model_with_profiles(vec![]);
         model.geo_updating = true;
+        let retry_state = crate::geo::GeoRetryState {
+            consecutive_failures: 1,
+            retry_at: Local::now() + chrono::Duration::minutes(1),
+        };
         let effects = update(
             &mut model,
-            Msg::GeoUpdated(GeoResult::Error("net fail".into())),
+            Msg::GeoUpdated(GeoResult::Error {
+                message: "net fail".into(),
+                retry_state: Some(retry_state),
+            }),
         );
         assert!(!model.geo_updating);
+        assert_eq!(model.geo_retry_state, Some(retry_state));
         assert_eq!(
             effects,
             vec![app_log_error("net fail"), Effect::BroadcastState]
@@ -2027,6 +2077,23 @@ mod tests {
         assert!(!geo_update_due(&model, now));
         model.geo_last_attempt_at = Some(now - chrono::Duration::try_hours(25).unwrap());
         assert!(geo_update_due(&model, now));
+    }
+
+    #[test]
+    fn geo_auto_update_honors_retry_deadline_before_normal_interval() {
+        let mut model = model_with_profiles(vec![]);
+        model.config.settings.geo_routing.set_region(GeoRegion::Ru);
+        model.config.settings.geo_routing.auto_update = GeoAutoUpdate::Every1d;
+        let now = Local::now();
+        model.geo_last_checked_at = Some(now - chrono::Duration::days(2));
+        model.geo_retry_state = Some(crate::geo::GeoRetryState {
+            consecutive_failures: 2,
+            retry_at: now + chrono::Duration::minutes(5),
+        });
+
+        assert!(!geo_update_due(&model, now));
+        assert!(!geo_update_due(&model, now + chrono::Duration::minutes(4)));
+        assert!(geo_update_due(&model, now + chrono::Duration::minutes(5)));
     }
 
     #[test]
@@ -2943,6 +3010,7 @@ mod tests {
             url: "http://example.com/other".to_string(),
             auto_update: SubscriptionAutoUpdate::Every1h,
             last_updated: None,
+            retry_state: None,
         });
 
         let new_sub_id = Uuid::new_v4();
@@ -2952,6 +3020,7 @@ mod tests {
             url: "http://example.com/new".to_string(),
             auto_update: SubscriptionAutoUpdate::Every1h,
             last_updated: None,
+            retry_state: None,
         });
 
         let fetched = Profile::new_vless(
@@ -2991,6 +3060,7 @@ mod tests {
             url: "http://example.com/sub".to_string(),
             auto_update: SubscriptionAutoUpdate::Every1h,
             last_updated: None,
+            retry_state: None,
         });
 
         let mut fetched = Profile::new_vless(
@@ -3050,12 +3120,15 @@ mod tests {
             url: "http://example.com/sub".to_string(),
             auto_update: SubscriptionAutoUpdate::Every1h,
             last_updated: Some(last_updated),
+            retry_state: None,
         });
 
-        let effects = handle_subscription_result(
+        let failed_at = Local::now();
+        let effects = handle_subscription_result_at(
             &mut model,
             sub_id,
             Err(crate::app::msg::IpcError::new("network down")),
+            failed_at,
         );
 
         assert!(!model.subscription_fetching);
@@ -3066,8 +3139,18 @@ mod tests {
             Some(last_updated)
         );
         assert_eq!(
+            model.config.subscriptions[0].retry_state,
+            Some(crate::config::profile::SubscriptionRetryState {
+                consecutive_failures: 1,
+                retry_at: failed_at + chrono::Duration::minutes(1),
+            })
+        );
+        assert_eq!(
             effects,
-            vec![app_log_error("Subscription failed: network down")]
+            vec![
+                Effect::SaveConfig,
+                app_log_error("Subscription failed: network down")
+            ]
         );
     }
 
@@ -3088,7 +3171,9 @@ mod tests {
             url: "http://example.com/sub".to_string(),
             auto_update: SubscriptionAutoUpdate::Every1h,
             last_updated: None,
+            retry_state: None,
         });
+        model.config.subscriptions[0].record_fetch_failure(Local::now());
 
         let new_profiles = vec![Profile::new_vless(
             "New".to_string(),
@@ -3112,6 +3197,7 @@ mod tests {
                 .last_updated
                 .is_some()
         );
+        assert!(model.config.subscriptions[0].retry_state.is_none());
         assert_eq!(
             effects,
             vec![
@@ -3138,6 +3224,7 @@ mod tests {
             url: "http://example.com/sub".to_string(),
             auto_update: SubscriptionAutoUpdate::Every1h,
             last_updated: None,
+            retry_state: None,
         });
         // Start with cursor on the subscription header.
         model.selected = crate::app::model::row_for_subscription_header(&model.config, 0);
@@ -3211,6 +3298,7 @@ mod tests {
             url: "http://example.com/sub".into(),
             auto_update: SubscriptionAutoUpdate::Off,
             last_updated: None,
+            retry_state: None,
         });
         model.connection = ConnectionState::Connected;
         model.active_profile_id = Some(old_profile_id);
@@ -3249,6 +3337,7 @@ mod tests {
             url: "http://example.com/sub".into(),
             auto_update: SubscriptionAutoUpdate::Off,
             last_updated: None,
+            retry_state: None,
         });
         assert!(queue_connect(&mut model, profile_id));
         model.connection = ConnectionState::ConnectPending;
@@ -3296,6 +3385,7 @@ mod tests {
             url: "http://example.com/sub".to_string(),
             auto_update: SubscriptionAutoUpdate::Every1h,
             last_updated: None,
+            retry_state: None,
         });
         model.selected = 0;
 
@@ -3326,8 +3416,10 @@ mod tests {
             url: "http://example.com".to_string(),
             auto_update: SubscriptionAutoUpdate::Every1h,
             last_updated: None,
+            retry_state: None,
         });
         model.selected = 0;
+        model.config.subscriptions[0].record_fetch_failure(Local::now());
         let effects = handle_sources(&mut model, KeyEvent::from(KeyCode::Char('i')));
         assert_eq!(
             model.config.subscriptions[0].auto_update,
@@ -3335,6 +3427,7 @@ mod tests {
         );
         assert!(effects.contains(&Effect::SaveConfig));
         assert!(effects.contains(&app_log_info("Subscription 'Sub' [🗘 12h]")));
+        assert!(model.config.subscriptions[0].retry_state.is_none());
     }
 
     #[test]
@@ -3346,6 +3439,7 @@ mod tests {
             url: "http://example.com/sub".to_string(),
             auto_update: SubscriptionAutoUpdate::Off,
             last_updated: None,
+            retry_state: None,
         });
         model.selected = 0;
 
@@ -3393,6 +3487,7 @@ mod tests {
             url: "http://example.com/sub".to_string(),
             auto_update: SubscriptionAutoUpdate::Every1h,
             last_updated: None,
+            retry_state: None,
         });
         // source_rows: [SubscriptionHeader(0), SubscriptionProfile { sub_idx: 0, profile_idx: 0 }]
         model.selected = 0;
@@ -3422,11 +3517,60 @@ mod tests {
             url: "http://example.com/sub".to_string(),
             auto_update: SubscriptionAutoUpdate::Every1h,
             last_updated: Some(chrono::Local::now() - chrono::Duration::try_hours(2).unwrap()),
+            retry_state: None,
         });
 
         let effects = check_due_subscriptions(&mut model);
 
         assert_eq!(effects, vec![Effect::UpdateSubscription { id: sub_id }]);
+        assert!(model.subscription_updates.contains(&sub_id));
+    }
+
+    #[test]
+    fn failed_subscription_waits_until_retry_deadline() {
+        let sub_id = Uuid::new_v4();
+        let now = Local::now();
+        let mut model = model_with_profiles(vec![]);
+        let mut sub = Subscription {
+            id: sub_id,
+            name: "Sub".to_string(),
+            url: "http://example.com/sub".to_string(),
+            auto_update: SubscriptionAutoUpdate::Every1h,
+            last_updated: Some(now - chrono::Duration::hours(2)),
+            retry_state: None,
+        };
+        sub.record_fetch_failure(now);
+        model.config.subscriptions.push(sub);
+
+        assert!(check_due_subscriptions_at(&mut model, now).is_empty());
+        assert!(
+            check_due_subscriptions_at(&mut model, now + chrono::Duration::seconds(59)).is_empty()
+        );
+        assert_eq!(
+            check_due_subscriptions_at(&mut model, now + chrono::Duration::minutes(1)),
+            vec![Effect::UpdateSubscription { id: sub_id }]
+        );
+    }
+
+    #[test]
+    fn manual_subscription_update_ignores_retry_deadline() {
+        let sub_id = Uuid::new_v4();
+        let mut model = model_with_profiles(vec![]);
+        let mut sub = Subscription {
+            id: sub_id,
+            name: "Sub".to_string(),
+            url: "http://example.com/sub".to_string(),
+            auto_update: SubscriptionAutoUpdate::Every1h,
+            last_updated: None,
+            retry_state: None,
+        };
+        sub.record_fetch_failure(Local::now());
+        model.config.subscriptions.push(sub);
+        model.selected = 0;
+
+        let effects = handle_sources(&mut model, KeyEvent::from(KeyCode::Char('u')));
+
+        assert!(effects.contains(&Effect::UpdateSubscription { id: sub_id }));
         assert!(model.subscription_updates.contains(&sub_id));
     }
 
@@ -3440,6 +3584,7 @@ mod tests {
             url: "http://example.com/sub".to_string(),
             auto_update: SubscriptionAutoUpdate::Every1h,
             last_updated: None,
+            retry_state: None,
         });
         model.config.settings.kill_switch = true;
 
@@ -3469,11 +3614,32 @@ mod tests {
             url: "http://example.com/sub".to_string(),
             auto_update: SubscriptionAutoUpdate::Every1h,
             last_updated: Some(chrono::Local::now()),
+            retry_state: None,
         });
 
         let effects = check_due_subscriptions(&mut model);
 
         assert!(effects.is_empty());
+        assert!(!model.subscription_updates.contains(&sub_id));
+    }
+
+    #[test]
+    fn disabled_subscription_does_not_retry_persisted_failure() {
+        let sub_id = Uuid::new_v4();
+        let now = Local::now();
+        let mut model = model_with_profiles(vec![]);
+        let mut sub = Subscription {
+            id: sub_id,
+            name: "Sub".to_string(),
+            url: "http://example.com/sub".to_string(),
+            auto_update: SubscriptionAutoUpdate::Off,
+            last_updated: None,
+            retry_state: None,
+        };
+        sub.record_fetch_failure(now - chrono::Duration::hours(1));
+        model.config.subscriptions.push(sub);
+
+        assert!(check_due_subscriptions_at(&mut model, now).is_empty());
         assert!(!model.subscription_updates.contains(&sub_id));
     }
 

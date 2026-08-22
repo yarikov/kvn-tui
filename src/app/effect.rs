@@ -21,6 +21,9 @@ pub enum Effect {
     /// pre-tunnel the source may be unreachable (kill switch or ISP blocks).
     DownloadServiceRuleSetsIfMissing,
     RefreshGeoLastUpdated,
+    ClearGeoRetryState {
+        region: crate::config::profile::GeoRegion,
+    },
     WriteState,
     SaveConfig,
     UpdateSubscription {
