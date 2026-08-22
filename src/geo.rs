@@ -140,7 +140,9 @@ struct GeoMetadata {
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     checked_at: HashMap<GeoRegion, DateTime<Local>>,
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
-    retry_states: HashMap<GeoRegion, GeoRetryState>,
+    region_retry_states: HashMap<GeoRegion, GeoRetryState>,
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    service_retry_states: HashMap<RoutedService, GeoRetryState>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -159,8 +161,10 @@ struct GeoMetadataRaw {
     updated_at: HashMap<GeoRegion, DateTime<Local>>,
     #[serde(default)]
     checked_at: HashMap<GeoRegion, DateTime<Local>>,
+    #[serde(default, alias = "retry_states")]
+    region_retry_states: HashMap<GeoRegion, GeoRetryState>,
     #[serde(default)]
-    retry_states: HashMap<GeoRegion, GeoRetryState>,
+    service_retry_states: HashMap<RoutedService, GeoRetryState>,
     #[serde(default)]
     geoip_ru_etag: Option<String>,
     #[serde(default)]
@@ -193,7 +197,8 @@ impl From<GeoMetadataRaw> for GeoMetadata {
             etags,
             updated_at: raw.updated_at,
             checked_at: raw.checked_at,
-            retry_states: raw.retry_states,
+            region_retry_states: raw.region_retry_states,
+            service_retry_states: raw.service_retry_states,
         }
     }
 }
@@ -369,7 +374,7 @@ impl GeoManager {
     pub fn retry_state(&self, region: GeoRegion) -> Option<GeoRetryState> {
         self.load_metadata()
             .ok()?
-            .retry_states
+            .region_retry_states
             .get(&region)
             .copied()
     }
@@ -386,7 +391,7 @@ impl GeoManager {
         let _guard = METADATA_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         let mut meta = self.load_metadata().unwrap_or_default();
         let failures = meta
-            .retry_states
+            .region_retry_states
             .get(&region)
             .map_or(1, |state| state.consecutive_failures.saturating_add(1));
         let delay = match failures {
@@ -399,7 +404,7 @@ impl GeoManager {
             consecutive_failures: failures,
             retry_at: now + chrono::Duration::minutes(delay),
         };
-        meta.retry_states.insert(region, state);
+        meta.region_retry_states.insert(region, state);
         self.save_metadata(&meta)?;
         Ok(state)
     }
@@ -407,7 +412,44 @@ impl GeoManager {
     pub fn clear_retry_state(&self, region: GeoRegion) -> Result<()> {
         let _guard = METADATA_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         let mut meta = self.load_metadata().unwrap_or_default();
-        if meta.retry_states.remove(&region).is_some() {
+        if meta.region_retry_states.remove(&region).is_some() {
+            self.save_metadata(&meta)?;
+        }
+        Ok(())
+    }
+
+    pub fn service_retry_states(&self) -> HashMap<RoutedService, GeoRetryState> {
+        self.load_metadata()
+            .map(|meta| meta.service_retry_states)
+            .unwrap_or_default()
+    }
+
+    pub fn record_service_failure(&self, service: RoutedService) -> Result<GeoRetryState> {
+        let _guard = METADATA_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let mut meta = self.load_metadata().unwrap_or_default();
+        let failures = meta
+            .service_retry_states
+            .get(&service)
+            .map_or(1, |state| state.consecutive_failures.saturating_add(1));
+        let delay = match failures {
+            1 => 1,
+            2 => 5,
+            3 => 15,
+            _ => 60,
+        };
+        let state = GeoRetryState {
+            consecutive_failures: failures,
+            retry_at: Local::now() + chrono::Duration::minutes(delay),
+        };
+        meta.service_retry_states.insert(service, state);
+        self.save_metadata(&meta)?;
+        Ok(state)
+    }
+
+    pub fn clear_service_retry_state(&self, service: RoutedService) -> Result<()> {
+        let _guard = METADATA_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let mut meta = self.load_metadata().unwrap_or_default();
+        if meta.service_retry_states.remove(&service).is_some() {
             self.save_metadata(&meta)?;
         }
         Ok(())
@@ -467,7 +509,12 @@ impl GeoManager {
     /// Returns typed result describing what happened.
     pub fn update_if_needed(&self, region: GeoRegion) -> Result<GeoResult> {
         if matches!(region, GeoRegion::Global) {
-            return Ok(GeoResult::UpToDate { checked_at: None });
+            return Ok(GeoResult::UpToDate {
+                checked_at: None,
+                retry_state: None,
+                service_retry_states: Default::default(),
+                warnings: Vec::new(),
+            });
         }
         let _guard = METADATA_LOCK.lock().unwrap_or_else(|p| p.into_inner());
 
@@ -480,6 +527,9 @@ impl GeoManager {
             self.save_metadata(&meta)?;
             return Ok(GeoResult::UpToDate {
                 checked_at: Some(checked_at),
+                retry_state: None,
+                service_retry_states: Default::default(),
+                warnings: Vec::new(),
             });
         }
 
@@ -497,10 +547,16 @@ impl GeoManager {
                 parts,
                 last_updated,
                 checked_at: self.last_checked_at(region).unwrap_or_else(Local::now),
+                retry_state: None,
+                service_retry_states: Default::default(),
+                warnings: Vec::new(),
             })
         } else {
             Ok(GeoResult::UpToDate {
                 checked_at: Some(Local::now()),
+                retry_state: None,
+                service_retry_states: Default::default(),
+                warnings: Vec::new(),
             })
         }
     }
@@ -863,7 +919,8 @@ mod tests {
             etags,
             updated_at,
             checked_at: HashMap::new(),
-            retry_states: HashMap::new(),
+            region_retry_states: HashMap::new(),
+            service_retry_states: HashMap::new(),
         };
         gm.save_metadata(&meta).unwrap();
         let loaded = gm.load_metadata().unwrap();
@@ -924,6 +981,31 @@ mod tests {
         gm.clear_retry_state(GeoRegion::Ru).unwrap();
         assert!(gm.retry_state(GeoRegion::Ru).is_none());
         assert_eq!(gm.retry_state(GeoRegion::Cn), Some(cn));
+    }
+
+    #[test]
+    fn service_retry_backoff_is_independent_from_regions_and_other_services() {
+        let _guard = crate::test_helpers::ENV_LOCK.lock().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        unsafe { std::env::set_var("XDG_CONFIG_HOME", dir.path()) };
+        let gm = GeoManager::new().unwrap();
+
+        gm.record_update_failure(GeoRegion::Ru).unwrap();
+        gm.record_service_failure(RoutedService::Steam).unwrap();
+        let steam = gm.record_service_failure(RoutedService::Steam).unwrap();
+        let telegram = gm.record_service_failure(RoutedService::Telegram).unwrap();
+
+        assert_eq!(steam.consecutive_failures, 2);
+        assert_eq!(telegram.consecutive_failures, 1);
+        assert_eq!(
+            gm.retry_state(GeoRegion::Ru).unwrap().consecutive_failures,
+            1
+        );
+        gm.clear_service_retry_state(RoutedService::Steam).unwrap();
+        let states = gm.service_retry_states();
+        assert!(!states.contains_key(&RoutedService::Steam));
+        assert_eq!(states[&RoutedService::Telegram], telegram);
+        assert!(gm.retry_state(GeoRegion::Ru).is_some());
     }
 
     #[test]

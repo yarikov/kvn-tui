@@ -34,11 +34,13 @@ pub fn update(model: &mut Model, msg: Msg) -> Vec<Effect> {
             last_updated,
             last_checked_at,
             retry_state,
+            service_retry_states,
         } => {
             model.geo_last_updated = last_updated;
             model.geo_last_checked_at = last_checked_at;
             model.geo_last_attempt_at = None;
             model.geo_retry_state = retry_state;
+            model.service_retry_states = service_retry_states;
             vec![Effect::BroadcastState]
         }
         Msg::SystemResumed => {
@@ -117,7 +119,8 @@ pub fn update(model: &mut Model, msg: Msg) -> Vec<Effect> {
             effects
         }
         Msg::SubscriptionFetched { id, result } => handle_subscription_result(model, id, result),
-        Msg::ServiceRuleSetsReady => {
+        Msg::ServiceRuleSetsReady { retry_states } => {
+            model.service_retry_states = retry_states;
             // The post-connect backstop download also reports here; without
             // a pending commit there is nothing to do.
             if !model.pending_service_reconnect {
@@ -508,10 +511,31 @@ fn connection_settings_changed(
 fn handle_tick(model: &mut Model) -> Vec<Effect> {
     let mut effects = Vec::new();
 
-    if geo_update_due(model, Local::now()) {
+    let now = Local::now();
+    if geo_update_due(model, now) {
         model.geo_updating = true;
-        model.geo_last_attempt_at = Some(Local::now());
+        model.geo_last_attempt_at = Some(now);
         effects.push(Effect::DownloadGeo);
+    } else if !model.geo_updating && model.connection == ConnectionState::Connected {
+        let due_services: Vec<_> = model
+            .config
+            .settings
+            .geo_routing
+            .enabled_services()
+            .into_iter()
+            .filter(|service| {
+                model
+                    .service_retry_states
+                    .get(service)
+                    .is_some_and(|state| now >= state.retry_at)
+            })
+            .collect();
+        if !due_services.is_empty() {
+            model.geo_updating = true;
+            effects.push(Effect::RetryServiceRuleSets {
+                services: due_services,
+            });
+        }
     }
 
     // Connection handling
@@ -948,8 +972,12 @@ fn handle_geo_result(model: &mut Model, result: GeoResult) -> Vec<Effect> {
             parts,
             last_updated,
             checked_at,
+            retry_state,
+            service_retry_states,
+            warnings,
         } => {
-            model.geo_retry_state = None;
+            model.geo_retry_state = retry_state;
+            model.service_retry_states = service_retry_states;
             model.geo_last_updated = last_updated;
             model.geo_last_checked_at = Some(checked_at);
             let mut log_effects = Vec::new();
@@ -961,11 +989,18 @@ fn handle_geo_result(model: &mut Model, result: GeoResult) -> Vec<Effect> {
                 });
                 model.logs.push_back(text);
             }
-            push_status(
-                &mut log_effects,
-                model,
-                crate::app::model::AppStatus::Info("Geo databases updated".into()),
-            );
+            for warning in &warnings {
+                log_effects.push(Effect::AppendAppLog {
+                    level: "ERROR".to_string(),
+                    message: format!("Geo batch partial failure: {warning}"),
+                });
+            }
+            let status = if warnings.is_empty() {
+                AppStatus::Info("Geo databases updated".into())
+            } else {
+                AppStatus::Error(format!("Geo updated partially: {}", warnings.join("; ")))
+            };
+            push_status(&mut log_effects, model, status);
             if model.connection == ConnectionState::Connected
                 && let Some(active_id) = model.active_profile_id
                 && queue_connect(model, active_id)
@@ -976,28 +1011,54 @@ fn handle_geo_result(model: &mut Model, result: GeoResult) -> Vec<Effect> {
             }
             log_effects
         }
-        GeoResult::UpToDate { checked_at } => {
-            model.geo_retry_state = None;
+        GeoResult::UpToDate {
+            checked_at,
+            retry_state,
+            service_retry_states,
+            warnings,
+        } => {
+            model.geo_retry_state = retry_state;
+            model.service_retry_states = service_retry_states;
             model.geo_last_checked_at = checked_at;
             let mut effects = Vec::new();
-            push_status(
-                &mut effects,
-                model,
-                crate::app::model::AppStatus::Info("Geo databases are up to date".into()),
-            );
+            let status = if warnings.is_empty() {
+                AppStatus::Info("Geo databases are up to date".into())
+            } else {
+                AppStatus::Error(format!(
+                    "Service rule-set update failed: {}",
+                    warnings.join("; ")
+                ))
+            };
+            push_status(&mut effects, model, status);
             effects
         }
         GeoResult::Error {
             message,
             retry_state,
+            service_retry_states,
+            updated_parts,
         } => {
             model.geo_retry_state = retry_state;
+            model.service_retry_states = service_retry_states;
             let mut effects = Vec::new();
+            let has_updates = !updated_parts.is_empty();
             push_status(
                 &mut effects,
                 model,
                 crate::app::model::AppStatus::Error(message),
             );
+            for part in updated_parts {
+                effects.push(Effect::AppendAppLog {
+                    level: "INFO".to_string(),
+                    message: format!("Updated: {part}"),
+                });
+            }
+            if has_updates
+                && model.connection == ConnectionState::Connected
+                && let Some(active_id) = model.active_profile_id
+            {
+                queue_connect(model, active_id);
+            }
             effects
         }
     };
@@ -1939,6 +2000,7 @@ mod tests {
                 last_updated: Some("2026-06-15 08:00".to_string()),
                 last_checked_at: None,
                 retry_state: None,
+                service_retry_states: Default::default(),
             },
         );
         assert_eq!(model.geo_last_updated, Some("2026-06-15 08:00".to_string()));
@@ -1970,6 +2032,9 @@ mod tests {
                 parts: vec!["geoip".into()],
                 last_updated: Some("2026-05-31 13:41".to_string()),
                 checked_at: Local::now(),
+                retry_state: None,
+                service_retry_states: Default::default(),
+                warnings: Vec::new(),
             }),
         );
         assert!(!model.geo_updating);
@@ -1999,6 +2064,9 @@ mod tests {
                 parts: vec!["geoip".into()],
                 last_updated: None,
                 checked_at: Local::now(),
+                retry_state: None,
+                service_retry_states: Default::default(),
+                warnings: Vec::new(),
             }),
         );
 
@@ -2013,6 +2081,9 @@ mod tests {
             &mut model,
             Msg::GeoUpdated(GeoResult::UpToDate {
                 checked_at: Some(Local::now()),
+                retry_state: None,
+                service_retry_states: Default::default(),
+                warnings: Vec::new(),
             }),
         );
         assert!(!model.geo_updating);
@@ -2038,6 +2109,8 @@ mod tests {
             Msg::GeoUpdated(GeoResult::Error {
                 message: "net fail".into(),
                 retry_state: Some(retry_state),
+                service_retry_states: Default::default(),
+                updated_parts: Vec::new(),
             }),
         );
         assert!(!model.geo_updating);
@@ -2094,6 +2167,32 @@ mod tests {
         assert!(!geo_update_due(&model, now));
         assert!(!geo_update_due(&model, now + chrono::Duration::minutes(4)));
         assert!(geo_update_due(&model, now + chrono::Duration::minutes(5)));
+    }
+
+    #[test]
+    fn service_retry_is_independent_from_region_schedule() {
+        let mut model = model_with_profiles(vec![]);
+        model.connection = ConnectionState::Connected;
+        model.config.settings.geo_routing.set_region(GeoRegion::Ru);
+        model.config.settings.geo_routing.auto_update = GeoAutoUpdate::Off;
+        model.config.settings.geo_routing.service_routes.insert(
+            crate::config::profile::RoutedService::Telegram,
+            crate::config::profile::ServiceRoute::Proxy,
+        );
+        model.service_retry_states.insert(
+            crate::config::profile::RoutedService::Telegram,
+            crate::geo::GeoRetryState {
+                consecutive_failures: 2,
+                retry_at: Local::now() - chrono::Duration::seconds(1),
+            },
+        );
+
+        let effects = handle_tick(&mut model);
+
+        assert!(effects.contains(&Effect::RetryServiceRuleSets {
+            services: vec![crate::config::profile::RoutedService::Telegram],
+        }));
+        assert!(!effects.contains(&Effect::DownloadGeo));
     }
 
     #[test]
@@ -2639,7 +2738,12 @@ mod tests {
         model.pending_service_reconnect = true;
         // Cursor rests on profile B — the reconnect must still target A.
         model.select_next();
-        update(&mut model, Msg::ServiceRuleSetsReady);
+        update(
+            &mut model,
+            Msg::ServiceRuleSetsReady {
+                retry_states: Default::default(),
+            },
+        );
         assert!(!model.pending_service_reconnect, "flag is consumed");
         assert_eq!(model.connection, ConnectionState::Connecting);
         assert_eq!(model.connecting_profile_id, Some(active_id));
@@ -2663,7 +2767,12 @@ mod tests {
         let mut model = model_with_profiles(vec![profile.clone()]);
         model.connection = ConnectionState::Connected;
         model.active_profile_id = Some(profile.id);
-        let effects = update(&mut model, Msg::ServiceRuleSetsReady);
+        let effects = update(
+            &mut model,
+            Msg::ServiceRuleSetsReady {
+                retry_states: Default::default(),
+            },
+        );
         assert!(effects.is_empty());
         assert_eq!(model.connection, ConnectionState::Connected);
     }
@@ -2675,7 +2784,12 @@ mod tests {
         model.connection = ConnectionState::Idle;
         model.active_profile_id = Some(profile.id);
         model.pending_service_reconnect = true;
-        let effects = update(&mut model, Msg::ServiceRuleSetsReady);
+        let effects = update(
+            &mut model,
+            Msg::ServiceRuleSetsReady {
+                retry_states: Default::default(),
+            },
+        );
         assert!(!model.pending_service_reconnect);
         assert!(!effects.iter().any(|e| matches!(e, Effect::Connect { .. })));
         assert_eq!(model.connection, ConnectionState::Idle);
@@ -2689,7 +2803,12 @@ mod tests {
         // Active profile id points at a profile that no longer exists.
         model.active_profile_id = Some(uuid::Uuid::new_v4());
         model.pending_service_reconnect = true;
-        let effects = update(&mut model, Msg::ServiceRuleSetsReady);
+        let effects = update(
+            &mut model,
+            Msg::ServiceRuleSetsReady {
+                retry_states: Default::default(),
+            },
+        );
         assert!(!model.pending_service_reconnect);
         assert!(!effects.iter().any(|e| matches!(e, Effect::Connect { .. })));
         // Never drop to Connecting without a resolvable target — that path

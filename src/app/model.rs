@@ -199,6 +199,7 @@ pub struct Model {
     /// check from being retried on every 250 ms tick.
     pub geo_last_attempt_at: Option<DateTime<Local>>,
     pub geo_retry_state: Option<crate::geo::GeoRetryState>,
+    pub service_retry_states: HashMap<RoutedService, crate::geo::GeoRetryState>,
     /// Latest traffic stats sample, applied either by the daemon (after a
     /// Clash-API fetch) or by the TUI client (from a `StateSnapshot`).
     pub traffic: TrafficStats,
@@ -329,7 +330,10 @@ impl Model {
         let geo_manager = crate::geo::GeoManager::new().ok();
         let geo_last_updated = geo_manager.as_ref().and_then(|g| g.last_updated(region));
         let geo_last_checked_at = geo_manager.as_ref().and_then(|g| g.last_checked_at(region));
-        let geo_retry_state = geo_manager.and_then(|g| g.retry_state(region));
+        let geo_retry_state = geo_manager.as_ref().and_then(|g| g.retry_state(region));
+        let service_retry_states = geo_manager
+            .map(|g| g.service_retry_states())
+            .unwrap_or_default();
 
         let mut model = Self {
             overlay: Overlay::None,
@@ -361,6 +365,7 @@ impl Model {
             geo_last_checked_at,
             geo_last_attempt_at: None,
             geo_retry_state,
+            service_retry_states,
             traffic: TrafficStats::default(),
             last_traffic_sample_at_ms: 0,
             traffic_request_id: 0,
@@ -404,7 +409,10 @@ impl Model {
         let geo_manager = crate::geo::GeoManager::new().ok();
         let geo_last_updated = geo_manager.as_ref().and_then(|g| g.last_updated(region));
         let geo_last_checked_at = geo_manager.as_ref().and_then(|g| g.last_checked_at(region));
-        let geo_retry_state = geo_manager.and_then(|g| g.retry_state(region));
+        let geo_retry_state = geo_manager.as_ref().and_then(|g| g.retry_state(region));
+        let service_retry_states = geo_manager
+            .map(|g| g.service_retry_states())
+            .unwrap_or_default();
 
         let mut model = Self {
             overlay: Overlay::None,
@@ -436,6 +444,7 @@ impl Model {
             geo_last_checked_at,
             geo_last_attempt_at: None,
             geo_retry_state,
+            service_retry_states,
             traffic: TrafficStats::default(),
             last_traffic_sample_at_ms: 0,
             traffic_request_id: 0,
@@ -669,6 +678,7 @@ impl Model {
             geo_last_checked_at: None,
             geo_last_attempt_at: None,
             geo_retry_state: None,
+            service_retry_states: HashMap::new(),
             traffic: TrafficStats::default(),
             last_traffic_sample_at_ms: 0,
             traffic_request_id: 0,

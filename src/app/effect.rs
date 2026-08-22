@@ -20,6 +20,9 @@ pub enum Effect {
     /// successful connect so the download rides the freshly opened tunnel —
     /// pre-tunnel the source may be unreachable (kill switch or ISP blocks).
     DownloadServiceRuleSetsIfMissing,
+    RetryServiceRuleSets {
+        services: Vec<crate::config::profile::RoutedService>,
+    },
     RefreshGeoLastUpdated,
     ClearGeoRetryState {
         region: crate::config::profile::GeoRegion,

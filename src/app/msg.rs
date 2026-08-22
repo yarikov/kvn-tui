@@ -52,6 +52,10 @@ pub enum Msg {
         last_updated: Option<String>,
         last_checked_at: Option<chrono::DateTime<chrono::Local>>,
         retry_state: Option<crate::geo::GeoRetryState>,
+        service_retry_states: std::collections::HashMap<
+            crate::config::profile::RoutedService,
+            crate::geo::GeoRetryState,
+        >,
     },
     SystemResumed,
     Connected {
@@ -79,7 +83,12 @@ pub enum Msg {
     /// that service"). Consumed by the reducer to run the reconnect that a
     /// service-routing commit deferred until the rule-sets were fetched
     /// through the still-active tunnel (`Model::pending_service_reconnect`).
-    ServiceRuleSetsReady,
+    ServiceRuleSetsReady {
+        retry_states: std::collections::HashMap<
+            crate::config::profile::RoutedService,
+            crate::geo::GeoRetryState,
+        >,
+    },
     SubscriptionFetched {
         id: Uuid,
         result: Result<Vec<crate::config::profile::Profile>, IpcError>,
@@ -122,13 +131,30 @@ pub enum GeoResult {
         parts: Vec<String>,
         last_updated: Option<String>,
         checked_at: chrono::DateTime<chrono::Local>,
+        retry_state: Option<crate::geo::GeoRetryState>,
+        service_retry_states: std::collections::HashMap<
+            crate::config::profile::RoutedService,
+            crate::geo::GeoRetryState,
+        >,
+        warnings: Vec<String>,
     },
     UpToDate {
         checked_at: Option<chrono::DateTime<chrono::Local>>,
+        retry_state: Option<crate::geo::GeoRetryState>,
+        service_retry_states: std::collections::HashMap<
+            crate::config::profile::RoutedService,
+            crate::geo::GeoRetryState,
+        >,
+        warnings: Vec<String>,
     },
     Error {
         message: String,
         retry_state: Option<crate::geo::GeoRetryState>,
+        service_retry_states: std::collections::HashMap<
+            crate::config::profile::RoutedService,
+            crate::geo::GeoRetryState,
+        >,
+        updated_parts: Vec<String>,
     },
 }
 

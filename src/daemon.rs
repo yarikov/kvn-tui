@@ -89,6 +89,7 @@ fn run_loop(
                 Effect::Connect { .. }
                     | Effect::Disconnect
                     | Effect::DownloadGeo
+                    | Effect::RetryServiceRuleSets { .. }
                     | Effect::WriteState
                     | Effect::SaveConfig
                     | Effect::UpdateSubscription { .. }
@@ -281,6 +282,7 @@ fn execute_daemon_effect(
             let services = model.config.settings.geo_routing.enabled_services();
             let retry_enabled = model.config.settings.geo_routing.auto_update
                 != crate::config::profile::GeoAutoUpdate::Off;
+            let existing_service_retries = model.service_retry_states.clone();
             thread::spawn(move || {
                 let gm = match crate::geo::GeoManager::new() {
                     Ok(gm) => gm,
@@ -288,19 +290,17 @@ fn execute_daemon_effect(
                         let _ = tx.send(Msg::GeoUpdated(GeoResult::Error {
                             message: e.to_string(),
                             retry_state: None,
+                            service_retry_states: existing_service_retries,
+                            updated_parts: Vec::new(),
                         }));
                         return;
                     }
                 };
+                let regional = gm.update_if_needed(region);
+                let services = refresh_service_rule_sets(&gm, &services);
                 let result =
-                    finalize_geo_result(&gm, region, gm.update_if_needed(region), retry_enabled);
+                    finalize_geo_result(&gm, region, regional, services, retry_enabled, true);
                 let _ = tx.send(Msg::GeoUpdated(result));
-                // Service rule-sets refresh only after the regional result is
-                // reported: they can take minutes on a slow link and must not
-                // pin the geo_updating spinner or delay further updates.
-                // Their failures are non-fatal — the route builder simply
-                // omits a service's rules until its files appear.
-                refresh_service_rule_sets(&gm, &services);
             });
         }
         Effect::DownloadServiceRuleSetsIfMissing => {
@@ -315,19 +315,60 @@ fn execute_daemon_effect(
             let services = model.config.settings.geo_routing.enabled_services();
             let tx = tx.clone();
             thread::spawn(move || {
-                match crate::geo::GeoManager::new() {
+                let retry_states = match crate::geo::GeoManager::new() {
                     Ok(gm) => {
                         let missing: Vec<_> = services
                             .into_iter()
                             .filter(|s| !gm.has_service_databases(*s))
                             .collect();
                         refresh_service_rule_sets(&gm, &missing);
+                        gm.service_retry_states()
                     }
                     Err(e) => {
                         tracing::warn!("Failed to init geo manager for service rule-sets: {e:#}");
+                        Default::default()
                     }
-                }
-                let _ = tx.send(Msg::ServiceRuleSetsReady);
+                };
+                let _ = tx.send(Msg::ServiceRuleSetsReady { retry_states });
+            });
+        }
+        Effect::RetryServiceRuleSets { services } => {
+            model.geo_updating = true;
+            let tx = tx.clone();
+            let region = model
+                .config
+                .settings
+                .geo_routing
+                .current_region
+                .unwrap_or(crate::config::profile::GeoRegion::Global);
+            let existing_service_retries = model.service_retry_states.clone();
+            thread::spawn(move || {
+                let result = match crate::geo::GeoManager::new() {
+                    Ok(gm) => {
+                        let checked_at = gm.last_checked_at(region);
+                        let services = refresh_service_rule_sets(&gm, &services);
+                        finalize_geo_result(
+                            &gm,
+                            region,
+                            Ok(GeoResult::UpToDate {
+                                checked_at,
+                                retry_state: gm.retry_state(region),
+                                service_retry_states: gm.service_retry_states(),
+                                warnings: Vec::new(),
+                            }),
+                            services,
+                            false,
+                            false,
+                        )
+                    }
+                    Err(e) => GeoResult::Error {
+                        message: e.to_string(),
+                        retry_state: None,
+                        service_retry_states: existing_service_retries,
+                        updated_parts: Vec::new(),
+                    },
+                };
+                let _ = tx.send(Msg::GeoUpdated(result));
             });
         }
         Effect::RefreshGeoLastUpdated => {
@@ -342,11 +383,15 @@ fn execute_daemon_effect(
                 let manager = crate::geo::GeoManager::new().ok();
                 let last_updated = manager.as_ref().and_then(|g| g.last_updated(region));
                 let last_checked_at = manager.as_ref().and_then(|g| g.last_checked_at(region));
-                let retry_state = manager.and_then(|g| g.retry_state(region));
+                let retry_state = manager.as_ref().and_then(|g| g.retry_state(region));
+                let service_retry_states = manager
+                    .map(|g| g.service_retry_states())
+                    .unwrap_or_default();
                 let _ = tx.send(Msg::GeoMetadataRefreshed {
                     last_updated,
                     last_checked_at,
                     retry_state,
+                    service_retry_states,
                 });
             });
         }
@@ -375,19 +420,26 @@ fn execute_daemon_effect(
                             let _ = gm.clear_retry_state(region);
                             GeoResult::UpToDate {
                                 checked_at: gm.last_checked_at(region),
+                                retry_state: None,
+                                service_retry_states: gm.service_retry_states(),
+                                warnings: Vec::new(),
                             }
                         } else {
                             finalize_geo_result(
                                 &gm,
                                 region,
                                 gm.update_if_needed(region),
+                                ServiceRefreshResult::default(),
                                 retry_enabled,
+                                true,
                             )
                         }
                     }
                     Err(e) => GeoResult::Error {
                         message: e.to_string(),
                         retry_state: None,
+                        service_retry_states: Default::default(),
+                        updated_parts: Vec::new(),
                     },
                 };
                 let _ = tx.send(Msg::GeoUpdated(result));
@@ -613,34 +665,103 @@ fn socks5_connect_latency(addr: &str) -> anyhow::Result<u64> {
 fn refresh_service_rule_sets(
     gm: &crate::geo::GeoManager,
     services: &[crate::config::profile::RoutedService],
-) {
+) -> ServiceRefreshResult {
+    let mut result = ServiceRefreshResult::default();
     for service in services {
-        if let Err(e) = gm.update_service_if_needed(*service) {
-            tracing::warn!("Failed to update {} rule-sets: {e:#}", service.label());
+        match gm.update_service_if_needed(*service) {
+            Ok(updated) => {
+                if let Err(e) = gm.clear_service_retry_state(*service) {
+                    tracing::warn!("Failed to clear {} retry state: {e}", service.label());
+                }
+                if updated {
+                    result
+                        .updated_parts
+                        .push(format!("service-{}", service.label().to_lowercase()));
+                }
+            }
+            Err(e) => {
+                let message = format!("{} rule-sets: {e:#}", service.label());
+                tracing::warn!("Failed to update {message}");
+                let _ = gm.record_service_failure(*service);
+                result.errors.push(message);
+            }
         }
     }
+    result
+}
+
+#[derive(Default)]
+struct ServiceRefreshResult {
+    updated_parts: Vec<String>,
+    errors: Vec<String>,
 }
 
 fn finalize_geo_result(
     manager: &crate::geo::GeoManager,
     region: crate::config::profile::GeoRegion,
-    result: anyhow::Result<GeoResult>,
+    regional: anyhow::Result<GeoResult>,
+    services: ServiceRefreshResult,
     retry_enabled: bool,
+    update_region: bool,
 ) -> GeoResult {
-    match result {
-        Ok(result) => {
-            if let Err(e) = manager.clear_retry_state(region) {
-                tracing::warn!("Failed to clear geo retry state: {e}");
-            }
-            result
+    let regional_failed = regional.is_err();
+    let retry_state = if !update_region {
+        manager.retry_state(region)
+    } else if regional_failed && retry_enabled {
+        manager.record_update_failure(region).ok()
+    } else {
+        if !regional_failed && let Err(e) = manager.clear_retry_state(region) {
+            tracing::warn!("Failed to clear geo retry state: {e}");
         }
-        Err(e) => {
-            let retry_state = retry_enabled
-                .then(|| manager.record_update_failure(region).ok())
-                .flatten();
-            GeoResult::Error {
-                message: e.to_string(),
+        None
+    };
+    let service_retry_states = manager.service_retry_states();
+
+    match regional {
+        Ok(GeoResult::Updated {
+            mut parts,
+            last_updated,
+            checked_at,
+            ..
+        }) => {
+            parts.extend(services.updated_parts);
+            GeoResult::Updated {
+                parts,
+                last_updated,
+                checked_at,
                 retry_state,
+                service_retry_states,
+                warnings: services.errors,
+            }
+        }
+        Ok(GeoResult::UpToDate { checked_at, .. }) if !services.updated_parts.is_empty() => {
+            GeoResult::Updated {
+                parts: services.updated_parts,
+                last_updated: manager.last_updated(region),
+                checked_at: checked_at.unwrap_or_else(chrono::Local::now),
+                retry_state,
+                service_retry_states,
+                warnings: services.errors,
+            }
+        }
+        Ok(GeoResult::UpToDate { checked_at, .. }) => GeoResult::UpToDate {
+            checked_at,
+            retry_state,
+            service_retry_states,
+            warnings: services.errors,
+        },
+        Ok(GeoResult::Error { .. }) => unreachable!("GeoManager never returns GeoResult::Error"),
+        Err(e) => {
+            let mut message = e.to_string();
+            if !services.errors.is_empty() {
+                message.push_str("; ");
+                message.push_str(&services.errors.join("; "));
+            }
+            GeoResult::Error {
+                message,
+                retry_state,
+                service_retry_states,
+                updated_parts: services.updated_parts,
             }
         }
     }
@@ -889,8 +1010,11 @@ fn spawn_signal_handler(tx: Sender<Msg>) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{ProcessSlot, handshake_protocols, lock_process_slot, poll_process_exit};
-    use crate::app::msg::Msg;
+    use super::{
+        ProcessSlot, ServiceRefreshResult, finalize_geo_result, handshake_protocols,
+        lock_process_slot, poll_process_exit,
+    };
+    use crate::app::msg::{GeoResult, Msg};
     use crate::config::profile::Protocol;
     use crate::singbox::process_handle::ProcessHandle;
     use std::sync::{Arc, Mutex};
@@ -957,5 +1081,89 @@ mod tests {
             handle: None,
         }));
         assert!(poll_process_exit(&slot).is_none());
+    }
+
+    #[test]
+    fn geo_batch_keeps_updates_and_schedules_retry_after_service_failure() {
+        let _guard = crate::test_helpers::ENV_LOCK.lock().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        unsafe { std::env::set_var("XDG_CONFIG_HOME", dir.path()) };
+        let manager = crate::geo::GeoManager::new().unwrap();
+        let checked_at = chrono::Local::now();
+        let regional = Ok(GeoResult::Updated {
+            parts: vec!["geoip-ru".into()],
+            last_updated: None,
+            checked_at,
+            retry_state: None,
+            service_retry_states: Default::default(),
+            warnings: Vec::new(),
+        });
+        let services = ServiceRefreshResult {
+            updated_parts: vec!["service-steam".into()],
+            errors: vec!["Telegram rule-sets: unavailable".into()],
+        };
+        manager
+            .record_service_failure(crate::config::profile::RoutedService::Telegram)
+            .unwrap();
+
+        let result = finalize_geo_result(
+            &manager,
+            crate::config::profile::GeoRegion::Ru,
+            regional,
+            services,
+            true,
+            true,
+        );
+
+        let GeoResult::Updated {
+            parts,
+            retry_state,
+            service_retry_states,
+            warnings,
+            ..
+        } = result
+        else {
+            panic!("expected a partial updated result");
+        };
+        assert_eq!(parts, vec!["geoip-ru", "service-steam"]);
+        assert_eq!(warnings, vec!["Telegram rule-sets: unavailable"]);
+        assert!(retry_state.is_none());
+        assert_eq!(
+            service_retry_states[&crate::config::profile::RoutedService::Telegram]
+                .consecutive_failures,
+            1
+        );
+    }
+
+    #[test]
+    fn geo_batch_reports_service_update_when_region_failed() {
+        let _guard = crate::test_helpers::ENV_LOCK.lock().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        unsafe { std::env::set_var("XDG_CONFIG_HOME", dir.path()) };
+        let manager = crate::geo::GeoManager::new().unwrap();
+        let services = ServiceRefreshResult {
+            updated_parts: vec!["service-steam".into()],
+            errors: Vec::new(),
+        };
+
+        let result = finalize_geo_result(
+            &manager,
+            crate::config::profile::GeoRegion::Ru,
+            Err(anyhow::anyhow!("regional unavailable")),
+            services,
+            true,
+            true,
+        );
+
+        let GeoResult::Error {
+            updated_parts,
+            retry_state,
+            ..
+        } = result
+        else {
+            panic!("expected a partial error result");
+        };
+        assert_eq!(updated_parts, vec!["service-steam"]);
+        assert_eq!(retry_state.unwrap().consecutive_failures, 1);
     }
 }
