@@ -280,31 +280,36 @@ impl Model {
         };
         let default_selected = 0;
 
-        // Detect a background session left by a previous "hide" (q) action.
-        let background = crate::services::waybar::detect_background_session();
-        if background.is_none() {
-            // Reset state to disconnected on startup in case of previous crash.
-            crate::services::waybar::clear_state();
-        }
+        // A live PID in state.json can only be left by a crashed daemon: q
+        // detaches the TUI but deliberately leaves the daemon itself running.
+        // Stop the orphan before a normal auto-connect can launch a competing
+        // sing-box instance for the same TUN and API ports.
+        let stale_cleanup_failed = match crate::services::waybar::cleanup_stale_session() {
+            Ok(stale_pid) => {
+                if let Some(pid) = stale_pid {
+                    tracing::warn!("Stopped stale sing-box process {pid} during crash recovery");
+                }
+                crate::services::waybar::clear_state();
+                false
+            }
+            Err(e) => {
+                let msg = format!("Failed to clean up stale VPN process: {e:#}");
+                tracing::error!("{msg}");
+                startup_error = Some(match startup_error.take() {
+                    Some(previous) => format!("{previous}; {msg}"),
+                    None => msg,
+                });
+                true
+            }
+        };
 
-        let (mut connection, selected, mut status, bg_pid, bg_id) =
-            if let Some((pid, profile_id, ref profile_name)) = background {
-                let idx = config
-                    .profiles
-                    .iter()
-                    .position(|p| p.id == profile_id)
-                    .unwrap_or(0);
-                (
-                    ConnectionState::Connected,
-                    row_for_profile(&config, idx),
-                    AppStatus::Info(format!("Connected to {} (background)", profile_name)),
-                    Some(pid),
-                    Some(profile_id),
-                )
-            } else {
-                let (c, s, st) = Self::resolve_startup_state(&config, default_selected);
-                (c, s, st, None, None)
-            };
+        let (mut connection, selected, mut status) =
+            Self::resolve_startup_state(&config, default_selected);
+        if stale_cleanup_failed {
+            // Never launch a second sing-box while the stale process may still
+            // own the TUN interface or Clash API port.
+            connection = ConnectionState::Idle;
+        }
 
         // Block auto-connect until the user has picked a geo region.
         if config.settings.geo_routing.current_region.is_none() {
@@ -330,8 +335,8 @@ impl Model {
             config,
             selected,
             status: AppStatus::Info(String::new()),
-            singbox_pid: bg_pid,
-            active_profile_id: bg_id,
+            singbox_pid: None,
+            active_profile_id: None,
             connecting_profile_id,
             connect_attempt_id: u64::from(connecting_profile_id.is_some()),
             kill_switch_pending: None,

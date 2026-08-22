@@ -67,13 +67,14 @@ impl LogTailer {
                     if line.trim().is_empty() {
                         continue;
                     }
-                    let ts = parse_timestamp(&line);
-                    let formatted = if let Some(dt) = ts {
-                        format!("{} {}{}", tag, dt.format("%H:%M:%S"), &line[25..])
+                    let parsed = parse_timestamp(&line);
+                    let formatted = if let Some((dt, prefix_len)) = parsed {
+                        let remainder = line.get(prefix_len..).unwrap_or_default();
+                        format!("{} {}{}", tag, dt.format("%H:%M:%S"), remainder)
                     } else {
                         format!("{} {}", tag, line)
                     };
-                    let sort_key = ts.unwrap_or_else(|| {
+                    let sort_key = parsed.map(|(dt, _)| dt).unwrap_or_else(|| {
                         FixedOffset::east_opt(0)
                             .unwrap()
                             .from_utc_datetime(&Local::now().naive_local())
@@ -92,20 +93,21 @@ impl LogTailer {
 }
 
 /// Parse a sing-box style timestamp from the start of a line.
-/// Returns `None` if no timestamp is found.
-fn parse_timestamp(line: &str) -> Option<DateTime<FixedOffset>> {
-    if line.len() >= 25 {
-        let prefix = &line[..25];
-        if let Ok(dt) = DateTime::parse_from_str(prefix, "%z %Y-%m-%d %H:%M:%S") {
-            return Some(dt);
-        }
-        // Try with milliseconds: +0300 2026-06-09 21:28:34.123
-        if line.len() >= 29 {
-            let prefix_ms = &line[..29];
-            if let Ok(dt) = DateTime::parse_from_str(prefix_ms, "%z %Y-%m-%d %H:%M:%S%.3f") {
-                return Some(dt);
-            }
-        }
+/// Returns the parsed value and the byte length of the timestamp prefix.
+fn parse_timestamp(line: &str) -> Option<(DateTime<FixedOffset>, usize)> {
+    // Try the longer form first. Its first 25 bytes are also a valid seconds
+    // timestamp, so reversing this order would leave `.123` in the rendered
+    // message. `str::get` makes malformed Unicode boundaries a normal miss
+    // instead of a slicing panic.
+    if let Some(prefix) = line.get(..29)
+        && let Ok(dt) = DateTime::parse_from_str(prefix, "%z %Y-%m-%d %H:%M:%S%.3f")
+    {
+        return Some((dt, 29));
+    }
+    if let Some(prefix) = line.get(..25)
+        && let Ok(dt) = DateTime::parse_from_str(prefix, "%z %Y-%m-%d %H:%M:%S")
+    {
+        return Some((dt, 25));
     }
     None
 }
@@ -206,25 +208,50 @@ mod tests {
     fn parse_timestamp_valid() {
         use chrono::Datelike;
         let line = "+0300 2026-06-09 21:28:34 INFO hello";
-        let dt = parse_timestamp(line).unwrap();
+        let (dt, prefix_len) = parse_timestamp(line).unwrap();
         assert_eq!(dt.year(), 2026);
         assert_eq!(dt.month(), 6);
         assert_eq!(dt.day(), 9);
+        assert_eq!(prefix_len, 25);
     }
 
     #[test]
     fn parse_timestamp_from_real_singbox_line() {
         use chrono::Timelike;
         let line = "+0300 2026-06-10 09:35:55 DEBUG [4216981911 0ms] router: match[1] inbound=tun-in port=53 => hijack-dns";
-        let dt = parse_timestamp(line).unwrap();
+        let (dt, prefix_len) = parse_timestamp(line).unwrap();
         assert_eq!(dt.hour(), 9);
         assert_eq!(dt.minute(), 35);
         assert_eq!(dt.second(), 55);
+        assert_eq!(prefix_len, 25);
     }
 
     #[test]
     fn parse_timestamp_returns_none_for_malformed() {
         let line = "some random text without timestamp";
         assert!(parse_timestamp(line).is_none());
+    }
+
+    #[test]
+    fn tail_handles_unicode_crossing_timestamp_byte_boundary() {
+        let mut temp = tempfile::NamedTempFile::new().unwrap();
+        writeln!(temp, "aaaaaaaaaaaaaaaaaaaaaaaaé message").unwrap();
+        let path = temp.path().to_path_buf();
+
+        let mut tailer = LogTailer::test_new(vec![(path, "[sb]")]);
+        assert_eq!(
+            tailer.tail(),
+            vec!["[sb] aaaaaaaaaaaaaaaaaaaaaaaaé message"]
+        );
+    }
+
+    #[test]
+    fn tail_strips_millisecond_timestamp_without_leaving_fraction() {
+        let mut temp = tempfile::NamedTempFile::new().unwrap();
+        writeln!(temp, "+0300 2026-06-09 21:28:34.123 INFO hello").unwrap();
+        let path = temp.path().to_path_buf();
+
+        let mut tailer = LogTailer::test_new(vec![(path, "[sb]")]);
+        assert_eq!(tailer.tail(), vec!["[sb] 21:28:34 INFO hello"]);
     }
 }

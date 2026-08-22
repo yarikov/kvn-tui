@@ -10,6 +10,10 @@ pub enum Effect {
         attempt_id: u64,
     },
     Disconnect,
+    /// Revoke temporary endpoint/DNS exceptions after sing-box exits without
+    /// going through the normal disconnect path. The kill switch itself stays
+    /// enabled.
+    RevokeKillSwitchExceptions,
     DownloadGeo,
     DownloadGeoIfMissing,
     /// Fetch rule-sets for enabled service routes if absent. Emitted after a
