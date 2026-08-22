@@ -55,12 +55,16 @@ pub enum Msg {
     SystemResumed,
     Connected {
         pid: u32,
+        attempt_id: u64,
         /// The profile that actually connected. Carried through the connect
         /// flow because the cursor may have moved since the connect was
         /// issued — attribution must not depend on the selection.
         profile_id: Uuid,
     },
-    ConnectFailed(IpcError),
+    ConnectFailed {
+        attempt_id: u64,
+        error: IpcError,
+    },
     /// A service rule-set download pass finished (files may still be missing
     /// if individual downloads failed — absence degrades to "no rule for
     /// that service"). Consumed by the reducer to run the reconnect that a
@@ -83,6 +87,8 @@ pub enum Msg {
     /// timestamped so the pure-layer can compute a per-second rate against
     /// the previous sample stored in `Model::traffic`.
     TrafficStatsUpdated {
+        attempt_id: u64,
+        request_id: u64,
         up_total: u64,
         down_total: u64,
         conn_count: usize,

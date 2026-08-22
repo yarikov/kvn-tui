@@ -82,7 +82,7 @@ pub(super) fn handle_sources(model: &mut Model, key: KeyEvent) -> Vec<Effect> {
         KeyCode::Char('d')
             if model.selected_profile().is_some() || model.selected_subscription().is_some() =>
         {
-            if is_active_connection_affected(model) {
+            if is_connection_affected(model) {
                 let mut effects = vec![];
                 push_status(
                     &mut effects,
@@ -182,7 +182,11 @@ pub(super) fn handle_sources(model: &mut Model, key: KeyEvent) -> Vec<Effect> {
             return effects;
         }
         KeyCode::Char('K') => {
+            if model.kill_switch_pending.is_some() {
+                return effects;
+            }
             let new_val = !model.config.settings.kill_switch;
+            model.kill_switch_pending = Some(new_val);
             push_status(
                 &mut effects,
                 model,
@@ -325,6 +329,16 @@ pub(super) fn handle_update_key(model: &mut Model) -> Vec<Effect> {
 pub(super) fn handle_confirm_delete(model: &mut Model, key: KeyEvent) -> Vec<Effect> {
     match key.code {
         KeyCode::Char('y') | KeyCode::Enter => {
+            if is_connection_affected(model) {
+                model.overlay = Overlay::None;
+                let mut effects = vec![];
+                push_status(
+                    &mut effects,
+                    model,
+                    AppStatus::Error("Disconnect before deleting".into()),
+                );
+                return effects;
+            }
             model.overlay = Overlay::None;
             let row = model.selected_row();
             match row {
@@ -1027,16 +1041,18 @@ fn replace_preset(
     *final_server = new_final.to_string();
 }
 
-fn is_active_connection_affected(model: &Model) -> bool {
-    let Some(active_id) = model.active_profile_id else {
+fn is_connection_affected(model: &Model) -> bool {
+    let affected =
+        |id| model.active_profile_id == Some(id) || model.connecting_profile_id == Some(id);
+    if model.active_profile_id.is_none() && model.connecting_profile_id.is_none() {
         return false;
-    };
+    }
     use crate::app::model::SourceRow;
     match model.selected_row() {
         Some(SourceRow::StandaloneProfile(_)) | Some(SourceRow::SubscriptionProfile { .. }) => {
             model
                 .selected_profile()
-                .map(|p| p.id == active_id)
+                .map(|p| affected(p.id))
                 .unwrap_or(false)
         }
         Some(SourceRow::SubscriptionHeader(_)) => model
@@ -1046,7 +1062,7 @@ fn is_active_connection_affected(model: &Model) -> bool {
                     .config
                     .profiles
                     .iter()
-                    .any(|p| p.subscription_id == Some(sub.id) && p.id == active_id)
+                    .any(|p| p.subscription_id == Some(sub.id) && affected(p.id))
             })
             .unwrap_or(false),
         _ => false,
@@ -1400,6 +1416,44 @@ mod tests {
         let _ = handle_sources(&mut model, key('d'));
         assert_eq!(model.overlay, Overlay::None);
         assert!(model.status.is_error());
+    }
+
+    #[test]
+    fn sources_d_blocked_when_connecting_profile_selected() {
+        let mut model = model_with_profiles(vec![Profile::new_vless(
+            "A".into(),
+            "1.1.1.1".into(),
+            443,
+            "u".into(),
+        )]);
+        model.connection = ConnectionState::ConnectPending;
+        model.connecting_profile_id = Some(model.config.profiles[0].id);
+
+        let effects = handle_sources(&mut model, key('d'));
+
+        assert_eq!(model.overlay, Overlay::None);
+        assert!(model.status.text().contains("Disconnect before"));
+        assert!(!effects.contains(&Effect::SaveConfig));
+    }
+
+    #[test]
+    fn confirm_delete_rechecks_connection_target() {
+        let mut model = model_with_profiles(vec![Profile::new_vless(
+            "A".into(),
+            "1.1.1.1".into(),
+            443,
+            "u".into(),
+        )]);
+        model.overlay = Overlay::ConfirmDelete;
+        model.connection = ConnectionState::ConnectPending;
+        model.connecting_profile_id = Some(model.config.profiles[0].id);
+
+        let effects = handle_confirm_delete(&mut model, enter());
+
+        assert_eq!(model.config.profiles.len(), 1);
+        assert_eq!(model.overlay, Overlay::None);
+        assert!(model.status.text().contains("Disconnect before"));
+        assert!(!effects.contains(&Effect::SaveConfig));
     }
 
     #[test]
