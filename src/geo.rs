@@ -3,7 +3,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
-use chrono::{DateTime, Local};
+use chrono::{DateTime, Local, NaiveDate};
 use serde::{Deserialize, Serialize};
 
 use crate::app::msg::GeoResult;
@@ -143,12 +143,20 @@ struct GeoMetadata {
     region_retry_states: HashMap<GeoRegion, GeoRetryState>,
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     service_retry_states: HashMap<RoutedService, GeoRetryState>,
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    service_checked_at: HashMap<RoutedService, DateTime<Local>>,
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    region_next_update: HashMap<GeoRegion, NaiveDate>,
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    service_next_update: HashMap<RoutedService, NaiveDate>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub struct GeoRetryState {
     pub consecutive_failures: u32,
     pub retry_at: DateTime<Local>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attempt_date: Option<NaiveDate>,
 }
 
 /// Deserialization shape that also accepts the legacy per-country etag fields
@@ -165,6 +173,12 @@ struct GeoMetadataRaw {
     region_retry_states: HashMap<GeoRegion, GeoRetryState>,
     #[serde(default)]
     service_retry_states: HashMap<RoutedService, GeoRetryState>,
+    #[serde(default)]
+    service_checked_at: HashMap<RoutedService, DateTime<Local>>,
+    #[serde(default)]
+    region_next_update: HashMap<GeoRegion, NaiveDate>,
+    #[serde(default)]
+    service_next_update: HashMap<RoutedService, NaiveDate>,
     #[serde(default)]
     geoip_ru_etag: Option<String>,
     #[serde(default)]
@@ -199,6 +213,9 @@ impl From<GeoMetadataRaw> for GeoMetadata {
             checked_at: raw.checked_at,
             region_retry_states: raw.region_retry_states,
             service_retry_states: raw.service_retry_states,
+            service_checked_at: raw.service_checked_at,
+            region_next_update: raw.region_next_update,
+            service_next_update: raw.service_next_update,
         }
     }
 }
@@ -294,7 +311,11 @@ impl GeoManager {
     /// Returns `true` when at least one file was (re)downloaded.
     pub fn update_service_if_needed(&self, service: RoutedService) -> Result<bool> {
         let _guard = METADATA_LOCK.lock().unwrap_or_else(|p| p.into_inner());
-        self.update_assets_if_needed(&service_assets(service).present())
+        let updated = self.update_assets_if_needed(&service_assets(service).present())?;
+        let mut meta = self.load_metadata().unwrap_or_default();
+        meta.service_checked_at.insert(service, Local::now());
+        self.save_metadata(&meta)?;
+        Ok(updated)
     }
 
     /// ETag-checked download of a set of assets. Every asset is attempted
@@ -393,16 +414,13 @@ impl GeoManager {
         let failures = meta
             .region_retry_states
             .get(&region)
+            .filter(|state| state.attempt_date == Some(now.date_naive()))
             .map_or(1, |state| state.consecutive_failures.saturating_add(1));
-        let delay = match failures {
-            1 => 1,
-            2 => 5,
-            3 => 15,
-            _ => 60,
-        };
+        let delay = crate::config::profile::retry_delay_minutes(failures, now);
         let state = GeoRetryState {
             consecutive_failures: failures,
             retry_at: now + chrono::Duration::minutes(delay),
+            attempt_date: Some(now.date_naive()),
         };
         meta.region_retry_states.insert(region, state);
         self.save_metadata(&meta)?;
@@ -424,28 +442,47 @@ impl GeoManager {
             .unwrap_or_default()
     }
 
+    pub fn service_checked_at(&self) -> HashMap<RoutedService, DateTime<Local>> {
+        self.load_metadata()
+            .map(|meta| meta.service_checked_at)
+            .unwrap_or_default()
+    }
+
+    pub fn region_next_update(&self, region: GeoRegion) -> Option<NaiveDate> {
+        self.load_metadata()
+            .ok()?
+            .region_next_update
+            .get(&region)
+            .copied()
+    }
+
+    pub fn service_next_updates(&self) -> HashMap<RoutedService, NaiveDate> {
+        self.load_metadata()
+            .map(|meta| meta.service_next_update)
+            .unwrap_or_default()
+    }
+
     pub fn record_service_failure(&self, service: RoutedService) -> Result<GeoRetryState> {
         let _guard = METADATA_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         let mut meta = self.load_metadata().unwrap_or_default();
+        let now = Local::now();
         let failures = meta
             .service_retry_states
             .get(&service)
+            .filter(|state| state.attempt_date == Some(now.date_naive()))
             .map_or(1, |state| state.consecutive_failures.saturating_add(1));
-        let delay = match failures {
-            1 => 1,
-            2 => 5,
-            3 => 15,
-            _ => 60,
-        };
+        let delay = crate::config::profile::retry_delay_minutes(failures, now);
         let state = GeoRetryState {
             consecutive_failures: failures,
-            retry_at: Local::now() + chrono::Duration::minutes(delay),
+            retry_at: now + chrono::Duration::minutes(delay),
+            attempt_date: Some(now.date_naive()),
         };
         meta.service_retry_states.insert(service, state);
         self.save_metadata(&meta)?;
         Ok(state)
     }
 
+    #[cfg(test)]
     pub fn clear_service_retry_state(&self, service: RoutedService) -> Result<()> {
         let _guard = METADATA_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         let mut meta = self.load_metadata().unwrap_or_default();
@@ -453,6 +490,94 @@ impl GeoManager {
             self.save_metadata(&meta)?;
         }
         Ok(())
+    }
+
+    pub fn reset_update_schedules(
+        &self,
+        region: GeoRegion,
+        services: &[RoutedService],
+        enabled: bool,
+    ) -> Result<()> {
+        let _guard = METADATA_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let mut meta = self.load_metadata().unwrap_or_default();
+        meta.region_retry_states.remove(&region);
+        for service in services {
+            meta.service_retry_states.remove(service);
+        }
+        if enabled {
+            let next = crate::config::profile::next_update_window_date(Local::now());
+            if region != GeoRegion::Global {
+                meta.region_next_update.insert(region, next);
+            }
+            for service in services {
+                meta.service_next_update.insert(*service, next);
+            }
+        } else {
+            meta.region_next_update.remove(&region);
+            for service in services {
+                meta.service_next_update.remove(service);
+            }
+        }
+        self.save_metadata(&meta)
+    }
+
+    pub fn ensure_update_schedules(
+        &self,
+        region: GeoRegion,
+        services: &[RoutedService],
+        enabled: bool,
+    ) -> Result<()> {
+        if !enabled {
+            return Ok(());
+        }
+        let _guard = METADATA_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let mut meta = self.load_metadata().unwrap_or_default();
+        let next = crate::config::profile::next_update_window_date(Local::now());
+        let mut changed = false;
+        if region != GeoRegion::Global && !meta.region_next_update.contains_key(&region) {
+            meta.region_next_update.insert(region, next);
+            changed = true;
+        }
+        for service in services {
+            if !meta.service_next_update.contains_key(service) {
+                meta.service_next_update.insert(*service, next);
+                changed = true;
+            }
+        }
+        if changed {
+            self.save_metadata(&meta)?;
+        }
+        Ok(())
+    }
+
+    pub fn record_region_schedule_success(
+        &self,
+        region: GeoRegion,
+        interval_days: i64,
+    ) -> Result<()> {
+        let _guard = METADATA_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let mut meta = self.load_metadata().unwrap_or_default();
+        meta.region_retry_states.remove(&region);
+        meta.region_next_update.insert(
+            region,
+            Local::now().date_naive() + chrono::Duration::days(interval_days),
+        );
+        self.save_metadata(&meta)
+    }
+
+    pub fn record_service_schedule_success(
+        &self,
+        service: RoutedService,
+        interval_days: i64,
+    ) -> Result<()> {
+        let _guard = METADATA_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let mut meta = self.load_metadata().unwrap_or_default();
+        meta.service_retry_states.remove(&service);
+        meta.service_next_update.insert(
+            service,
+            Local::now().date_naive() + chrono::Duration::days(interval_days),
+        );
+        self.save_metadata(&meta)
     }
 
     /// Check whether rule-sets have updates available for the given region.
@@ -513,6 +638,9 @@ impl GeoManager {
                 checked_at: None,
                 retry_state: None,
                 service_retry_states: Default::default(),
+                service_checked_at: Default::default(),
+                next_update: None,
+                service_next_updates: Default::default(),
                 warnings: Vec::new(),
             });
         }
@@ -529,6 +657,9 @@ impl GeoManager {
                 checked_at: Some(checked_at),
                 retry_state: None,
                 service_retry_states: Default::default(),
+                service_checked_at: Default::default(),
+                next_update: None,
+                service_next_updates: Default::default(),
                 warnings: Vec::new(),
             });
         }
@@ -549,6 +680,9 @@ impl GeoManager {
                 checked_at: self.last_checked_at(region).unwrap_or_else(Local::now),
                 retry_state: None,
                 service_retry_states: Default::default(),
+                service_checked_at: Default::default(),
+                next_update: None,
+                service_next_updates: Default::default(),
                 warnings: Vec::new(),
             })
         } else {
@@ -556,6 +690,9 @@ impl GeoManager {
                 checked_at: Some(Local::now()),
                 retry_state: None,
                 service_retry_states: Default::default(),
+                service_checked_at: Default::default(),
+                next_update: None,
+                service_next_updates: Default::default(),
                 warnings: Vec::new(),
             })
         }
@@ -901,6 +1038,9 @@ mod tests {
             checked_at: HashMap::new(),
             region_retry_states: HashMap::new(),
             service_retry_states: HashMap::new(),
+            service_checked_at: HashMap::new(),
+            region_next_update: HashMap::new(),
+            service_next_update: HashMap::new(),
         };
         gm.save_metadata(&meta).unwrap();
         let loaded = gm.load_metadata().unwrap();
@@ -939,6 +1079,31 @@ mod tests {
     }
 
     #[test]
+    fn service_checked_at_roundtrips_independently() {
+        let _guard = crate::test_helpers::ENV_LOCK.lock().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        unsafe { std::env::set_var("XDG_CONFIG_HOME", dir.path()) };
+        let gm = GeoManager::new().unwrap();
+        let checked = Local::now();
+        let mut meta = GeoMetadata::default();
+        meta.service_checked_at
+            .insert(RoutedService::Telegram, checked);
+        meta.checked_at
+            .insert(GeoRegion::Ru, checked - chrono::Duration::hours(1));
+
+        gm.save_metadata(&meta).unwrap();
+
+        assert_eq!(
+            gm.service_checked_at().get(&RoutedService::Telegram),
+            Some(&checked)
+        );
+        assert_eq!(
+            gm.last_checked_at(GeoRegion::Ru),
+            meta.checked_at.get(&GeoRegion::Ru).copied()
+        );
+    }
+
+    #[test]
     fn retry_backoff_persists_per_region_and_clears_independently() {
         let _guard = crate::test_helpers::ENV_LOCK.lock().unwrap();
         let dir = tempfile::tempdir().unwrap();
@@ -946,11 +1111,14 @@ mod tests {
         let gm = GeoManager::new().unwrap();
         let now = Local::now();
 
-        for (failures, delay) in [(1, 1), (2, 5), (3, 15), (4, 60), (5, 60)] {
+        for (failures, delay) in [(1, 1), (2, 5), (3, 15), (4, 60)] {
             let state = gm.record_update_failure_at(GeoRegion::Ru, now).unwrap();
             assert_eq!(state.consecutive_failures, failures);
             assert_eq!(state.retry_at, now + chrono::Duration::minutes(delay));
         }
+        let fifth = gm.record_update_failure_at(GeoRegion::Ru, now).unwrap();
+        assert_eq!(fifth.consecutive_failures, 5);
+        assert!(fifth.retry_at.date_naive() > now.date_naive());
         let cn = gm.record_update_failure_at(GeoRegion::Cn, now).unwrap();
         assert_eq!(cn.consecutive_failures, 1);
         assert_eq!(

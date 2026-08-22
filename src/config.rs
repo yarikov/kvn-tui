@@ -19,9 +19,14 @@ pub fn load_config_at(path: &Path) -> Result<Config> {
 
     let mut config: Config =
         serde_json::from_str(&contents).with_context(|| format!("Failed to parse {:?}", path))?;
+    let loaded_schema_version = config.schema_version;
     config
         .migrate()
         .with_context(|| format!("Failed to migrate {:?}", path))?;
+    if config.schema_version != loaded_schema_version && config.validate().is_ok() {
+        save_config_at(path, &config)
+            .with_context(|| format!("Failed to persist migration for {:?}", path))?;
+    }
 
     Ok(config)
 }
@@ -121,6 +126,43 @@ mod tests {
         save_config_at(&path, &config).unwrap();
         let loaded = load_config_at(&path).unwrap();
         assert_eq!(loaded, config);
+    }
+
+    #[test]
+    fn load_persists_v3_update_interval_migration() {
+        let file = NamedTempFile::new().unwrap();
+        let mut config = Config {
+            schema_version: 2,
+            ..Config::default()
+        };
+        config.subscriptions.push(profile::Subscription {
+            id: uuid::Uuid::new_v4(),
+            name: "legacy".into(),
+            url: "https://example.com/sub".into(),
+            auto_update: profile::SubscriptionAutoUpdate::Every1h,
+            last_updated: None,
+            next_auto_update: None,
+            retry_state: None,
+        });
+        config.settings.geo_routing.auto_update = profile::GeoAutoUpdate::Every12h;
+        save_config_at(file.path(), &config).unwrap();
+
+        let loaded = load_config_at(file.path()).unwrap();
+        let persisted = fs::read_to_string(file.path()).unwrap();
+
+        assert_eq!(loaded.schema_version, profile::CURRENT_SCHEMA_VERSION);
+        assert_eq!(
+            loaded.subscriptions[0].auto_update,
+            profile::SubscriptionAutoUpdate::Every1d
+        );
+        assert_eq!(
+            loaded.settings.geo_routing.auto_update,
+            profile::GeoAutoUpdate::Every1d
+        );
+        assert!(persisted.contains("\"schema_version\": 3"));
+        assert!(persisted.contains("\"auto_update\": \"every1d\""));
+        assert!(!persisted.contains("every1h"));
+        assert!(!persisted.contains("every_12h"));
     }
 
     #[test]

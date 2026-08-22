@@ -90,6 +90,7 @@ fn run_loop(
                     | Effect::Disconnect
                     | Effect::DownloadGeo
                     | Effect::RetryServiceRuleSets { .. }
+                    | Effect::ResetGeoUpdateSchedules
                     | Effect::WriteState
                     | Effect::SaveConfig
                     | Effect::UpdateSubscription { .. }
@@ -280,9 +281,16 @@ fn execute_daemon_effect(
                 .current_region
                 .unwrap_or(crate::config::profile::GeoRegion::Global);
             let services = model.config.settings.geo_routing.enabled_services();
-            let retry_enabled = model.config.settings.geo_routing.auto_update
-                != crate::config::profile::GeoAutoUpdate::Off;
+            let automatic = model.geo_automatic_update;
+            let interval_days = (model
+                .config
+                .settings
+                .geo_routing
+                .auto_update
+                .interval_minutes()
+                / 1_440) as i64;
             let existing_service_retries = model.service_retry_states.clone();
+            let existing_service_checked_at = model.service_checked_at.clone();
             thread::spawn(move || {
                 let gm = match crate::geo::GeoManager::new() {
                     Ok(gm) => gm,
@@ -291,15 +299,26 @@ fn execute_daemon_effect(
                             message: e.to_string(),
                             retry_state: None,
                             service_retry_states: existing_service_retries,
+                            service_checked_at: existing_service_checked_at,
+                            next_update: None,
+                            service_next_updates: Default::default(),
                             updated_parts: Vec::new(),
                         }));
                         return;
                     }
                 };
                 let regional = gm.update_if_needed(region);
-                let services = refresh_service_rule_sets(&gm, &services);
-                let result =
-                    finalize_geo_result(&gm, region, regional, services, retry_enabled, true);
+                let services =
+                    refresh_service_rule_sets(&gm, &services, automatic.then_some(interval_days));
+                let result = finalize_geo_result(
+                    &gm,
+                    region,
+                    regional,
+                    services,
+                    automatic,
+                    true,
+                    interval_days,
+                );
                 let _ = tx.send(Msg::GeoUpdated(result));
             });
         }
@@ -313,23 +332,38 @@ fn execute_daemon_effect(
             // it to run a pending reconnect, and the route builder tolerates
             // files that never arrived.
             let services = model.config.settings.geo_routing.enabled_services();
+            let schedule_enabled = model.config.settings.geo_routing.auto_update
+                != crate::config::profile::GeoAutoUpdate::Off;
             let tx = tx.clone();
             thread::spawn(move || {
-                let retry_states = match crate::geo::GeoManager::new() {
+                let (retry_states, checked_at, next_updates) = match crate::geo::GeoManager::new() {
                     Ok(gm) => {
+                        let _ = gm.ensure_update_schedules(
+                            crate::config::profile::GeoRegion::Global,
+                            &services,
+                            schedule_enabled,
+                        );
                         let missing: Vec<_> = services
                             .into_iter()
                             .filter(|s| !gm.has_service_databases(*s))
                             .collect();
-                        refresh_service_rule_sets(&gm, &missing);
-                        gm.service_retry_states()
+                        refresh_service_rule_sets(&gm, &missing, None);
+                        (
+                            gm.service_retry_states(),
+                            gm.service_checked_at(),
+                            gm.service_next_updates(),
+                        )
                     }
                     Err(e) => {
                         tracing::warn!("Failed to init geo manager for service rule-sets: {e:#}");
-                        Default::default()
+                        (Default::default(), Default::default(), Default::default())
                     }
                 };
-                let _ = tx.send(Msg::ServiceRuleSetsReady { retry_states });
+                let _ = tx.send(Msg::ServiceRuleSetsReady {
+                    retry_states,
+                    checked_at,
+                    next_updates,
+                });
             });
         }
         Effect::RetryServiceRuleSets { services } => {
@@ -342,11 +376,24 @@ fn execute_daemon_effect(
                 .current_region
                 .unwrap_or(crate::config::profile::GeoRegion::Global);
             let existing_service_retries = model.service_retry_states.clone();
+            let existing_service_checked_at = model.service_checked_at.clone();
+            let automatic = model.geo_automatic_update;
+            let interval_days = (model
+                .config
+                .settings
+                .geo_routing
+                .auto_update
+                .interval_minutes()
+                / 1_440) as i64;
             thread::spawn(move || {
                 let result = match crate::geo::GeoManager::new() {
                     Ok(gm) => {
                         let checked_at = gm.last_checked_at(region);
-                        let services = refresh_service_rule_sets(&gm, &services);
+                        let services = refresh_service_rule_sets(
+                            &gm,
+                            &services,
+                            automatic.then_some(interval_days),
+                        );
                         finalize_geo_result(
                             &gm,
                             region,
@@ -354,17 +401,24 @@ fn execute_daemon_effect(
                                 checked_at,
                                 retry_state: gm.retry_state(region),
                                 service_retry_states: gm.service_retry_states(),
+                                service_checked_at: gm.service_checked_at(),
+                                next_update: gm.region_next_update(region),
+                                service_next_updates: gm.service_next_updates(),
                                 warnings: Vec::new(),
                             }),
                             services,
                             false,
                             false,
+                            interval_days,
                         )
                     }
                     Err(e) => GeoResult::Error {
                         message: e.to_string(),
                         retry_state: None,
                         service_retry_states: existing_service_retries,
+                        service_checked_at: existing_service_checked_at,
+                        next_update: None,
+                        service_next_updates: Default::default(),
                         updated_parts: Vec::new(),
                     },
                 };
@@ -385,13 +439,24 @@ fn execute_daemon_effect(
                 let last_checked_at = manager.as_ref().and_then(|g| g.last_checked_at(region));
                 let retry_state = manager.as_ref().and_then(|g| g.retry_state(region));
                 let service_retry_states = manager
+                    .as_ref()
                     .map(|g| g.service_retry_states())
+                    .unwrap_or_default();
+                let service_checked_at = manager
+                    .as_ref()
+                    .map(|g| g.service_checked_at())
                     .unwrap_or_default();
                 let _ = tx.send(Msg::GeoMetadataRefreshed {
                     last_updated,
                     last_checked_at,
                     retry_state,
                     service_retry_states,
+                    service_checked_at,
+                    next_update: manager.as_ref().and_then(|g| g.region_next_update(region)),
+                    service_next_updates: manager
+                        .as_ref()
+                        .map(|g| g.service_next_updates())
+                        .unwrap_or_default(),
                 });
             });
         }
@@ -400,6 +465,22 @@ fn execute_daemon_effect(
                 && let Err(e) = manager.clear_retry_state(region)
             {
                 tracing::warn!("Failed to clear geo retry state: {e}");
+            }
+        }
+        Effect::ResetGeoUpdateSchedules => {
+            if let Ok(manager) = crate::geo::GeoManager::new() {
+                let region = model
+                    .config
+                    .settings
+                    .geo_routing
+                    .current_region
+                    .unwrap_or(crate::config::profile::GeoRegion::Global);
+                let services = model.config.settings.geo_routing.enabled_services();
+                let enabled = model.config.settings.geo_routing.auto_update
+                    != crate::config::profile::GeoAutoUpdate::Off;
+                manager.reset_update_schedules(region, &services, enabled)?;
+                model.geo_next_update = manager.region_next_update(region);
+                model.service_next_updates = manager.service_next_updates();
             }
         }
         Effect::DownloadGeoIfMissing => {
@@ -413,6 +494,13 @@ fn execute_daemon_effect(
                 .unwrap_or(crate::config::profile::GeoRegion::Global);
             let retry_enabled = model.config.settings.geo_routing.auto_update
                 != crate::config::profile::GeoAutoUpdate::Off;
+            let interval_days = (model
+                .config
+                .settings
+                .geo_routing
+                .auto_update
+                .interval_minutes()
+                / 1_440) as i64;
             thread::spawn(move || {
                 let result = match crate::geo::GeoManager::new() {
                     Ok(gm) => {
@@ -422,6 +510,9 @@ fn execute_daemon_effect(
                                 checked_at: gm.last_checked_at(region),
                                 retry_state: None,
                                 service_retry_states: gm.service_retry_states(),
+                                service_checked_at: gm.service_checked_at(),
+                                next_update: gm.region_next_update(region),
+                                service_next_updates: gm.service_next_updates(),
                                 warnings: Vec::new(),
                             }
                         } else {
@@ -432,6 +523,7 @@ fn execute_daemon_effect(
                                 ServiceRefreshResult::default(),
                                 retry_enabled,
                                 true,
+                                interval_days,
                             )
                         }
                     }
@@ -439,6 +531,9 @@ fn execute_daemon_effect(
                         message: e.to_string(),
                         retry_state: None,
                         service_retry_states: Default::default(),
+                        service_checked_at: Default::default(),
+                        next_update: None,
+                        service_next_updates: Default::default(),
                         updated_parts: Vec::new(),
                     },
                 };
@@ -665,13 +760,16 @@ fn socks5_connect_latency(addr: &str) -> anyhow::Result<u64> {
 fn refresh_service_rule_sets(
     gm: &crate::geo::GeoManager,
     services: &[crate::config::profile::RoutedService],
+    automatic_interval_days: Option<i64>,
 ) -> ServiceRefreshResult {
     let mut result = ServiceRefreshResult::default();
     for service in services {
         match gm.update_service_if_needed(*service) {
             Ok(updated) => {
-                if let Err(e) = gm.clear_service_retry_state(*service) {
-                    tracing::warn!("Failed to clear {} retry state: {e}", service.label());
+                if let Some(days) = automatic_interval_days
+                    && let Err(e) = gm.record_service_schedule_success(*service, days)
+                {
+                    tracing::warn!("Failed to schedule {} update: {e}", service.label());
                 }
                 if updated {
                     result
@@ -682,7 +780,9 @@ fn refresh_service_rule_sets(
             Err(e) => {
                 let message = format!("{} rule-sets: {e:#}", service.label());
                 tracing::warn!("Failed to update {message}");
-                let _ = gm.record_service_failure(*service);
+                if automatic_interval_days.is_some() {
+                    let _ = gm.record_service_failure(*service);
+                }
                 result.errors.push(message);
             }
         }
@@ -703,19 +803,25 @@ fn finalize_geo_result(
     services: ServiceRefreshResult,
     retry_enabled: bool,
     update_region: bool,
+    interval_days: i64,
 ) -> GeoResult {
     let regional_failed = regional.is_err();
-    let retry_state = if !update_region {
+    let retry_state = if !update_region || !retry_enabled {
         manager.retry_state(region)
     } else if regional_failed && retry_enabled {
         manager.record_update_failure(region).ok()
     } else {
-        if !regional_failed && let Err(e) = manager.clear_retry_state(region) {
-            tracing::warn!("Failed to clear geo retry state: {e}");
+        if !regional_failed
+            && let Err(e) = manager.record_region_schedule_success(region, interval_days)
+        {
+            tracing::warn!("Failed to schedule geo update: {e}");
         }
         None
     };
     let service_retry_states = manager.service_retry_states();
+    let service_checked_at = manager.service_checked_at();
+    let next_update = manager.region_next_update(region);
+    let service_next_updates = manager.service_next_updates();
 
     match regional {
         Ok(GeoResult::Updated {
@@ -731,6 +837,9 @@ fn finalize_geo_result(
                 checked_at,
                 retry_state,
                 service_retry_states,
+                service_checked_at,
+                next_update,
+                service_next_updates,
                 warnings: services.errors,
             }
         }
@@ -741,6 +850,9 @@ fn finalize_geo_result(
                 checked_at: checked_at.unwrap_or_else(chrono::Local::now),
                 retry_state,
                 service_retry_states,
+                service_checked_at,
+                next_update,
+                service_next_updates,
                 warnings: services.errors,
             }
         }
@@ -748,6 +860,9 @@ fn finalize_geo_result(
             checked_at,
             retry_state,
             service_retry_states,
+            service_checked_at,
+            next_update,
+            service_next_updates,
             warnings: services.errors,
         },
         Ok(GeoResult::Error { .. }) => unreachable!("GeoManager never returns GeoResult::Error"),
@@ -761,6 +876,9 @@ fn finalize_geo_result(
                 message,
                 retry_state,
                 service_retry_states,
+                service_checked_at,
+                next_update,
+                service_next_updates,
                 updated_parts: services.updated_parts,
             }
         }
@@ -1096,6 +1214,9 @@ mod tests {
             checked_at,
             retry_state: None,
             service_retry_states: Default::default(),
+            service_checked_at: Default::default(),
+            next_update: None,
+            service_next_updates: Default::default(),
             warnings: Vec::new(),
         });
         let services = ServiceRefreshResult {
@@ -1113,6 +1234,7 @@ mod tests {
             services,
             true,
             true,
+            1,
         );
 
         let GeoResult::Updated {
@@ -1153,6 +1275,7 @@ mod tests {
             services,
             true,
             true,
+            1,
         );
 
         let GeoResult::Error {

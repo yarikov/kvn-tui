@@ -56,6 +56,13 @@ pub enum Msg {
             crate::config::profile::RoutedService,
             crate::geo::GeoRetryState,
         >,
+        service_checked_at: std::collections::HashMap<
+            crate::config::profile::RoutedService,
+            chrono::DateTime<chrono::Local>,
+        >,
+        next_update: Option<chrono::NaiveDate>,
+        service_next_updates:
+            std::collections::HashMap<crate::config::profile::RoutedService, chrono::NaiveDate>,
     },
     SystemResumed,
     Connected {
@@ -88,6 +95,12 @@ pub enum Msg {
             crate::config::profile::RoutedService,
             crate::geo::GeoRetryState,
         >,
+        checked_at: std::collections::HashMap<
+            crate::config::profile::RoutedService,
+            chrono::DateTime<chrono::Local>,
+        >,
+        next_updates:
+            std::collections::HashMap<crate::config::profile::RoutedService, chrono::NaiveDate>,
     },
     SubscriptionFetched {
         id: Uuid,
@@ -136,6 +149,13 @@ pub enum GeoResult {
             crate::config::profile::RoutedService,
             crate::geo::GeoRetryState,
         >,
+        service_checked_at: std::collections::HashMap<
+            crate::config::profile::RoutedService,
+            chrono::DateTime<chrono::Local>,
+        >,
+        next_update: Option<chrono::NaiveDate>,
+        service_next_updates:
+            std::collections::HashMap<crate::config::profile::RoutedService, chrono::NaiveDate>,
         warnings: Vec<String>,
     },
     UpToDate {
@@ -145,6 +165,13 @@ pub enum GeoResult {
             crate::config::profile::RoutedService,
             crate::geo::GeoRetryState,
         >,
+        service_checked_at: std::collections::HashMap<
+            crate::config::profile::RoutedService,
+            chrono::DateTime<chrono::Local>,
+        >,
+        next_update: Option<chrono::NaiveDate>,
+        service_next_updates:
+            std::collections::HashMap<crate::config::profile::RoutedService, chrono::NaiveDate>,
         warnings: Vec<String>,
     },
     Error {
@@ -154,6 +181,13 @@ pub enum GeoResult {
             crate::config::profile::RoutedService,
             crate::geo::GeoRetryState,
         >,
+        service_checked_at: std::collections::HashMap<
+            crate::config::profile::RoutedService,
+            chrono::DateTime<chrono::Local>,
+        >,
+        next_update: Option<chrono::NaiveDate>,
+        service_next_updates:
+            std::collections::HashMap<crate::config::profile::RoutedService, chrono::NaiveDate>,
         updated_parts: Vec<String>,
     },
 }

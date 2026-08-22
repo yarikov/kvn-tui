@@ -27,6 +27,7 @@ pub enum Effect {
     ClearGeoRetryState {
         region: crate::config::profile::GeoRegion,
     },
+    ResetGeoUpdateSchedules,
     WriteState,
     SaveConfig,
     UpdateSubscription {
