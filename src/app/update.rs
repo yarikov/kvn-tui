@@ -174,6 +174,42 @@ pub fn update(model: &mut Model, msg: Msg) -> Vec<Effect> {
             );
             effects
         }
+        Msg::SingBoxExited {
+            attempt_id,
+            code,
+            signal,
+        } => {
+            if attempt_id != model.connect_attempt_id {
+                return vec![];
+            }
+            // Invalidate any Connected/traffic reply that was already queued
+            // by the worker for the process that just exited.
+            model.connect_attempt_id = model.connect_attempt_id.wrapping_add(1);
+            model.connection = ConnectionState::Idle;
+            model.connecting_profile_id = None;
+            model.singbox_pid = None;
+            model.active_profile_id = None;
+            model.traffic = TrafficStats::default();
+            model.last_traffic_sample_at_ms = 0;
+            model.traffic_request_id = 0;
+            model.last_traffic_response_id = 0;
+            model.last_traffic_fetch_at = None;
+
+            let reason = match (code, signal) {
+                (Some(code), _) => format!("sing-box exited unexpectedly (code {code})"),
+                (None, Some(signal)) => {
+                    format!("sing-box terminated unexpectedly (signal {signal})")
+                }
+                (None, None) => "sing-box exited unexpectedly".to_string(),
+            };
+            let mut effects = vec![
+                Effect::WriteState,
+                Effect::RevokeKillSwitchExceptions,
+                Effect::BroadcastState,
+            ];
+            push_status(&mut effects, model, AppStatus::Error(reason));
+            effects
+        }
 
         Msg::Resize => {
             model.needs_redraw = true;
@@ -2207,6 +2243,102 @@ mod tests {
         assert_eq!(model.connection, ConnectionState::Connected);
         assert_eq!(model.active_profile_id, Some(profile_id));
         assert_eq!(model.singbox_pid, Some(42));
+    }
+
+    #[test]
+    fn singbox_exit_clears_connection_and_invalidates_attempt() {
+        let profile_id = Uuid::new_v4();
+        let mut model = Model::test_new(crate::config::profile::Config::default());
+        model.connection = ConnectionState::Connected;
+        model.connect_attempt_id = 7;
+        model.connecting_profile_id = Some(profile_id);
+        model.active_profile_id = Some(profile_id);
+        model.singbox_pid = Some(99);
+        model.traffic.up_total = 123;
+        model.traffic_request_id = 4;
+        model.last_traffic_response_id = 3;
+
+        let effects = update(
+            &mut model,
+            Msg::SingBoxExited {
+                attempt_id: 7,
+                code: Some(17),
+                signal: None,
+            },
+        );
+
+        assert_eq!(model.connection, ConnectionState::Idle);
+        assert_eq!(model.connect_attempt_id, 8);
+        assert_eq!(model.connecting_profile_id, None);
+        assert_eq!(model.active_profile_id, None);
+        assert_eq!(model.singbox_pid, None);
+        assert_eq!(model.traffic, TrafficStats::default());
+        assert_eq!(model.traffic_request_id, 0);
+        assert_eq!(model.last_traffic_response_id, 0);
+        assert_eq!(
+            model.status.text(),
+            "sing-box exited unexpectedly (code 17)"
+        );
+        assert_eq!(
+            effects,
+            vec![
+                Effect::WriteState,
+                Effect::RevokeKillSwitchExceptions,
+                Effect::BroadcastState,
+                app_log_error("sing-box exited unexpectedly (code 17)"),
+            ]
+        );
+        assert!(
+            !effects
+                .iter()
+                .any(|effect| matches!(effect, Effect::Connect { .. }))
+        );
+    }
+
+    #[test]
+    fn singbox_exit_reports_signal() {
+        let mut model = Model::test_new(crate::config::profile::Config::default());
+        model.connection = ConnectionState::ConnectPending;
+        model.connect_attempt_id = 3;
+
+        update(
+            &mut model,
+            Msg::SingBoxExited {
+                attempt_id: 3,
+                code: None,
+                signal: Some(9),
+            },
+        );
+
+        assert_eq!(
+            model.status.text(),
+            "sing-box terminated unexpectedly (signal 9)"
+        );
+    }
+
+    #[test]
+    fn stale_singbox_exit_does_not_override_newer_connection() {
+        let profile_id = Uuid::new_v4();
+        let mut model = Model::test_new(crate::config::profile::Config::default());
+        model.connection = ConnectionState::Connected;
+        model.connect_attempt_id = 8;
+        model.active_profile_id = Some(profile_id);
+        model.singbox_pid = Some(100);
+
+        let effects = update(
+            &mut model,
+            Msg::SingBoxExited {
+                attempt_id: 7,
+                code: Some(1),
+                signal: None,
+            },
+        );
+
+        assert!(effects.is_empty());
+        assert_eq!(model.connection, ConnectionState::Connected);
+        assert_eq!(model.connect_attempt_id, 8);
+        assert_eq!(model.active_profile_id, Some(profile_id));
+        assert_eq!(model.singbox_pid, Some(100));
     }
 
     #[test]

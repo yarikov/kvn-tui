@@ -1,4 +1,5 @@
 use anyhow::{Context, Result};
+use std::process::ExitStatus;
 
 pub struct ProcessHandle {
     child: std::process::Child,
@@ -9,6 +10,14 @@ impl ProcessHandle {
     pub fn new(child: std::process::Child) -> Self {
         let pid = child.id();
         Self { child, pid }
+    }
+
+    /// Check whether the child has exited without blocking. A returned status
+    /// means the OS process has also been reaped by `Child::try_wait`.
+    pub fn try_wait(&mut self) -> Result<Option<ExitStatus>> {
+        self.child
+            .try_wait()
+            .context("Failed to check sing-box process status")
     }
 
     pub fn kill_and_wait(&mut self) -> Result<()> {
@@ -40,5 +49,24 @@ mod tests {
         let mut handle = ProcessHandle::new(child);
         assert_eq!(handle.pid, pid);
         handle.kill_and_wait().unwrap();
+    }
+
+    #[test]
+    fn try_wait_reports_natural_exit() {
+        let _guard = crate::test_helpers::ENV_LOCK.lock().unwrap();
+        let child = std::process::Command::new("sh")
+            .args(["-c", "exit 7"])
+            .spawn()
+            .unwrap();
+        let mut handle = ProcessHandle::new(child);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        let status = loop {
+            if let Some(status) = handle.try_wait().unwrap() {
+                break status;
+            }
+            assert!(std::time::Instant::now() < deadline, "child did not exit");
+            std::thread::yield_now();
+        };
+        assert_eq!(status.code(), Some(7));
     }
 }
