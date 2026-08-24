@@ -105,7 +105,11 @@ pub(super) fn handle_sources(model: &mut Model, key: KeyEvent) -> Vec<Effect> {
         KeyCode::Char('I') => {
             let schedule = model.config.settings.geo_routing.auto_update.next();
             model.config.settings.geo_routing.auto_update = schedule;
-            let mut effects = vec![Effect::SaveConfig];
+            let mut effects = vec![Effect::SaveConfig, Effect::ResetGeoUpdateSchedules];
+            if let Some(region) = model.config.settings.geo_routing.current_region {
+                model.geo_retry_state = None;
+                effects.push(Effect::ClearGeoRetryState { region });
+            }
             push_status(
                 &mut effects,
                 model,
@@ -117,6 +121,11 @@ pub(super) fn handle_sources(model: &mut Model, key: KeyEvent) -> Vec<Effect> {
             if let Some(idx) = model.selected_subscription_index() {
                 let (name, label) = if let Some(sub) = model.config.subscriptions.get_mut(idx) {
                     sub.auto_update = sub.auto_update.next();
+                    sub.clear_retry_state();
+                    sub.next_auto_update =
+                        (sub.auto_update != SubscriptionAutoUpdate::Off).then(|| {
+                            crate::config::profile::next_update_window_date(chrono::Local::now())
+                        });
                     (sub.name.clone(), sub.auto_update.label())
                 } else {
                     return effects;
@@ -304,16 +313,39 @@ pub(super) fn handle_update_key(model: &mut Model) -> Vec<Effect> {
         }
     } else if !model.geo_updating {
         if model.config.settings.geo_routing.current_region == Some(GeoRegion::Global) {
+            let services = model.config.settings.geo_routing.enabled_services();
+            if services.is_empty() {
+                push_status(
+                    &mut effects,
+                    model,
+                    crate::app::model::AppStatus::Info(
+                        "No enabled service rule-sets to update".to_string(),
+                    ),
+                );
+                return effects;
+            }
+            if model.connection != crate::app::model::ConnectionState::Connected {
+                push_status(
+                    &mut effects,
+                    model,
+                    crate::app::model::AppStatus::Info(
+                        "Connect before updating service rule-sets".to_string(),
+                    ),
+                );
+                return effects;
+            }
+            model.geo_updating = true;
+            model.geo_automatic_update = false;
             push_status(
                 &mut effects,
                 model,
-                crate::app::model::AppStatus::Info(
-                    "Geo updates are not available in Global region".to_string(),
-                ),
+                crate::app::model::AppStatus::Info("Checking service rule-sets...".to_string()),
             );
+            effects.push(Effect::RetryServiceRuleSets { services });
             return effects;
         }
         model.geo_updating = true;
+        model.geo_automatic_update = false;
         model.geo_last_attempt_at = Some(chrono::Local::now());
         push_status(
             &mut effects,
@@ -1408,6 +1440,8 @@ mod tests {
             url: "http://s".into(),
             auto_update: SubscriptionAutoUpdate::Off,
             last_updated: None,
+            next_auto_update: None,
+            retry_state: None,
         });
         model.connection = ConnectionState::Connected;
         model.active_profile_id = Some(model.config.profiles[0].id);
@@ -1584,6 +1618,8 @@ mod tests {
             url: "http://e".into(),
             auto_update: SubscriptionAutoUpdate::Off,
             last_updated: None,
+            next_auto_update: None,
+            retry_state: None,
         });
         model.overlay = Overlay::ConfirmDelete;
         model.selected = crate::app::model::row_for_subscription_header(&model.config, 0);

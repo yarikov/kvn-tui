@@ -1248,8 +1248,10 @@ mod tests {
             id: sub_id,
             name: "Example".to_string(),
             url: "http://example.com/sub".to_string(),
-            auto_update: SubscriptionAutoUpdate::Every1h,
+            auto_update: SubscriptionAutoUpdate::Every1d,
             last_updated: None,
+            next_auto_update: None,
+            retry_state: None,
         });
         model.selected = 0;
         insta::assert_snapshot!(snapshot_terminal(&model, 80, 20));
@@ -1521,6 +1523,8 @@ mod tests {
             url: "http://example.com/sub".to_string(),
             auto_update: SubscriptionAutoUpdate::Every1d,
             last_updated: Some(last_updated),
+            next_auto_update: None,
+            retry_state: None,
         });
         model.selected = 0;
         insta::assert_snapshot!(snapshot_terminal(&model, 80, 20));

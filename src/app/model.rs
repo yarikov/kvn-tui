@@ -190,6 +190,7 @@ pub struct Model {
     pub geo_updating: bool,
     pub subscription_fetching: bool,
     pub subscription_updates: HashSet<Uuid>,
+    pub automatic_subscription_updates: HashSet<Uuid>,
     pub needs_redraw: bool,
     pub should_quit: bool,
     pub geo_last_updated: Option<String>,
@@ -198,6 +199,12 @@ pub struct Model {
     /// Last check attempt in this daemon session. Prevents an overdue failed
     /// check from being retried on every 250 ms tick.
     pub geo_last_attempt_at: Option<DateTime<Local>>,
+    pub geo_retry_state: Option<crate::geo::GeoRetryState>,
+    pub geo_next_update: Option<chrono::NaiveDate>,
+    pub service_retry_states: HashMap<RoutedService, crate::geo::GeoRetryState>,
+    pub service_checked_at: HashMap<RoutedService, DateTime<Local>>,
+    pub service_next_updates: HashMap<RoutedService, chrono::NaiveDate>,
+    pub geo_automatic_update: bool,
     /// Latest traffic stats sample, applied either by the daemon (after a
     /// Clash-API fetch) or by the TUI client (from a `StateSnapshot`).
     pub traffic: TrafficStats,
@@ -326,8 +333,31 @@ impl Model {
             .current_region
             .unwrap_or(GeoRegion::Global);
         let geo_manager = crate::geo::GeoManager::new().ok();
+        if let Some(manager) = &geo_manager {
+            let _ = manager.ensure_update_schedules(
+                region,
+                &config.settings.geo_routing.enabled_services(),
+                config.settings.geo_routing.auto_update
+                    != crate::config::profile::GeoAutoUpdate::Off,
+            );
+        }
         let geo_last_updated = geo_manager.as_ref().and_then(|g| g.last_updated(region));
-        let geo_last_checked_at = geo_manager.and_then(|g| g.last_checked_at(region));
+        let geo_last_checked_at = geo_manager.as_ref().and_then(|g| g.last_checked_at(region));
+        let geo_retry_state = geo_manager.as_ref().and_then(|g| g.retry_state(region));
+        let geo_next_update = geo_manager
+            .as_ref()
+            .and_then(|g| g.region_next_update(region));
+        let service_retry_states = geo_manager
+            .as_ref()
+            .map(|g| g.service_retry_states())
+            .unwrap_or_default();
+        let service_checked_at = geo_manager
+            .as_ref()
+            .map(|g| g.service_checked_at())
+            .unwrap_or_default();
+        let service_next_updates = geo_manager
+            .map(|g| g.service_next_updates())
+            .unwrap_or_default();
 
         let mut model = Self {
             overlay: Overlay::None,
@@ -353,11 +383,18 @@ impl Model {
             geo_updating: false,
             subscription_fetching: false,
             subscription_updates: HashSet::new(),
+            automatic_subscription_updates: HashSet::new(),
             needs_redraw: false,
             should_quit: false,
             geo_last_updated,
             geo_last_checked_at,
             geo_last_attempt_at: None,
+            geo_retry_state,
+            geo_next_update,
+            service_retry_states,
+            service_checked_at,
+            service_next_updates,
+            geo_automatic_update: false,
             traffic: TrafficStats::default(),
             last_traffic_sample_at_ms: 0,
             traffic_request_id: 0,
@@ -399,8 +436,31 @@ impl Model {
             .current_region
             .unwrap_or(GeoRegion::Global);
         let geo_manager = crate::geo::GeoManager::new().ok();
+        if let Some(manager) = &geo_manager {
+            let _ = manager.ensure_update_schedules(
+                region,
+                &config.settings.geo_routing.enabled_services(),
+                config.settings.geo_routing.auto_update
+                    != crate::config::profile::GeoAutoUpdate::Off,
+            );
+        }
         let geo_last_updated = geo_manager.as_ref().and_then(|g| g.last_updated(region));
-        let geo_last_checked_at = geo_manager.and_then(|g| g.last_checked_at(region));
+        let geo_last_checked_at = geo_manager.as_ref().and_then(|g| g.last_checked_at(region));
+        let geo_retry_state = geo_manager.as_ref().and_then(|g| g.retry_state(region));
+        let geo_next_update = geo_manager
+            .as_ref()
+            .and_then(|g| g.region_next_update(region));
+        let service_retry_states = geo_manager
+            .as_ref()
+            .map(|g| g.service_retry_states())
+            .unwrap_or_default();
+        let service_checked_at = geo_manager
+            .as_ref()
+            .map(|g| g.service_checked_at())
+            .unwrap_or_default();
+        let service_next_updates = geo_manager
+            .map(|g| g.service_next_updates())
+            .unwrap_or_default();
 
         let mut model = Self {
             overlay: Overlay::None,
@@ -426,11 +486,18 @@ impl Model {
             geo_updating: false,
             subscription_fetching: false,
             subscription_updates: HashSet::new(),
+            automatic_subscription_updates: HashSet::new(),
             needs_redraw: false,
             should_quit: false,
             geo_last_updated,
             geo_last_checked_at,
             geo_last_attempt_at: None,
+            geo_retry_state,
+            geo_next_update,
+            service_retry_states,
+            service_checked_at,
+            service_next_updates,
+            geo_automatic_update: false,
             traffic: TrafficStats::default(),
             last_traffic_sample_at_ms: 0,
             traffic_request_id: 0,
@@ -658,11 +725,18 @@ impl Model {
             geo_updating: false,
             subscription_fetching: false,
             subscription_updates: HashSet::new(),
+            automatic_subscription_updates: HashSet::new(),
             needs_redraw: false,
             should_quit: false,
             geo_last_updated: None,
             geo_last_checked_at: None,
             geo_last_attempt_at: None,
+            geo_retry_state: None,
+            geo_next_update: None,
+            service_retry_states: HashMap::new(),
+            service_checked_at: HashMap::new(),
+            service_next_updates: HashMap::new(),
+            geo_automatic_update: false,
             traffic: TrafficStats::default(),
             last_traffic_sample_at_ms: 0,
             traffic_request_id: 0,
