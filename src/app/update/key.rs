@@ -275,6 +275,11 @@ pub(super) fn handle_enter_on_sources(model: &mut Model) -> Vec<Effect> {
             .iter()
             .any(|p| p.subscription_id == Some(id))
         {
+            if !download_allowed(model) {
+                let mut result = vec![Effect::SaveConfig];
+                push_download_blocked(&mut result, model, DownloadKind::Subscription);
+                return result;
+            }
             model.subscription_fetching = true;
             model.subscription_updates.insert(id);
             let mut result = vec![Effect::SaveConfig, Effect::UpdateSubscription { id }];
@@ -301,6 +306,10 @@ pub(super) fn handle_update_key(model: &mut Model) -> Vec<Effect> {
         if let Some(sub) = model.config.subscriptions.get(idx) {
             let id = sub.id;
             let name = sub.name.clone();
+            if !download_allowed(model) {
+                push_download_blocked(&mut effects, model, DownloadKind::Subscription);
+                return effects;
+            }
             model.subscription_fetching = true;
             model.subscription_updates.insert(id);
             let mut result = vec![Effect::SaveConfig, Effect::UpdateSubscription { id }];
@@ -324,14 +333,8 @@ pub(super) fn handle_update_key(model: &mut Model) -> Vec<Effect> {
                 );
                 return effects;
             }
-            if model.connection != crate::app::model::ConnectionState::Connected {
-                push_status(
-                    &mut effects,
-                    model,
-                    crate::app::model::AppStatus::Info(
-                        "Connect before updating service rule-sets".to_string(),
-                    ),
-                );
+            if !download_allowed(model) {
+                push_download_blocked(&mut effects, model, DownloadKind::Geo);
                 return effects;
             }
             model.geo_updating = true;
@@ -342,6 +345,10 @@ pub(super) fn handle_update_key(model: &mut Model) -> Vec<Effect> {
                 crate::app::model::AppStatus::Info("Checking service rule-sets...".to_string()),
             );
             effects.push(Effect::RetryServiceRuleSets { services });
+            return effects;
+        }
+        if !download_allowed(model) {
+            push_download_blocked(&mut effects, model, DownloadKind::Geo);
             return effects;
         }
         model.geo_updating = true;
@@ -621,14 +628,20 @@ pub(super) fn handle_geo_region(model: &mut Model, key: KeyEvent) -> Vec<Effect>
                 // If the region changed and is not Global, check whether geo databases
                 // are present and download them automatically if they are missing.
                 if changed && region != GeoRegion::Global {
-                    model.geo_updating = true;
-                    model.geo_last_attempt_at = Some(chrono::Local::now());
-                    push_status(
-                        &mut effects,
-                        model,
-                        crate::app::model::AppStatus::Info("Checking geo databases...".to_string()),
-                    );
-                    effects.push(Effect::DownloadGeoIfMissing);
+                    if download_allowed(model) {
+                        model.geo_updating = true;
+                        model.geo_last_attempt_at = Some(chrono::Local::now());
+                        push_status(
+                            &mut effects,
+                            model,
+                            crate::app::model::AppStatus::Info(
+                                "Checking geo databases...".to_string(),
+                            ),
+                        );
+                        effects.push(Effect::DownloadGeoIfMissing);
+                    } else {
+                        push_download_blocked(&mut effects, model, DownloadKind::Geo);
+                    }
                 }
 
                 // Persist the previously active routing mode under the old region
@@ -1045,11 +1058,30 @@ pub(super) fn handle_service_routing(model: &mut Model, key: KeyEvent) -> Vec<Ef
                     );
                 }
                 _ => {
-                    push_status(
-                        &mut effects,
-                        model,
-                        crate::app::model::AppStatus::Info("Service routing updated".into()),
-                    );
+                    if model
+                        .config
+                        .settings
+                        .geo_routing
+                        .enabled_services()
+                        .is_empty()
+                    {
+                        push_status(
+                            &mut effects,
+                            model,
+                            crate::app::model::AppStatus::Info("Service routing updated".into()),
+                        );
+                    } else if download_allowed(model) {
+                        push_status(
+                            &mut effects,
+                            model,
+                            crate::app::model::AppStatus::Info(
+                                "Service routing changed — updating rule-sets".into(),
+                            ),
+                        );
+                        effects.push(Effect::DownloadServiceRuleSetsIfMissing);
+                    } else {
+                        push_download_blocked(&mut effects, model, DownloadKind::Geo);
+                    }
                 }
             }
             return effects;
@@ -1865,6 +1897,7 @@ mod tests {
             ServiceRoute::Proxy
         );
         assert!(effects.contains(&Effect::SaveConfig));
+        assert!(effects.contains(&Effect::DownloadServiceRuleSetsIfMissing));
         // Not connected — no reconnect.
         assert_eq!(model.connection, ConnectionState::Idle);
     }
@@ -1893,7 +1926,7 @@ mod tests {
         // First-enable ordering: the commit must NOT reconnect immediately —
         // a first-enabled service's rule-sets may not be on disk yet, and
         // the new sing-box would come up without its rules. Instead it
-        // downloads through the still-active tunnel and defers the reconnect
+        // downloads using the still-active tunnel and defers the reconnect
         // to Msg::ServiceRuleSetsReady (covered in update.rs tests).
         let a = Profile::new_vless("A".into(), "e".into(), 1, "u".into());
         let active_id = a.id;

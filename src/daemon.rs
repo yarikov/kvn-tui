@@ -323,46 +323,55 @@ fn execute_daemon_effect(
             });
         }
         Effect::DownloadServiceRuleSetsIfMissing => {
-            // Fired while a tunnel is up (after `Msg::Connected`, or on a
-            // service-routing commit before its deferred reconnect), so the
-            // fetch goes through the VPN — pre-tunnel, GitHub may be
-            // unreachable (kill switch allowlists only the VPN endpoint, and
-            // the ISP may block it). `Msg::ServiceRuleSetsReady` is sent in
-            // every exit path, download failures included: the reducer uses
-            // it to run a pending reconnect, and the route builder tolerates
-            // files that never arrived.
+            // May run directly when the kill switch is off, or through a
+            // tunnel after connect. Always report partial failures so the
+            // reducer can log them and run any pending reconnect.
+            model.geo_updating = true;
             let services = model.config.settings.geo_routing.enabled_services();
             let schedule_enabled = model.config.settings.geo_routing.auto_update
                 != crate::config::profile::GeoAutoUpdate::Off;
             let tx = tx.clone();
             thread::spawn(move || {
-                let (retry_states, checked_at, next_updates) = match crate::geo::GeoManager::new() {
-                    Ok(gm) => {
-                        let _ = gm.ensure_update_schedules(
-                            crate::config::profile::GeoRegion::Global,
-                            &services,
-                            schedule_enabled,
-                        );
-                        let missing: Vec<_> = services
-                            .into_iter()
-                            .filter(|s| !gm.has_service_databases(*s))
-                            .collect();
-                        refresh_service_rule_sets(&gm, &missing, None);
-                        (
-                            gm.service_retry_states(),
-                            gm.service_checked_at(),
-                            gm.service_next_updates(),
-                        )
-                    }
-                    Err(e) => {
-                        tracing::warn!("Failed to init geo manager for service rule-sets: {e:#}");
-                        (Default::default(), Default::default(), Default::default())
-                    }
-                };
+                let (retry_states, checked_at, next_updates, updated_parts, errors) =
+                    match crate::geo::GeoManager::new() {
+                        Ok(gm) => {
+                            let _ = gm.ensure_update_schedules(
+                                crate::config::profile::GeoRegion::Global,
+                                &services,
+                                schedule_enabled,
+                            );
+                            let missing: Vec<_> = services
+                                .into_iter()
+                                .filter(|s| !gm.has_service_databases(*s))
+                                .collect();
+                            let refreshed = refresh_service_rule_sets(&gm, &missing, None);
+                            (
+                                gm.service_retry_states(),
+                                gm.service_checked_at(),
+                                gm.service_next_updates(),
+                                refreshed.updated_parts,
+                                refreshed.errors,
+                            )
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                "Failed to init geo manager for service rule-sets: {e:#}"
+                            );
+                            (
+                                Default::default(),
+                                Default::default(),
+                                Default::default(),
+                                Vec::new(),
+                                vec![e.to_string()],
+                            )
+                        }
+                    };
                 let _ = tx.send(Msg::ServiceRuleSetsReady {
                     retry_states,
                     checked_at,
                     next_updates,
+                    updated_parts,
+                    errors,
                 });
             });
         }

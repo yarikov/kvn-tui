@@ -179,7 +179,7 @@ pub struct Model {
     /// configuration until the user confirms them.
     pub service_routing_draft: Option<HashMap<RoutedService, ServiceRoute>>,
     /// Set when a service-routing commit is waiting for its rule-sets to be
-    /// fetched through the still-active tunnel; `Msg::ServiceRuleSetsReady`
+    /// fetched using the currently available network; `Msg::ServiceRuleSetsReady`
     /// consumes it and triggers the reconnect. Downloading BEFORE the
     /// reconnect matters: reconnecting first would build the new sing-box
     /// config while the files are still missing, leaving the freshly enabled
