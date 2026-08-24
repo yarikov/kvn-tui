@@ -5,8 +5,28 @@ use std::process::Command;
 
 use anyhow::{Context, Result};
 
+use crate::app::model::SourceRow;
 use crate::config::profile::Config;
 use crate::paths::profiles_path;
+
+/// Config object that should be selected when the editor opens.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum EditorTarget {
+    Profile(usize),
+    Subscription(usize),
+}
+
+impl From<SourceRow> for EditorTarget {
+    fn from(row: SourceRow) -> Self {
+        match row {
+            SourceRow::StandaloneProfile(idx)
+            | SourceRow::SubscriptionProfile {
+                profile_idx: idx, ..
+            } => Self::Profile(idx),
+            SourceRow::SubscriptionHeader(idx) => Self::Subscription(idx),
+        }
+    }
+}
 
 /// Detect the user's preferred editor using $VISUAL, $EDITOR, or a fallback chain.
 fn detect_editor() -> String {
@@ -88,9 +108,8 @@ fn ensure_profiles_file(path: &Path) -> Result<()> {
         .context("Failed to create default profiles.json")
 }
 
-/// Determine the 1-based line number of the start of `profile_index`-th profile
-/// in a pretty-printed JSON file.
-fn find_profile_line(path: &Path, profile_index: usize) -> Option<usize> {
+/// Determine the 1-based line number of an object in a top-level JSON array.
+fn find_array_item_line(path: &Path, array_name: &str, item_index: usize) -> Option<usize> {
     let content = fs::read_to_string(path).ok()?;
 
     enum State {
@@ -99,17 +118,18 @@ fn find_profile_line(path: &Path, profile_index: usize) -> Option<usize> {
         InStringEscape,
     }
 
-    let mut in_profiles = false;
+    let array_prefix = format!("\"{array_name}\"");
+    let mut in_array = false;
     let mut depth = 0;
-    let mut profile_count = 0;
+    let mut item_count = 0;
     let mut state = State::Normal;
 
     for (line_num, line) in content.lines().enumerate() {
         let trimmed = line.trim();
 
-        if !in_profiles {
-            if trimmed.starts_with("\"profiles\"") {
-                in_profiles = true;
+        if !in_array {
+            if trimmed.starts_with(&array_prefix) {
+                in_array = true;
             } else {
                 continue;
             }
@@ -119,26 +139,26 @@ fn find_profile_line(path: &Path, profile_index: usize) -> Option<usize> {
             match state {
                 State::Normal => match c {
                     '"' => state = State::InString,
-                    '[' if in_profiles => {
+                    '[' if in_array => {
                         depth += 1;
                     }
-                    ']' if in_profiles && depth > 0 => {
+                    ']' if in_array && depth > 0 => {
                         depth -= 1;
                         if depth == 0 {
                             return None;
                         }
                     }
-                    '{' if in_profiles && depth == 1 => {
-                        if profile_count == profile_index {
+                    '{' if in_array && depth == 1 => {
+                        if item_count == item_index {
                             return Some(line_num + 1);
                         }
-                        profile_count += 1;
+                        item_count += 1;
                         depth += 1;
                     }
-                    '{' if in_profiles => {
+                    '{' if in_array => {
                         depth += 1;
                     }
-                    '}' if in_profiles && depth > 0 => {
+                    '}' if in_array && depth > 0 => {
                         depth -= 1;
                     }
                     _ => {}
@@ -158,6 +178,13 @@ fn find_profile_line(path: &Path, profile_index: usize) -> Option<usize> {
     None
 }
 
+fn find_target_line(path: &Path, target: EditorTarget) -> Option<usize> {
+    match target {
+        EditorTarget::Profile(idx) => find_array_item_line(path, "profiles", idx),
+        EditorTarget::Subscription(idx) => find_array_item_line(path, "subscriptions", idx),
+    }
+}
+
 /// Build editor command-line arguments that jump to `line` in `path`.
 fn editor_args(editor: &str, path: &Path, line: usize) -> Vec<String> {
     let name = Path::new(editor)
@@ -175,13 +202,13 @@ fn editor_args(editor: &str, path: &Path, line: usize) -> Vec<String> {
 
 /// Open `profiles.json` in the user's preferred external editor.
 ///
-/// If `profile_index` is within bounds, the editor will be asked to jump to the
-/// line where that profile object starts. The caller must restore the terminal
+/// If `target` is present and within bounds, the editor will be asked to jump
+/// to the line where that object starts. The caller must restore the terminal
 /// before invoking this function. A backup is created before editing; if
 /// the edited file contains invalid JSON, the backup is restored automatically
 /// and an error is returned. On success the parsed [`Config`] is returned so
 /// the application can reload.
-pub fn open_profiles_editor(profile_index: usize) -> Result<Config> {
+pub fn open_profiles_editor(target: Option<EditorTarget>) -> Result<Config> {
     let editor = detect_editor();
     let (program, base_args) = split_editor(&editor);
     let path = profiles_path().context("Failed to determine profiles path")?;
@@ -190,7 +217,7 @@ pub fn open_profiles_editor(profile_index: usize) -> Result<Config> {
 
     let mut backup = ConfigBackup::create(&path)?;
 
-    let args = if let Some(line) = find_profile_line(&path, profile_index) {
+    let args = if let Some(line) = target.and_then(|target| find_target_line(&path, target)) {
         editor_args(&program, &path, line)
     } else {
         vec![path.display().to_string()]
@@ -294,7 +321,7 @@ mod tests {
         let json = serde_json::to_string_pretty(&config).unwrap();
         fs::write(&path, json).unwrap();
 
-        let line = find_profile_line(&path, 0);
+        let line = find_target_line(&path, EditorTarget::Profile(0));
         assert!(line.is_some());
 
         let content = fs::read_to_string(&path).unwrap();
@@ -327,8 +354,8 @@ mod tests {
         let json = serde_json::to_string_pretty(&config).unwrap();
         fs::write(&path, json).unwrap();
 
-        let line0 = find_profile_line(&path, 0).unwrap();
-        let line1 = find_profile_line(&path, 1).unwrap();
+        let line0 = find_target_line(&path, EditorTarget::Profile(0)).unwrap();
+        let line1 = find_target_line(&path, EditorTarget::Profile(1)).unwrap();
         assert!(line1 > line0);
 
         let content = fs::read_to_string(&path).unwrap();
@@ -354,7 +381,7 @@ mod tests {
         let json = serde_json::to_string_pretty(&config).unwrap();
         fs::write(&path, json).unwrap();
 
-        assert_eq!(find_profile_line(&path, 5), None);
+        assert_eq!(find_target_line(&path, EditorTarget::Profile(5)), None);
     }
 
     #[test]
@@ -366,7 +393,70 @@ mod tests {
         let json = serde_json::to_string_pretty(&config).unwrap();
         fs::write(&path, json).unwrap();
 
-        assert_eq!(find_profile_line(&path, 0), None);
+        assert_eq!(find_target_line(&path, EditorTarget::Profile(0)), None);
+    }
+
+    #[test]
+    fn find_subscription_line_first_and_second_subscription() {
+        use crate::config::profile::Subscription;
+        use uuid::Uuid;
+
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("profiles.json");
+        let config = Config {
+            subscriptions: vec![
+                Subscription {
+                    id: Uuid::new_v4(),
+                    name: "First subscription".to_string(),
+                    url: "https://example.com/first".to_string(),
+                    auto_update: Default::default(),
+                    last_updated: None,
+                    next_auto_update: None,
+                    retry_state: None,
+                },
+                Subscription {
+                    id: Uuid::new_v4(),
+                    name: "Second subscription".to_string(),
+                    url: "https://example.com/second".to_string(),
+                    auto_update: Default::default(),
+                    last_updated: None,
+                    next_auto_update: None,
+                    retry_state: None,
+                },
+            ],
+            ..Default::default()
+        };
+        fs::write(&path, serde_json::to_string_pretty(&config).unwrap()).unwrap();
+
+        let line0 = find_target_line(&path, EditorTarget::Subscription(0)).unwrap();
+        let line1 = find_target_line(&path, EditorTarget::Subscription(1)).unwrap();
+        let content = fs::read_to_string(&path).unwrap();
+        let lines: Vec<_> = content.lines().collect();
+
+        assert!(line1 > line0);
+        assert_eq!(lines[line0 - 1].trim(), "{");
+        assert_eq!(lines[line1 - 1].trim(), "{");
+        assert!(lines[line0 + 1].contains("First subscription"));
+        assert!(lines[line1 + 1].contains("Second subscription"));
+    }
+
+    #[test]
+    fn editor_target_maps_source_rows() {
+        assert_eq!(
+            EditorTarget::from(SourceRow::StandaloneProfile(2)),
+            EditorTarget::Profile(2)
+        );
+        assert_eq!(
+            EditorTarget::from(SourceRow::SubscriptionProfile {
+                sub_idx: 1,
+                profile_idx: 4,
+            }),
+            EditorTarget::Profile(4)
+        );
+        assert_eq!(
+            EditorTarget::from(SourceRow::SubscriptionHeader(3)),
+            EditorTarget::Subscription(3)
+        );
     }
 
     // ---- editor_args ----
