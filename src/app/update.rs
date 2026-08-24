@@ -523,9 +523,12 @@ fn connection_settings_changed(
 }
 
 fn handle_tick(model: &mut Model) -> Vec<Effect> {
+    handle_tick_at(model, Local::now())
+}
+
+fn handle_tick_at(model: &mut Model, now: chrono::DateTime<Local>) -> Vec<Effect> {
     let mut effects = Vec::new();
 
-    let now = Local::now();
     if geo_update_due(model, now) {
         model.geo_updating = true;
         model.geo_automatic_update = true;
@@ -575,7 +578,7 @@ fn handle_tick(model: &mut Model) -> Vec<Effect> {
     }
 
     // Auto-update subscriptions that are due.
-    effects.extend(check_due_subscriptions(model));
+    effects.extend(check_due_subscriptions_at(model, now));
 
     // Dispatch pending profile tests, max 4 concurrent.
     while model.testing_profiles.len() < 4 {
@@ -701,10 +704,6 @@ fn geo_update_due(model: &Model, now: chrono::DateTime<Local>) -> bool {
             },
             |date| now.date_naive() >= date,
         )
-}
-
-fn check_due_subscriptions(model: &mut Model) -> Vec<Effect> {
-    check_due_subscriptions_at(model, Local::now())
 }
 
 fn check_due_subscriptions_at(model: &mut Model, now: chrono::DateTime<Local>) -> Vec<Effect> {
@@ -1158,7 +1157,18 @@ mod tests {
     use super::*;
     use crate::config::profile::{GeoAutoUpdate, RoutingMode, SubscriptionAutoUpdate};
     use crate::test_helpers::*;
+    use chrono::Timelike;
     use crossterm::event::KeyCode;
+
+    fn after_update_window() -> chrono::DateTime<Local> {
+        Local::now()
+            .with_hour(9)
+            .unwrap()
+            .with_minute(0)
+            .unwrap()
+            .with_second(0)
+            .unwrap()
+    }
 
     fn app_log_info(message: &str) -> Effect {
         Effect::AppendAppLog {
@@ -2254,7 +2264,7 @@ mod tests {
         model.config.settings.geo_routing.set_region(GeoRegion::Ru);
         model.config.settings.geo_routing.auto_update = GeoAutoUpdate::Every1d;
 
-        let effects = handle_tick(&mut model);
+        let effects = handle_tick_at(&mut model, after_update_window());
 
         assert!(effects.contains(&Effect::DownloadGeo));
         assert!(model.geo_updating);
@@ -2266,7 +2276,7 @@ mod tests {
         let mut model = model_with_profiles(vec![]);
         model.config.settings.geo_routing.set_region(GeoRegion::Ru);
         model.config.settings.geo_routing.auto_update = GeoAutoUpdate::Every1d;
-        let now = Local::now();
+        let now = after_update_window();
         model.geo_last_checked_at = Some(now - chrono::Duration::try_hours(23).unwrap());
         assert!(!geo_update_due(&model, now));
 
@@ -2284,7 +2294,7 @@ mod tests {
         let mut model = model_with_profiles(vec![]);
         model.config.settings.geo_routing.set_region(GeoRegion::Ru);
         model.config.settings.geo_routing.auto_update = GeoAutoUpdate::Every1d;
-        let now = Local::now();
+        let now = after_update_window();
         model.geo_last_checked_at = Some(now - chrono::Duration::days(2));
         model.geo_retry_state = Some(crate::geo::GeoRetryState {
             consecutive_failures: 2,
@@ -2339,7 +2349,7 @@ mod tests {
             crate::config::profile::ServiceRoute::Proxy,
         );
 
-        let effects = handle_tick(&mut model);
+        let effects = handle_tick_at(&mut model, after_update_window());
         assert!(!effects.contains(&Effect::DownloadGeo));
         assert!(effects.contains(&Effect::RetryServiceRuleSets {
             services: vec![RoutedService::Telegram],
@@ -2378,7 +2388,7 @@ mod tests {
         model.config.settings.geo_routing.set_region(GeoRegion::Ru);
         model.config.settings.geo_routing.auto_update = GeoAutoUpdate::Every1d;
         model.config.settings.kill_switch = true;
-        let now = Local::now();
+        let now = after_update_window();
 
         model.connection = ConnectionState::Connecting;
         assert!(!geo_update_due(&model, now));
@@ -3834,7 +3844,7 @@ mod tests {
             retry_state: None,
         });
 
-        let effects = check_due_subscriptions(&mut model);
+        let effects = check_due_subscriptions_at(&mut model, after_update_window());
 
         assert_eq!(effects, vec![Effect::UpdateSubscription { id: sub_id }]);
         assert!(model.subscription_updates.contains(&sub_id));
@@ -3964,18 +3974,19 @@ mod tests {
             retry_state: None,
         });
         model.config.settings.kill_switch = true;
+        let now = after_update_window();
 
         model.connection = ConnectionState::Connecting;
-        assert!(check_due_subscriptions(&mut model).is_empty());
+        assert!(check_due_subscriptions_at(&mut model, now).is_empty());
         assert!(!model.subscription_updates.contains(&sub_id));
 
         model.connection = ConnectionState::ConnectPending;
-        assert!(check_due_subscriptions(&mut model).is_empty());
+        assert!(check_due_subscriptions_at(&mut model, now).is_empty());
         assert!(!model.subscription_updates.contains(&sub_id));
 
         model.connection = ConnectionState::Connected;
         assert_eq!(
-            check_due_subscriptions(&mut model),
+            check_due_subscriptions_at(&mut model, now),
             vec![Effect::UpdateSubscription { id: sub_id }]
         );
         assert!(model.subscription_updates.contains(&sub_id));
@@ -3984,18 +3995,19 @@ mod tests {
     #[test]
     fn non_due_subscriptions_are_skipped() {
         let sub_id = Uuid::new_v4();
+        let now = after_update_window();
         let mut model = model_with_profiles(vec![]);
         model.config.subscriptions.push(Subscription {
             id: sub_id,
             name: "Sub".to_string(),
             url: "http://example.com/sub".to_string(),
             auto_update: SubscriptionAutoUpdate::Every1d,
-            last_updated: Some(chrono::Local::now()),
+            last_updated: Some(now),
             next_auto_update: None,
             retry_state: None,
         });
 
-        let effects = check_due_subscriptions(&mut model);
+        let effects = check_due_subscriptions_at(&mut model, now);
 
         assert!(effects.is_empty());
         assert!(!model.subscription_updates.contains(&sub_id));
