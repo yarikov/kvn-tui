@@ -296,6 +296,14 @@ mod tests {
             .spawn()
             .unwrap();
         let pid = child.id();
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while !is_singbox_alive(pid) && Instant::now() < deadline {
+            std::thread::yield_now();
+        }
+        assert!(
+            is_singbox_alive(pid),
+            "spawned sing-box test process was not visible in /proc"
+        );
         write_state_to(
             &AppState {
                 connected: true,
