@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use anyhow::Result;
-use chrono::{DateTime, Local};
+use chrono::{DateTime, Datelike, Local, NaiveDate, Timelike};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -870,9 +870,12 @@ impl Profile {
 pub enum SubscriptionAutoUpdate {
     #[default]
     Off,
+    #[doc(hidden)]
     Every1h,
+    #[doc(hidden)]
     Every12h,
     Every1d,
+    Every3d,
     Every7d,
 }
 
@@ -881,9 +884,9 @@ impl SubscriptionAutoUpdate {
     pub fn interval_minutes(self) -> u64 {
         match self {
             Self::Off => 0,
-            Self::Every1h => 60,
-            Self::Every12h => 720,
+            Self::Every1h | Self::Every12h => 1_440,
             Self::Every1d => 1440,
+            Self::Every3d => 4320,
             Self::Every7d => 10080,
         }
     }
@@ -891,10 +894,10 @@ impl SubscriptionAutoUpdate {
     /// Cycle to the next schedule.
     pub fn next(self) -> Self {
         match self {
-            Self::Off => Self::Every1h,
-            Self::Every1h => Self::Every12h,
-            Self::Every12h => Self::Every1d,
-            Self::Every1d => Self::Every7d,
+            Self::Off => Self::Every1d,
+            Self::Every1h | Self::Every12h => Self::Every1d,
+            Self::Every1d => Self::Every3d,
+            Self::Every3d => Self::Every7d,
             Self::Every7d => Self::Off,
         }
     }
@@ -911,9 +914,9 @@ impl SubscriptionAutoUpdate {
     pub fn interval_label(self) -> String {
         match self {
             Self::Off => "off".to_string(),
-            Self::Every1h => "1h".to_string(),
-            Self::Every12h => "12h".to_string(),
+            Self::Every1h | Self::Every12h => "1d".to_string(),
             Self::Every1d => "1d".to_string(),
+            Self::Every3d => "3d".to_string(),
             Self::Every7d => "7d".to_string(),
         }
     }
@@ -931,19 +934,96 @@ pub struct Subscription {
     pub auto_update: SubscriptionAutoUpdate,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_updated: Option<DateTime<Local>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_auto_update: Option<NaiveDate>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retry_state: Option<SubscriptionRetryState>,
+}
+
+/// Persisted retry metadata for an auto-updating subscription.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct SubscriptionRetryState {
+    pub consecutive_failures: u32,
+    pub retry_at: DateTime<Local>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attempt_date: Option<NaiveDate>,
+}
+
+impl Subscription {
+    /// Record a failed fetch and schedule the next retry using the bounded
+    /// 1/5/15/60-minute backoff sequence.
+    pub fn record_fetch_failure(&mut self, now: DateTime<Local>) {
+        let today = now.date_naive();
+        let consecutive_failures = self
+            .retry_state
+            .as_ref()
+            .filter(|state| state.attempt_date == Some(today))
+            .map_or(1, |state| state.consecutive_failures.saturating_add(1));
+        let delay_minutes = match consecutive_failures {
+            1 => 1,
+            2 => 5,
+            3 => 15,
+            4 => 60,
+            _ => minutes_until_next_update_window(now),
+        };
+        self.retry_state = Some(SubscriptionRetryState {
+            consecutive_failures,
+            retry_at: now + chrono::Duration::minutes(delay_minutes),
+            attempt_date: Some(today),
+        });
+    }
+
+    pub fn clear_retry_state(&mut self) {
+        self.retry_state = None;
+    }
+
+    pub fn schedule_next_after_success(&mut self, now: DateTime<Local>) {
+        self.clear_retry_state();
+        let days = self.auto_update.interval_minutes() / 1_440;
+        self.next_auto_update =
+            (days != 0).then(|| now.date_naive() + chrono::Duration::days(days as i64));
+    }
+}
+
+pub fn next_update_window_date(now: DateTime<Local>) -> NaiveDate {
+    if now.hour() < 8 {
+        now.date_naive()
+    } else {
+        now.date_naive()
+            .succ_opt()
+            .expect("local date must advance")
+    }
+}
+
+pub fn retry_delay_minutes(failure: u32, now: DateTime<Local>) -> i64 {
+    match failure {
+        1 => 1,
+        2 => 5,
+        3 => 15,
+        4 => 60,
+        _ => minutes_until_next_update_window(now),
+    }
+}
+
+fn minutes_until_next_update_window(now: DateTime<Local>) -> i64 {
+    let next = next_update_window_date(now);
+    let days = next.num_days_from_ce() - now.date_naive().num_days_from_ce();
+    i64::from(days) * 1_440 - i64::from(now.hour()) * 60 - i64::from(now.minute()) + 8 * 60
 }
 
 #[test]
 fn subscription_auto_update_cycles_and_labels() {
     assert_eq!(SubscriptionAutoUpdate::Off.interval_minutes(), 0);
-    assert_eq!(SubscriptionAutoUpdate::Every1h.interval_minutes(), 60);
-    assert_eq!(SubscriptionAutoUpdate::Every12h.interval_minutes(), 720);
+    assert_eq!(SubscriptionAutoUpdate::Every1h.interval_minutes(), 1440);
+    assert_eq!(SubscriptionAutoUpdate::Every12h.interval_minutes(), 1440);
     assert_eq!(SubscriptionAutoUpdate::Every1d.interval_minutes(), 1440);
+    assert_eq!(SubscriptionAutoUpdate::Every3d.interval_minutes(), 4320);
     assert_eq!(SubscriptionAutoUpdate::Every7d.interval_minutes(), 10080);
 
     assert_eq!(
         SubscriptionAutoUpdate::Off.next(),
-        SubscriptionAutoUpdate::Every1h
+        SubscriptionAutoUpdate::Every1d
     );
     assert_eq!(
         SubscriptionAutoUpdate::Every7d.next(),
@@ -951,14 +1031,72 @@ fn subscription_auto_update_cycles_and_labels() {
     );
 
     assert_eq!(SubscriptionAutoUpdate::Off.label(), "✕");
-    assert_eq!(SubscriptionAutoUpdate::Every1h.label(), "🗘 1h");
+    assert_eq!(SubscriptionAutoUpdate::Every1d.label(), "🗘 1d");
+}
+
+#[test]
+fn subscription_retry_backoff_is_bounded_and_serializable() {
+    use chrono::TimeZone;
+
+    let now = Local.with_ymd_and_hms(2026, 8, 22, 12, 0, 0).unwrap();
+    let mut sub = Subscription {
+        id: Uuid::nil(),
+        name: "Sub".into(),
+        url: "https://example.com/sub".into(),
+        auto_update: SubscriptionAutoUpdate::Every1h,
+        last_updated: None,
+        next_auto_update: None,
+        retry_state: None,
+    };
+
+    for (failures, delay) in [(1, 1), (2, 5), (3, 15), (4, 60)] {
+        sub.record_fetch_failure(now);
+        let state = sub.retry_state.as_ref().unwrap();
+        assert_eq!(state.consecutive_failures, failures);
+        assert_eq!(state.retry_at, now + chrono::Duration::minutes(delay));
+    }
+    sub.record_fetch_failure(now);
+    assert_eq!(
+        sub.retry_state.as_ref().unwrap().retry_at,
+        Local.with_ymd_and_hms(2026, 8, 23, 8, 0, 0).unwrap()
+    );
+
+    let json = serde_json::to_string(&sub).unwrap();
+    let restored: Subscription = serde_json::from_str(&json).unwrap();
+    assert_eq!(restored, sub);
+}
+
+#[test]
+fn update_window_is_fixed_at_eight_local_time() {
+    use chrono::TimeZone;
+
+    let before = Local.with_ymd_and_hms(2026, 8, 22, 7, 59, 0).unwrap();
+    let after = Local.with_ymd_and_hms(2026, 8, 22, 11, 0, 0).unwrap();
+    assert_eq!(next_update_window_date(before), before.date_naive());
+    assert_eq!(
+        next_update_window_date(after),
+        after.date_naive().succ_opt().unwrap()
+    );
+}
+
+#[test]
+fn subscription_without_retry_state_remains_backward_compatible() {
+    let json = r#"{
+        "id":"00000000-0000-0000-0000-000000000000",
+        "name":"Sub",
+        "url":"https://example.com/sub",
+        "auto_update":"every1h"
+    }"#;
+
+    let sub: Subscription = serde_json::from_str(json).unwrap();
+    assert!(sub.retry_state.is_none());
+    assert!(!serde_json::to_string(&sub).unwrap().contains("retry_state"));
 }
 
 #[test]
 fn geo_auto_update_cycles_intervals_and_labels() {
     let schedules = [
         (GeoAutoUpdate::Off, 0, "off"),
-        (GeoAutoUpdate::Every12h, 720, "12h"),
         (GeoAutoUpdate::Every1d, 1_440, "1d"),
         (GeoAutoUpdate::Every3d, 4_320, "3d"),
         (GeoAutoUpdate::Every7d, 10_080, "7d"),
@@ -967,7 +1105,7 @@ fn geo_auto_update_cycles_intervals_and_labels() {
         assert_eq!(schedule.interval_minutes(), minutes);
         assert_eq!(schedule.label(), label);
     }
-    assert_eq!(GeoAutoUpdate::Off.next(), GeoAutoUpdate::Every12h);
+    assert_eq!(GeoAutoUpdate::Off.next(), GeoAutoUpdate::Every1d);
     assert_eq!(GeoAutoUpdate::Every12h.next(), GeoAutoUpdate::Every1d);
     assert_eq!(GeoAutoUpdate::Every1d.next(), GeoAutoUpdate::Every3d);
     assert_eq!(GeoAutoUpdate::Every3d.next(), GeoAutoUpdate::Every7d);
@@ -994,7 +1132,7 @@ impl GeoAutoUpdate {
     pub fn interval_minutes(self) -> u64 {
         match self {
             Self::Off => 0,
-            Self::Every12h => 720,
+            Self::Every12h => 1_440,
             Self::Every1d => 1_440,
             Self::Every3d => 4_320,
             Self::Every7d => 10_080,
@@ -1003,7 +1141,7 @@ impl GeoAutoUpdate {
 
     pub fn next(self) -> Self {
         match self {
-            Self::Off => Self::Every12h,
+            Self::Off => Self::Every1d,
             Self::Every12h => Self::Every1d,
             Self::Every1d => Self::Every3d,
             Self::Every3d => Self::Every7d,
@@ -1014,7 +1152,7 @@ impl GeoAutoUpdate {
     pub fn label(self) -> &'static str {
         match self {
             Self::Off => "off",
-            Self::Every12h => "12h",
+            Self::Every12h => "1d",
             Self::Every1d => "1d",
             Self::Every3d => "3d",
             Self::Every7d => "7d",
@@ -1322,7 +1460,7 @@ impl Default for Settings {
 
 /// Current schema version for `profiles.json`. Bumped on every breaking
 /// change to the persisted shape; new migrations go in `Config::migrate`.
-pub const CURRENT_SCHEMA_VERSION: u32 = 2;
+pub const CURRENT_SCHEMA_VERSION: u32 = 3;
 
 fn default_schema_version() -> u32 {
     // Files written before the version was introduced are treated as v0
@@ -1419,6 +1557,10 @@ impl Config {
             self.migrate_v1_to_v2();
             self.schema_version = 2;
         }
+        if self.schema_version == 2 {
+            self.migrate_v2_to_v3();
+            self.schema_version = 3;
+        }
         debug_assert_eq!(self.schema_version, CURRENT_SCHEMA_VERSION);
         Ok(())
     }
@@ -1448,6 +1590,27 @@ impl Config {
             {
                 cfg.tls.utls_fingerprint = Some(fp);
             }
+        }
+    }
+
+    fn migrate_v2_to_v3(&mut self) {
+        let next = next_update_window_date(Local::now());
+        for subscription in &mut self.subscriptions {
+            if matches!(
+                subscription.auto_update,
+                SubscriptionAutoUpdate::Every1h | SubscriptionAutoUpdate::Every12h
+            ) {
+                subscription.auto_update = SubscriptionAutoUpdate::Every1d;
+            }
+            if subscription.auto_update != SubscriptionAutoUpdate::Off
+                && subscription.next_auto_update.is_none()
+            {
+                subscription.next_auto_update = Some(next);
+            }
+            subscription.retry_state = None;
+        }
+        if self.settings.geo_routing.auto_update == GeoAutoUpdate::Every12h {
+            self.settings.geo_routing.auto_update = GeoAutoUpdate::Every1d;
         }
     }
 }
@@ -3227,6 +3390,34 @@ mod tests {
         cfg.migrate().unwrap();
         assert_eq!(cfg.schema_version, CURRENT_SCHEMA_VERSION);
         // No panic, no mutation.
+    }
+
+    #[test]
+    fn migrate_v2_to_v3_promotes_short_update_intervals() {
+        let mut cfg = Config {
+            schema_version: 2,
+            ..Config::default()
+        };
+        cfg.subscriptions.push(Subscription {
+            id: Uuid::new_v4(),
+            name: "short".into(),
+            url: "https://example.com/sub".into(),
+            auto_update: SubscriptionAutoUpdate::Every1h,
+            last_updated: None,
+            next_auto_update: None,
+            retry_state: None,
+        });
+        cfg.settings.geo_routing.auto_update = GeoAutoUpdate::Every12h;
+
+        cfg.migrate().unwrap();
+
+        assert_eq!(cfg.schema_version, CURRENT_SCHEMA_VERSION);
+        assert_eq!(
+            cfg.subscriptions[0].auto_update,
+            SubscriptionAutoUpdate::Every1d
+        );
+        assert!(cfg.subscriptions[0].next_auto_update.is_some());
+        assert_eq!(cfg.settings.geo_routing.auto_update, GeoAutoUpdate::Every1d);
     }
 
     #[test]

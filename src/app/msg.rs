@@ -51,6 +51,18 @@ pub enum Msg {
     GeoMetadataRefreshed {
         last_updated: Option<String>,
         last_checked_at: Option<chrono::DateTime<chrono::Local>>,
+        retry_state: Option<crate::geo::GeoRetryState>,
+        service_retry_states: std::collections::HashMap<
+            crate::config::profile::RoutedService,
+            crate::geo::GeoRetryState,
+        >,
+        service_checked_at: std::collections::HashMap<
+            crate::config::profile::RoutedService,
+            chrono::DateTime<chrono::Local>,
+        >,
+        next_update: Option<chrono::NaiveDate>,
+        service_next_updates:
+            std::collections::HashMap<crate::config::profile::RoutedService, chrono::NaiveDate>,
     },
     SystemResumed,
     Connected {
@@ -78,7 +90,18 @@ pub enum Msg {
     /// that service"). Consumed by the reducer to run the reconnect that a
     /// service-routing commit deferred until the rule-sets were fetched
     /// through the still-active tunnel (`Model::pending_service_reconnect`).
-    ServiceRuleSetsReady,
+    ServiceRuleSetsReady {
+        retry_states: std::collections::HashMap<
+            crate::config::profile::RoutedService,
+            crate::geo::GeoRetryState,
+        >,
+        checked_at: std::collections::HashMap<
+            crate::config::profile::RoutedService,
+            chrono::DateTime<chrono::Local>,
+        >,
+        next_updates:
+            std::collections::HashMap<crate::config::profile::RoutedService, chrono::NaiveDate>,
+    },
     SubscriptionFetched {
         id: Uuid,
         result: Result<Vec<crate::config::profile::Profile>, IpcError>,
@@ -121,11 +144,52 @@ pub enum GeoResult {
         parts: Vec<String>,
         last_updated: Option<String>,
         checked_at: chrono::DateTime<chrono::Local>,
+        retry_state: Option<crate::geo::GeoRetryState>,
+        service_retry_states: std::collections::HashMap<
+            crate::config::profile::RoutedService,
+            crate::geo::GeoRetryState,
+        >,
+        service_checked_at: std::collections::HashMap<
+            crate::config::profile::RoutedService,
+            chrono::DateTime<chrono::Local>,
+        >,
+        next_update: Option<chrono::NaiveDate>,
+        service_next_updates:
+            std::collections::HashMap<crate::config::profile::RoutedService, chrono::NaiveDate>,
+        warnings: Vec<String>,
     },
     UpToDate {
         checked_at: Option<chrono::DateTime<chrono::Local>>,
+        retry_state: Option<crate::geo::GeoRetryState>,
+        service_retry_states: std::collections::HashMap<
+            crate::config::profile::RoutedService,
+            crate::geo::GeoRetryState,
+        >,
+        service_checked_at: std::collections::HashMap<
+            crate::config::profile::RoutedService,
+            chrono::DateTime<chrono::Local>,
+        >,
+        next_update: Option<chrono::NaiveDate>,
+        service_next_updates:
+            std::collections::HashMap<crate::config::profile::RoutedService, chrono::NaiveDate>,
+        warnings: Vec<String>,
     },
-    Error(String),
+    Error {
+        message: String,
+        retry_state: Option<crate::geo::GeoRetryState>,
+        service_retry_states: std::collections::HashMap<
+            crate::config::profile::RoutedService,
+            crate::geo::GeoRetryState,
+        >,
+        service_checked_at: std::collections::HashMap<
+            crate::config::profile::RoutedService,
+            chrono::DateTime<chrono::Local>,
+        >,
+        next_update: Option<chrono::NaiveDate>,
+        service_next_updates:
+            std::collections::HashMap<crate::config::profile::RoutedService, chrono::NaiveDate>,
+        updated_parts: Vec<String>,
+    },
 }
 
 /// Commands sent from the TUI client to the daemon over the Unix socket.
