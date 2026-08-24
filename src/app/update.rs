@@ -3970,18 +3970,19 @@ mod tests {
     #[test]
     fn due_subscriptions_are_queued_for_update() {
         let sub_id = Uuid::new_v4();
+        let now = after_update_window();
         let mut model = model_with_profiles(vec![]);
         model.config.subscriptions.push(Subscription {
             id: sub_id,
             name: "Sub".to_string(),
             url: "http://example.com/sub".to_string(),
             auto_update: SubscriptionAutoUpdate::Every1d,
-            last_updated: Some(chrono::Local::now() - chrono::Duration::try_hours(25).unwrap()),
+            last_updated: Some(now - chrono::Duration::try_hours(25).unwrap()),
             next_auto_update: None,
             retry_state: None,
         });
 
-        let effects = check_due_subscriptions_at(&mut model, after_update_window());
+        let effects = check_due_subscriptions_at(&mut model, now);
 
         assert_eq!(effects, vec![Effect::UpdateSubscription { id: sub_id }]);
         assert!(model.subscription_updates.contains(&sub_id));
