@@ -298,6 +298,7 @@ pub fn update(model: &mut Model, msg: Msg) -> Vec<Effect> {
             model.profile_latencies.insert(id, latency_ms);
             vec![Effect::BroadcastState]
         }
+        Msg::Mouse(_) => vec![],
     }
 }
 

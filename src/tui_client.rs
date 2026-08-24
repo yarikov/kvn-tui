@@ -7,7 +7,7 @@ use std::io::{self, IsTerminal, Write};
 use std::sync::Arc;
 use std::sync::mpsc::{Sender, channel};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use crossterm::ExecutableCommand;
@@ -37,6 +37,37 @@ pub(crate) fn osc11(color: Color) -> String {
 /// OSC 111: reset terminal background to its default. Emitted on exit so
 /// we don't leave the user's terminal stuck on our palette color.
 pub(crate) const OSC_RESET_BG: &str = "\x1b]111\x1b\\";
+/// Show a pointing hand over clickable rows; an empty shape list restores the
+/// terminal's contextual default (usually an I-beam over terminal text).
+pub(crate) const OSC_POINTER_INTERACTIVE: &str = "\x1b]22;pointer\x1b\\";
+pub(crate) const OSC_POINTER_TEXT: &str = "\x1b]22;text\x1b\\";
+pub(crate) const OSC_POINTER_DEFAULT: &str = "\x1b]22;\x1b\\";
+const DOUBLE_CLICK_INTERVAL: Duration = Duration::from_millis(300);
+
+#[derive(Default)]
+struct ClickTracker(Option<(uuid::Uuid, Instant)>);
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+enum PointerShape {
+    #[default]
+    Default,
+    Source,
+    Logs,
+}
+
+impl ClickTracker {
+    fn profile_pressed(&mut self, profile_id: uuid::Uuid, now: Instant) -> bool {
+        let double = self.0.is_some_and(|(previous, at)| {
+            previous == profile_id && now.saturating_duration_since(at) <= DOUBLE_CLICK_INTERVAL
+        });
+        self.0 = (!double).then_some((profile_id, now));
+        double
+    }
+
+    fn reset(&mut self) {
+        self.0 = None;
+    }
+}
 
 /// Owns the terminal modes enabled by the TUI and restores them on every
 /// return path (including an error from the render loop).
@@ -55,6 +86,13 @@ impl TerminalSession {
             let _ = disable_raw_mode();
             return Err(error.into());
         }
+        if let Err(error) = input::enable_mouse_capture(&mut stdout) {
+            let _ = input::disable_mouse_capture(&mut stdout);
+            let _ = input::disable_keyboard_protocol(&mut stdout);
+            let _ = stdout.execute(LeaveAlternateScreen);
+            let _ = disable_raw_mode();
+            return Err(error.into());
+        }
         Ok(Self)
     }
 }
@@ -62,6 +100,8 @@ impl TerminalSession {
 impl Drop for TerminalSession {
     fn drop(&mut self) {
         let mut stdout = io::stdout();
+        let _ = stdout.write_all(OSC_POINTER_DEFAULT.as_bytes());
+        let _ = input::disable_mouse_capture(&mut stdout);
         let _ = input::disable_keyboard_protocol(&mut stdout);
         let _ = disable_raw_mode();
         let _ = stdout.execute(LeaveAlternateScreen);
@@ -138,12 +178,92 @@ fn run_loop(
 ) -> Result<()> {
     // Initial draw
     terminal.draw(|f| crate::ui::draw(f, model))?;
+    let mut pointer_shape = PointerShape::Default;
+    let mut mouse_position: Option<(u16, u16)> = None;
+    let mut click_tracker = ClickTracker::default();
+    let mut log_selection: Option<crate::ui::layout::LogSelection> = None;
+    let mut log_dragging = false;
 
     loop {
         let msg = rx.recv()?;
         let mut needs_redraw = false;
 
         match msg {
+            Msg::Mouse(mouse) => {
+                use crossterm::event::{MouseButton, MouseEventKind};
+                mouse_position = Some((mouse.column, mouse.row));
+                let hit =
+                    update_pointer_shape(terminal, model, mouse_position, &mut pointer_shape)?;
+                match mouse.kind {
+                    MouseEventKind::Down(MouseButton::Left) => {
+                        log_selection = None;
+                        log_dragging = false;
+                        let area: ratatui::layout::Rect = terminal.size()?.into();
+                        if let Some(selection) = crate::ui::layout::log_viewport(model, area)
+                            .and_then(|viewport| {
+                                crate::ui::layout::LogSelection::start(
+                                    viewport,
+                                    mouse.column,
+                                    mouse.row,
+                                )
+                            })
+                        {
+                            click_tracker.reset();
+                            log_selection = Some(selection);
+                            log_dragging = true;
+                        } else if let Some(index) = hit {
+                            client.send(&IpcCommand::SelectSource { index })?;
+                            model.selected = index;
+                            let profile_id = match model.source_rows()[index] {
+                                crate::app::model::SourceRow::StandaloneProfile(profile_idx)
+                                | crate::app::model::SourceRow::SubscriptionProfile {
+                                    profile_idx,
+                                    ..
+                                } => Some(model.config.profiles[profile_idx].id),
+                                crate::app::model::SourceRow::SubscriptionHeader(_) => None,
+                            };
+                            if let Some(profile_id) = profile_id
+                                && click_tracker.profile_pressed(profile_id, Instant::now())
+                            {
+                                client.send(&IpcCommand::ConnectProfile { profile_id })?;
+                            } else if profile_id.is_none() {
+                                click_tracker.reset();
+                            }
+                        } else {
+                            click_tracker.reset();
+                        }
+                        needs_redraw = true;
+                    }
+                    MouseEventKind::Moved => {
+                        if log_dragging && let Some(selection) = &mut log_selection {
+                            selection.update(mouse.column, mouse.row);
+                            needs_redraw = true;
+                        }
+                    }
+                    MouseEventKind::Up(MouseButton::Left) => {
+                        if log_dragging && let Some(selection) = &mut log_selection {
+                            log_dragging = false;
+                            selection.update(mouse.column, mouse.row);
+                            let copy_result = (!selection.is_empty())
+                                .then(|| self::clipboard::write_clipboard_text(&selection.text()));
+                            log_selection = None;
+                            if let Some(result) = copy_result {
+                                match result {
+                                    Ok(()) => client.send(&IpcCommand::Copied {
+                                        name: "log".into(),
+                                        count: 1,
+                                    })?,
+                                    Err(error) => client.send(&IpcCommand::ClientError {
+                                        message: format!("Failed to copy log text: {error:#}"),
+                                    })?,
+                                }
+                            }
+                            needs_redraw = true;
+                        }
+                    }
+                    _ => {}
+                }
+            }
             Msg::Key(key) => {
                 use crossterm::event::{KeyCode, KeyModifiers};
                 let mut forward_key = || {
@@ -196,10 +316,16 @@ fn run_loop(
                         }
                     }
                     KeyCode::Char('e') => {
+                        log_selection = None;
+                        log_dragging = false;
                         anyhow::ensure!(
                             event_reader_control.pause(),
                             "Timed out while pausing terminal input for external editor"
                         );
+                        terminal
+                            .backend_mut()
+                            .write_all(OSC_POINTER_DEFAULT.as_bytes())?;
+                        input::disable_mouse_capture(terminal.backend_mut())?;
                         input::disable_keyboard_protocol(terminal.backend_mut())?;
                         disable_raw_mode()?;
                         terminal.backend_mut().execute(LeaveAlternateScreen)?;
@@ -208,9 +334,12 @@ fn run_loop(
                         enable_raw_mode()?;
                         terminal.backend_mut().execute(EnterAlternateScreen)?;
                         input::enable_keyboard_protocol(terminal.backend_mut())?;
+                        input::enable_mouse_capture(terminal.backend_mut())?;
+                        pointer_shape = PointerShape::Default;
                         terminal.clear()?;
                         input::discard_pending_input();
                         event_reader_control.resume();
+                        update_pointer_shape(terminal, model, mouse_position, &mut pointer_shape)?;
                         match result {
                             Ok(_) => {
                                 if let Ok(config) = crate::config::load_config() {
@@ -240,15 +369,27 @@ fn run_loop(
             }
             Msg::StateUpdate(snapshot) => {
                 apply_snapshot(model, *snapshot);
+                if model.overlay != crate::app::model::Overlay::None {
+                    log_selection = None;
+                    log_dragging = false;
+                }
+                update_pointer_shape(terminal, model, mouse_position, &mut pointer_shape)?;
                 needs_redraw = true;
             }
             Msg::Tick => {
-                for line in log_tailer.tail() {
+                let new_lines = log_tailer.tail();
+                if !new_lines.is_empty() && !log_dragging {
+                    log_selection = None;
+                }
+                for line in new_lines {
                     model.push_log(line);
                 }
                 needs_redraw = true;
             }
             Msg::Resize => {
+                log_selection = None;
+                log_dragging = false;
+                update_pointer_shape(terminal, model, mouse_position, &mut pointer_shape)?;
                 needs_redraw = true;
             }
             Msg::ThemeChanged(theme)
@@ -265,10 +406,47 @@ fn run_loop(
         }
 
         if needs_redraw {
-            terminal.draw(|f| crate::ui::draw(f, model))?;
+            terminal.draw(|f| {
+                crate::ui::layout::draw_with_log_selection(f, model, log_selection.as_ref())
+            })?;
         }
     }
     Ok(())
+}
+
+fn update_pointer_shape(
+    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+    model: &Model,
+    position: Option<(u16, u16)>,
+    pointer_shape: &mut PointerShape,
+) -> Result<Option<usize>> {
+    let area: ratatui::layout::Rect = terminal.size()?.into();
+    let hit = if let Some((column, row)) = position {
+        crate::ui::layout::source_hit_test(model, area, column, row)
+    } else {
+        None
+    };
+    let next_shape = if hit.is_some() {
+        PointerShape::Source
+    } else if position.is_some_and(|(column, row)| {
+        crate::ui::layout::log_viewport(model, area)
+            .is_some_and(|viewport| viewport.contains(column, row))
+    }) {
+        PointerShape::Logs
+    } else {
+        PointerShape::Default
+    };
+    if next_shape != *pointer_shape {
+        let sequence = match next_shape {
+            PointerShape::Default => OSC_POINTER_DEFAULT,
+            PointerShape::Source => OSC_POINTER_INTERACTIVE,
+            PointerShape::Logs => OSC_POINTER_TEXT,
+        };
+        terminal.backend_mut().write_all(sequence.as_bytes())?;
+        terminal.backend_mut().flush()?;
+        *pointer_shape = next_shape;
+    }
+    Ok(hit)
 }
 
 fn apply_snapshot(model: &mut Model, snapshot: crate::app::msg::StateSnapshot) {
@@ -353,5 +531,27 @@ mod tests {
     #[test]
     fn osc_reset_bg_is_osc_111() {
         assert_eq!(OSC_RESET_BG, "\x1b]111\x1b\\");
+    }
+
+    #[test]
+    fn click_tracker_requires_same_profile_within_300ms() {
+        let first = uuid::Uuid::new_v4();
+        let other = uuid::Uuid::new_v4();
+        let start = Instant::now();
+
+        let mut tracker = ClickTracker::default();
+        assert!(!tracker.profile_pressed(first, start));
+        assert!(tracker.profile_pressed(first, start + Duration::from_millis(300)));
+
+        assert!(!tracker.profile_pressed(first, start));
+        assert!(!tracker.profile_pressed(other, start + Duration::from_millis(100)));
+        assert!(!tracker.profile_pressed(other, start + Duration::from_millis(401)));
+    }
+
+    #[test]
+    fn pointer_shape_sequences_use_osc_22() {
+        assert_eq!(OSC_POINTER_INTERACTIVE, "\x1b]22;pointer\x1b\\");
+        assert_eq!(OSC_POINTER_TEXT, "\x1b]22;text\x1b\\");
+        assert_eq!(OSC_POINTER_DEFAULT, "\x1b]22;\x1b\\");
     }
 }

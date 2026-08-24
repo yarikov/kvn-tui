@@ -448,6 +448,16 @@ pub(super) fn handle_ipc_command(
                 vec![]
             }
         }
+        IpcCommand::SelectSource { index } => {
+            if index < model.source_rows().len() {
+                model.selected = index;
+            }
+            vec![]
+        }
+        IpcCommand::ConnectProfile { profile_id } => {
+            queue_connect(model, profile_id);
+            vec![]
+        }
         IpcCommand::Paste { text } => handle_clipboard_text(model, &text),
         IpcCommand::Copied { name, count } => handle_copied_status(model, name, count),
         IpcCommand::ReloadConfig => {
@@ -1794,6 +1804,19 @@ mod tests {
     }
 
     #[test]
+    fn ipc_log_copy_sets_clear_status() {
+        let mut model = model_with_profiles(vec![]);
+        handle_ipc_command(
+            &mut model,
+            crate::app::msg::IpcCommand::Copied {
+                name: "log".into(),
+                count: 1,
+            },
+        );
+        assert_eq!(model.status.text(), "Copied: log");
+    }
+
+    #[test]
     fn ipc_command_key_with_unknown_code_only_broadcasts() {
         let mut model = model_with_profiles(vec![]);
         let effects = handle_ipc_command(
@@ -1988,5 +2011,64 @@ mod tests {
             model.status.text(),
             "Service routing saved — takes effect on next reconnect"
         );
+    }
+
+    #[test]
+    fn ipc_mouse_selection_validates_the_source_index() {
+        let profile = Profile::new_vless("A".into(), "e".into(), 1, "u".into());
+        let mut model = model_with_profiles(vec![profile]);
+        model.selected = 0;
+        handle_ipc_command(
+            &mut model,
+            crate::app::msg::IpcCommand::SelectSource { index: 99 },
+        );
+        assert_eq!(model.selected, 0);
+    }
+
+    #[test]
+    fn ipc_connect_profile_switches_or_reconnects_without_disconnecting() {
+        let first = Profile::new_vless("A".into(), "a".into(), 1, "u".into());
+        let second = Profile::new_vless("B".into(), "b".into(), 2, "v".into());
+        let mut model = model_with_profiles(vec![first.clone(), second.clone()]);
+        model.connection = ConnectionState::Connected;
+        model.active_profile_id = Some(first.id);
+
+        let effects = handle_ipc_command(
+            &mut model,
+            crate::app::msg::IpcCommand::ConnectProfile {
+                profile_id: second.id,
+            },
+        );
+        assert_eq!(model.connection, ConnectionState::Connecting);
+        assert_eq!(model.connecting_profile_id, Some(second.id));
+        assert!(!effects.contains(&Effect::Disconnect));
+
+        model.connection = ConnectionState::Connected;
+        model.active_profile_id = Some(first.id);
+        let effects = handle_ipc_command(
+            &mut model,
+            crate::app::msg::IpcCommand::ConnectProfile {
+                profile_id: first.id,
+            },
+        );
+        assert_eq!(model.connection, ConnectionState::Connecting);
+        assert_eq!(model.connecting_profile_id, Some(first.id));
+        assert!(!effects.contains(&Effect::Disconnect));
+    }
+
+    #[test]
+    fn ipc_connect_profile_rejects_unknown_uuid() {
+        let profile = Profile::new_vless("A".into(), "a".into(), 1, "u".into());
+        let mut model = model_with_profiles(vec![profile.clone()]);
+        model.connection = ConnectionState::Connected;
+        model.active_profile_id = Some(profile.id);
+        handle_ipc_command(
+            &mut model,
+            crate::app::msg::IpcCommand::ConnectProfile {
+                profile_id: uuid::Uuid::new_v4(),
+            },
+        );
+        assert_eq!(model.connection, ConnectionState::Connected);
+        assert_eq!(model.connecting_profile_id, None);
     }
 }

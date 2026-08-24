@@ -14,7 +14,9 @@ use std::sync::mpsc::Sender;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use crossterm::event::{KeyCode, KeyEvent, KeyEventState, KeyModifiers};
+use crossterm::event::{
+    KeyCode, KeyEvent, KeyEventState, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+};
 use signal_hook::consts::signal::SIGWINCH;
 use signal_hook::iterator::Signals;
 
@@ -25,6 +27,8 @@ use crate::app::msg::Msg;
 pub(super) const PUSH_KEYBOARD_PROTOCOL: &str = "\x1b[>13u";
 /// Restore the keyboard flags that were active before kvn-tui started.
 pub(super) const POP_KEYBOARD_PROTOCOL: &str = "\x1b[<1u";
+pub(super) const ENABLE_MOUSE_CAPTURE: &str = "\x1b[?1003h\x1b[?1006h";
+pub(super) const DISABLE_MOUSE_CAPTURE: &str = "\x1b[?1006l\x1b[?1003l";
 
 const POLL_INTERVAL: Duration = Duration::from_millis(50);
 const ESCAPE_TIMEOUT: Duration = Duration::from_millis(30);
@@ -70,6 +74,16 @@ pub(super) fn disable_keyboard_protocol(out: &mut impl Write) -> io::Result<()> 
     out.flush()
 }
 
+pub(super) fn enable_mouse_capture(out: &mut impl Write) -> io::Result<()> {
+    out.write_all(ENABLE_MOUSE_CAPTURE.as_bytes())?;
+    out.flush()
+}
+
+pub(super) fn disable_mouse_capture(out: &mut impl Write) -> io::Result<()> {
+    out.write_all(DISABLE_MOUSE_CAPTURE.as_bytes())?;
+    out.flush()
+}
+
 pub(super) fn spawn_event_reader(tx: Sender<Msg>, control: Arc<EventReaderControl>) {
     spawn_resize_reader(tx.clone());
     thread::spawn(move || {
@@ -97,8 +111,12 @@ pub(super) fn spawn_event_reader(tx: Sender<Msg>, control: Arc<EventReaderContro
                 Err(_) => break,
             }
 
-            for key in decoder.drain(Instant::now()) {
-                if tx.send(Msg::Key(key)).is_err() {
+            for event in decoder.drain(Instant::now()) {
+                let msg = match event {
+                    InputEvent::Key(key) => Msg::Key(key),
+                    InputEvent::Mouse(mouse) => Msg::Mouse(mouse),
+                };
+                if tx.send(msg).is_err() {
                     return;
                 }
             }
@@ -166,7 +184,7 @@ impl Decoder {
         self.pending.extend_from_slice(bytes);
     }
 
-    fn drain(&mut self, now: Instant) -> Vec<KeyEvent> {
+    fn drain(&mut self, now: Instant) -> Vec<InputEvent> {
         let mut events = Vec::new();
         loop {
             match parse_one(&self.pending, self.escape_expired(now)) {
@@ -196,9 +214,15 @@ impl Decoder {
 }
 
 enum ParseResult {
-    Event(KeyEvent, usize),
+    Event(InputEvent, usize),
     Discard(usize),
     Incomplete,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum InputEvent {
+    Key(KeyEvent),
+    Mouse(MouseEvent),
 }
 
 fn parse_one(bytes: &[u8], escape_expired: bool) -> ParseResult {
@@ -263,6 +287,7 @@ fn parse_csi(bytes: &[u8]) -> ParseResult {
         return ParseResult::Discard(used);
     };
     match bytes[end] {
+        b'M' | b'm' if parameters.starts_with('<') => parse_sgr_mouse(parameters, bytes[end], used),
         b'u' => parse_csi_u(parameters, used),
         b'A' => modified_key(KeyCode::Up, parameters, used),
         b'B' => modified_key(KeyCode::Down, parameters, used),
@@ -280,6 +305,61 @@ fn parse_csi(bytes: &[u8]) -> ParseResult {
         },
         _ => ParseResult::Discard(used),
     }
+}
+
+fn parse_sgr_mouse(parameters: &str, terminator: u8, used: usize) -> ParseResult {
+    let mut fields = parameters.strip_prefix('<').unwrap_or_default().split(';');
+    let Some(button) = fields.next().and_then(|value| value.parse::<u16>().ok()) else {
+        return ParseResult::Discard(used);
+    };
+    let Some(column) = fields
+        .next()
+        .and_then(|value| value.parse::<u16>().ok())
+        .and_then(|value| value.checked_sub(1))
+    else {
+        return ParseResult::Discard(used);
+    };
+    let Some(row) = fields
+        .next()
+        .and_then(|value| value.parse::<u16>().ok())
+        .and_then(|value| value.checked_sub(1))
+    else {
+        return ParseResult::Discard(used);
+    };
+    if fields.next().is_some() {
+        return ParseResult::Discard(used);
+    }
+
+    let mut modifiers = KeyModifiers::NONE;
+    modifiers.set(KeyModifiers::SHIFT, button & 4 != 0);
+    modifiers.set(KeyModifiers::ALT, button & 8 != 0);
+    modifiers.set(KeyModifiers::CONTROL, button & 16 != 0);
+    let kind = if button & 32 != 0 {
+        MouseEventKind::Moved
+    } else if button & 64 != 0 {
+        return ParseResult::Discard(used);
+    } else {
+        let mouse_button = match button & 3 {
+            0 => MouseButton::Left,
+            1 => MouseButton::Middle,
+            2 => MouseButton::Right,
+            _ => return ParseResult::Discard(used),
+        };
+        if terminator == b'm' {
+            MouseEventKind::Up(mouse_button)
+        } else {
+            MouseEventKind::Down(mouse_button)
+        }
+    };
+    ParseResult::Event(
+        InputEvent::Mouse(MouseEvent {
+            kind,
+            column,
+            row,
+            modifiers,
+        }),
+        used,
+    )
 }
 
 fn modified_key(code: KeyCode, parameters: &str, used: usize) -> ParseResult {
@@ -316,12 +396,12 @@ fn parse_csi_u(parameters: &str, used: usize) -> ParseResult {
         }
     };
     ParseResult::Event(
-        KeyEvent::new_with_kind_and_state(
+        InputEvent::Key(KeyEvent::new_with_kind_and_state(
             code,
             modifiers,
             crossterm::event::KeyEventKind::Press,
             state,
-        ),
+        )),
         used,
     )
 }
@@ -426,7 +506,7 @@ fn parse_utf8(bytes: &[u8], modifiers: KeyModifiers, prefix: usize) -> ParseResu
 }
 
 fn event(code: KeyCode, modifiers: KeyModifiers, used: usize) -> ParseResult {
-    ParseResult::Event(KeyEvent::new(code, modifiers), used)
+    ParseResult::Event(InputEvent::Key(KeyEvent::new(code, modifiers)), used)
 }
 
 #[cfg(test)]
@@ -454,7 +534,7 @@ mod tests {
 
     fn decode(input: &[u8]) -> KeyEvent {
         match parse_one(input, true) {
-            ParseResult::Event(event, used) => {
+            ParseResult::Event(InputEvent::Key(event), used) => {
                 assert_eq!(used, input.len());
                 event
             }
@@ -517,14 +597,74 @@ mod tests {
         decoder.push(b"\x1b[1086::106;1ujk");
         let events = decoder.drain(Instant::now());
         assert_eq!(events.len(), 3);
-        assert_eq!(events[0].code, KeyCode::Char('j'));
-        assert_eq!(events[1].code, KeyCode::Char('j'));
-        assert_eq!(events[2].code, KeyCode::Char('k'));
+        let codes: Vec<_> = events
+            .into_iter()
+            .map(|event| match event {
+                InputEvent::Key(key) => key.code,
+                InputEvent::Mouse(_) => panic!("expected key"),
+            })
+            .collect();
+        assert_eq!(
+            codes,
+            [KeyCode::Char('j'), KeyCode::Char('j'), KeyCode::Char('k')]
+        );
+    }
+
+    fn mouse(input: &[u8]) -> MouseEvent {
+        match parse_one(input, false) {
+            ParseResult::Event(InputEvent::Mouse(event), used) => {
+                assert_eq!(used, input.len());
+                event
+            }
+            _ => panic!("input did not decode to a mouse event"),
+        }
+    }
+
+    #[test]
+    fn decodes_sgr_mouse_move_press_and_release() {
+        let moved = mouse(b"\x1b[<35;12;8M");
+        assert_eq!(moved.kind, MouseEventKind::Moved);
+        assert_eq!((moved.column, moved.row), (11, 7));
+
+        let down = mouse(b"\x1b[<0;2;3M");
+        assert_eq!(down.kind, MouseEventKind::Down(MouseButton::Left));
+        assert_eq!((down.column, down.row), (1, 2));
+
+        let up = mouse(b"\x1b[<0;2;3m");
+        assert_eq!(up.kind, MouseEventKind::Up(MouseButton::Left));
+    }
+
+    #[test]
+    fn decoder_handles_fragmented_and_combined_mouse_sequences() {
+        let mut decoder = Decoder::default();
+        decoder.push(b"\x1b[<0;4");
+        assert!(decoder.drain(Instant::now()).is_empty());
+        decoder.push(b";5M\x1b[<0;4;5m");
+        let events = decoder.drain(Instant::now());
+        assert_eq!(events.len(), 2);
+        assert!(matches!(
+            events[0],
+            InputEvent::Mouse(MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                column: 3,
+                row: 4,
+                ..
+            })
+        ));
+        assert!(matches!(
+            events[1],
+            InputEvent::Mouse(MouseEvent {
+                kind: MouseEventKind::Up(MouseButton::Left),
+                ..
+            })
+        ));
     }
 
     #[test]
     fn protocol_sequences_are_balanced() {
         assert_eq!(PUSH_KEYBOARD_PROTOCOL, "\x1b[>13u");
         assert_eq!(POP_KEYBOARD_PROTOCOL, "\x1b[<1u");
+        assert_eq!(ENABLE_MOUSE_CAPTURE, "\x1b[?1003h\x1b[?1006h");
+        assert_eq!(DISABLE_MOUSE_CAPTURE, "\x1b[?1006l\x1b[?1003l");
     }
 }

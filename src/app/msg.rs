@@ -1,7 +1,7 @@
 use crate::app::model::{ConnectionState, Overlay, TrafficStats};
 use crate::config::profile::{DnsStrategy, Profile, Settings, Subscription};
 use crate::ui::styles::Theme;
-use crossterm::event::KeyEvent;
+use crossterm::event::{KeyEvent, MouseEvent};
 use uuid::Uuid;
 
 /// Structured error carried inside `Msg` variants.
@@ -45,6 +45,7 @@ impl From<anyhow::Error> for IpcError {
 
 pub enum Msg {
     Key(KeyEvent),
+    Mouse(MouseEvent),
     Tick,
     Resize,
     GeoUpdated(GeoResult),
@@ -204,6 +205,12 @@ pub enum IpcCommand {
         char: Option<char>,
         ctrl: bool,
     },
+    SelectSource {
+        index: usize,
+    },
+    ConnectProfile {
+        profile_id: Uuid,
+    },
     Paste {
         text: String,
     },
@@ -263,6 +270,10 @@ mod tests {
                 code: "Char".into(),
                 char: Some('a'),
                 ctrl: false,
+            },
+            IpcCommand::SelectSource { index: 1 },
+            IpcCommand::ConnectProfile {
+                profile_id: Uuid::nil(),
             },
             IpcCommand::Paste {
                 text: "hello".into(),
