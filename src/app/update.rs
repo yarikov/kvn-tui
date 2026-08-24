@@ -126,7 +126,11 @@ pub fn update(model: &mut Model, msg: Msg) -> Vec<Effect> {
             }
             effects
         }
-        Msg::SubscriptionFetched { id, result } => handle_subscription_result(model, id, result),
+        Msg::SubscriptionFetched { id, result } => {
+            let mut effects = handle_subscription_result(model, id, result);
+            effects.push(Effect::BroadcastState);
+            effects
+        }
         Msg::ServiceRuleSetsReady {
             retry_states,
             checked_at,
@@ -3578,6 +3582,21 @@ mod tests {
                 },
             ]
         );
+    }
+
+    #[test]
+    fn subscription_fetched_error_broadcasts_state_without_other_effects() {
+        let mut model = model_with_profiles(vec![]);
+        let effects = update(
+            &mut model,
+            Msg::SubscriptionFetched {
+                id: Uuid::nil(),
+                result: Err(crate::app::msg::IpcError::new("network down")),
+            },
+        );
+
+        assert!(effects.contains(&Effect::BroadcastState));
+        assert!(matches!(model.status, AppStatus::Error(_)));
     }
 
     #[test]
