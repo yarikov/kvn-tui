@@ -39,7 +39,7 @@
 
 ## Features
 
-- **Vim-style navigation** — `j`/`k` to move, `g`/`G` to jump, `?` for help
+- **Vim-style navigation** — `j`/`k` to move, `gg`/`G` to jump, `?` for help
 - **Profiles & subscriptions** — import, export, edit, and automatically update VPN profiles
 - **Geo & service routing** — choose country-based routing modes and ready-made overrides for selected services
 - **DNS controls** — built-in DoH, DoT, system resolver, strategy, and fake-IP settings
@@ -207,10 +207,26 @@ unusable.
 
 | Key | Action |
 |-----|--------|
-| `j` / `↓` | Move down |
-| `k` / `↑` | Move up |
-| `g` | Go to first profile |
-| `G` | Go to last profile |
+| `h` / `l` | Focus the Sources / Logs panel |
+| `j` / `↓` | Move down one source or complete log record |
+| `k` / `↑` | Move up one source or complete log record |
+| `gg` | Go to the first item or the top of the complete log buffer |
+| `G` | Go to the last item or the bottom of the complete log buffer |
+
+The focused panel is preserved while the daemon remains active. Selectable
+overlays use the same `j` / `k` / `gg` / `G` navigation. In Logs, the first
+`j` selects the top visible record and the first `k` selects the bottom visible
+record; the record focus clears after 15 seconds of inactivity.
+
+**Logs**
+
+| Key | Action |
+|-----|--------|
+| `y` | Copy the focused log record, or every record in the visual selection |
+| `Shift+V` | Start a record-wise visual selection |
+| `j` / `k` | Extend the visual selection by one complete log record |
+| `gg` / `G` | Extend the visual selection to the start / end of the complete log buffer |
+| `Esc` | Cancel the visual selection |
 
 **Profiles & subscriptions**
 
@@ -218,7 +234,7 @@ unusable.
 |-----|--------|
 | `Enter` | Connect to selected profile |
 | `p` | Paste share link or subscription URL from clipboard |
-| `y` | Yank selected profile as a share link (or subscription source URL) to clipboard |
+| `y` | Yank the selected profile as a share link (or subscription source URL) to the clipboard |
 | `d` | Delete selected source |
 | `u` | Update selected subscription or geoip/geosite databases |
 | `i` | Cycle subscription auto-update interval |
@@ -245,7 +261,7 @@ unusable.
 
 | Key | Action |
 |-----|--------|
-| `q` / `Esc` | Close the active overlay; otherwise exit only the TUI — the daemon and VPN keep running |
+| `q` / `Esc` | Close the active overlay; otherwise exit only the TUI — the daemon and VPN keep running (`Esc` cancels an active log selection first) |
 | `Ctrl+C` | Stop the daemon, disconnect the VPN, and exit completely |
 | `?` | Show help |
 
