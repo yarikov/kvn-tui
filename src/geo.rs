@@ -793,6 +793,17 @@ impl GeoManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::Timelike;
+
+    fn after_update_window() -> DateTime<Local> {
+        Local::now()
+            .with_hour(9)
+            .unwrap()
+            .with_minute(0)
+            .unwrap()
+            .with_second(0)
+            .unwrap()
+    }
 
     /// Regions that actually have rule-sets (all of `GeoRegion::ALL` except
     /// `Global`). Used to parametrize per-country tests.
@@ -1150,7 +1161,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         unsafe { std::env::set_var("XDG_CONFIG_HOME", dir.path()) };
         let gm = GeoManager::new().unwrap();
-        let now = Local::now();
+        let now = after_update_window();
 
         for (failures, delay) in [(1, 1), (2, 5), (3, 15), (4, 60)] {
             let state = gm.record_update_failure_at(GeoRegion::Ru, now).unwrap();
