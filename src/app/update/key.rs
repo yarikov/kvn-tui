@@ -72,7 +72,6 @@ pub(super) fn handle_sources(model: &mut Model, key: KeyEvent) -> Vec<Effect> {
         // Navigation
         KeyCode::Char('j') | KeyCode::Down => model.select_next(),
         KeyCode::Char('k') | KeyCode::Up => model.select_prev(),
-        KeyCode::Char('g') => model.select_first(),
         KeyCode::Char('G') => model.select_last(),
 
         // Actions. Note: 'p' (paste) and 'e' (edit profiles) are handled in
@@ -454,6 +453,11 @@ pub(super) fn handle_ipc_command(
             }
             vec![]
         }
+        IpcCommand::SetMainPaneFocus { focus } => {
+            model.main_pane_focus = focus;
+            vec![]
+        }
+        IpcCommand::GoFirst => handle_go_first(model),
         IpcCommand::ConnectProfile { profile_id } => {
             queue_connect(model, profile_id);
             vec![]
@@ -472,6 +476,24 @@ pub(super) fn handle_ipc_command(
     };
     effects.push(Effect::BroadcastState);
     effects
+}
+
+fn handle_go_first(model: &mut Model) -> Vec<Effect> {
+    match model.overlay {
+        Overlay::None => model.select_first(),
+        Overlay::RoutingMode => crate::ui::nav::select_first(&mut model.routing_selected),
+        Overlay::GeoRegions => crate::ui::nav::select_first(&mut model.geo_region_selected),
+        Overlay::DnsSettings => crate::ui::nav::select_first(&mut model.dns_selected),
+        Overlay::ThemeSettings => {
+            crate::ui::nav::select_first(&mut model.theme_selected);
+            model.theme_draft = theme_picker_slugs().first().cloned();
+        }
+        Overlay::ServiceRouting => {
+            crate::ui::nav::select_first(&mut model.service_routing_selected);
+        }
+        Overlay::Help | Overlay::ConfirmDelete => {}
+    }
+    vec![]
 }
 
 pub(super) fn rebuild_key_event(
@@ -505,9 +527,6 @@ pub(super) fn handle_routing_mode(model: &mut Model, key: KeyEvent) -> Vec<Effec
         }
         KeyCode::Char('k') | KeyCode::Up => {
             crate::ui::nav::select_prev(&mut model.routing_selected);
-        }
-        KeyCode::Char('g') => {
-            crate::ui::nav::select_first(&mut model.routing_selected);
         }
         KeyCode::Char('G') => {
             crate::ui::nav::select_last(&mut model.routing_selected, available.len());
@@ -567,10 +586,6 @@ pub(super) fn handle_theme_picker(model: &mut Model, key: KeyEvent) -> Vec<Effec
             crate::ui::nav::select_prev(&mut model.theme_selected);
             model.theme_draft = slugs.get(model.theme_selected).cloned();
         }
-        KeyCode::Char('g') => {
-            crate::ui::nav::select_first(&mut model.theme_selected);
-            model.theme_draft = slugs.first().cloned();
-        }
         KeyCode::Char('G') => {
             crate::ui::nav::select_last(&mut model.theme_selected, slugs.len());
             model.theme_draft = slugs.get(model.theme_selected).cloned();
@@ -611,9 +626,6 @@ pub(super) fn handle_geo_region(model: &mut Model, key: KeyEvent) -> Vec<Effect>
         }
         KeyCode::Char('k') | KeyCode::Up => {
             crate::ui::nav::select_prev(&mut model.geo_region_selected);
-        }
-        KeyCode::Char('g') => {
-            crate::ui::nav::select_first(&mut model.geo_region_selected);
         }
         KeyCode::Char('G') => {
             crate::ui::nav::select_last(&mut model.geo_region_selected, regions.len());
@@ -762,7 +774,6 @@ pub(super) fn handle_dns_settings(model: &mut Model, key: KeyEvent) -> Vec<Effec
         KeyCode::Char('k') | KeyCode::Up => {
             crate::ui::nav::select_prev(&mut model.dns_selected);
         }
-        KeyCode::Char('g') => crate::ui::nav::select_first(&mut model.dns_selected),
         KeyCode::Char('G') => crate::ui::nav::select_last(&mut model.dns_selected, len),
         KeyCode::Char('l') | KeyCode::Right if on_strategy => {
             let base = model
@@ -993,7 +1004,6 @@ pub(super) fn handle_service_routing(model: &mut Model, key: KeyEvent) -> Vec<Ef
         KeyCode::Char('k') | KeyCode::Up => {
             crate::ui::nav::select_prev(&mut model.service_routing_selected);
         }
-        KeyCode::Char('g') => crate::ui::nav::select_first(&mut model.service_routing_selected),
         KeyCode::Char('G') => crate::ui::nav::select_last(&mut model.service_routing_selected, len),
         KeyCode::Char('l') | KeyCode::Right | KeyCode::Char('h') | KeyCode::Left => {
             let Some(service) = RoutedService::ALL
@@ -1190,6 +1200,8 @@ mod tests {
         handle_dns_settings(&mut model, key('G'));
         assert_eq!(model.dns_selected, DnsSettingsItem::ALL.len() - 1);
         handle_dns_settings(&mut model, key('g'));
+        assert_eq!(model.dns_selected, DnsSettingsItem::ALL.len() - 1);
+        handle_go_first(&mut model);
         assert_eq!(model.dns_selected, 0);
     }
 
@@ -1783,6 +1795,23 @@ mod tests {
     }
 
     #[test]
+    fn ipc_command_updates_session_pane_focus() {
+        use crate::app::model::MainPaneFocus;
+
+        let mut model = model_with_profiles(vec![]);
+        assert_eq!(model.main_pane_focus, MainPaneFocus::Sources);
+
+        let effects = handle_ipc_command(
+            &mut model,
+            crate::app::msg::IpcCommand::SetMainPaneFocus {
+                focus: MainPaneFocus::Logs,
+            },
+        );
+        assert_eq!(model.main_pane_focus, MainPaneFocus::Logs);
+        assert_eq!(effects, vec![Effect::BroadcastState]);
+    }
+
+    #[test]
     fn ipc_command_quit_emits_quit_then_broadcast() {
         let mut model = model_with_profiles(vec![]);
         let effects = handle_ipc_command(&mut model, crate::app::msg::IpcCommand::Quit);
@@ -1817,6 +1846,19 @@ mod tests {
     }
 
     #[test]
+    fn ipc_multi_log_copy_uses_log_count_in_status() {
+        let mut model = model_with_profiles(vec![]);
+        handle_ipc_command(
+            &mut model,
+            crate::app::msg::IpcCommand::Copied {
+                name: "log".into(),
+                count: 3,
+            },
+        );
+        assert_eq!(model.status.text(), "Copied 3 logs");
+    }
+
+    #[test]
     fn ipc_command_key_with_unknown_code_only_broadcasts() {
         let mut model = model_with_profiles(vec![]);
         let effects = handle_ipc_command(
@@ -1828,6 +1870,65 @@ mod tests {
             },
         );
         assert_eq!(effects, vec![Effect::BroadcastState]);
+    }
+
+    #[test]
+    fn ipc_go_first_dispatches_to_sources_and_selectable_overlays() {
+        let mut model = model_with_profiles(vec![
+            crate::config::profile::Profile::new_vless(
+                "A".into(),
+                "1.1.1.1".into(),
+                443,
+                "u1".into(),
+            ),
+            crate::config::profile::Profile::new_vless(
+                "B".into(),
+                "2.2.2.2".into(),
+                443,
+                "u2".into(),
+            ),
+        ]);
+        model.selected = 1;
+        handle_ipc_command(&mut model, crate::app::msg::IpcCommand::GoFirst);
+        assert_eq!(model.selected, 0);
+
+        model.overlay = Overlay::RoutingMode;
+        model.routing_selected = 2;
+        handle_ipc_command(&mut model, crate::app::msg::IpcCommand::GoFirst);
+        assert_eq!(model.routing_selected, 0);
+
+        model.overlay = Overlay::GeoRegions;
+        model.geo_region_selected = 3;
+        handle_ipc_command(&mut model, crate::app::msg::IpcCommand::GoFirst);
+        assert_eq!(model.geo_region_selected, 0);
+
+        model.overlay = Overlay::DnsSettings;
+        model.dns_selected = DnsSettingsItem::ALL.len() - 1;
+        handle_ipc_command(&mut model, crate::app::msg::IpcCommand::GoFirst);
+        assert_eq!(model.dns_selected, 0);
+
+        model.overlay = Overlay::ThemeSettings;
+        model.theme_selected = theme_picker_slugs().len().saturating_sub(1);
+        handle_ipc_command(&mut model, crate::app::msg::IpcCommand::GoFirst);
+        assert_eq!(model.theme_selected, 0);
+        assert_eq!(model.theme_draft, theme_picker_slugs().first().cloned());
+
+        model.overlay = Overlay::ServiceRouting;
+        model.service_routing_selected = 1;
+        handle_ipc_command(&mut model, crate::app::msg::IpcCommand::GoFirst);
+        assert_eq!(model.service_routing_selected, 0);
+    }
+
+    #[test]
+    fn ipc_go_first_is_noop_for_non_selectable_overlays() {
+        let mut model = model_with_profiles(vec![]);
+        model.routing_selected = 2;
+        for overlay in [Overlay::Help, Overlay::ConfirmDelete] {
+            model.overlay = overlay;
+            handle_ipc_command(&mut model, crate::app::msg::IpcCommand::GoFirst);
+            assert_eq!(model.overlay, overlay);
+            assert_eq!(model.routing_selected, 2);
+        }
     }
 
     // ---- handle_service_routing ----
@@ -1870,6 +1971,8 @@ mod tests {
         handle_service_routing(&mut model, key('G'));
         assert_eq!(model.service_routing_selected, RoutedService::ALL.len() - 1);
         handle_service_routing(&mut model, key('g'));
+        assert_eq!(model.service_routing_selected, RoutedService::ALL.len() - 1);
+        handle_go_first(&mut model);
         assert_eq!(model.service_routing_selected, 0);
     }
 
