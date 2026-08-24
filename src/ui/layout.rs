@@ -17,8 +17,313 @@ use crate::ui::widgets::{
 /// top/bottom borders = 3 lines.
 const TRAFFIC_PANEL_HEIGHT: u16 = 3;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) struct LogPoint {
+    row: usize,
+    column: u16,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct LogDisplayRow {
+    text: String,
+    hard_break_after: bool,
+    error: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct LogViewport {
+    area: Rect,
+    rows: Vec<LogDisplayRow>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct LogSelection {
+    viewport: LogViewport,
+    anchor: LogPoint,
+    focus: LogPoint,
+}
+
+impl LogSelection {
+    pub(crate) fn start(viewport: LogViewport, column: u16, row: u16) -> Option<Self> {
+        let point = viewport.point_at(column, row)?;
+        Some(Self {
+            viewport,
+            anchor: point,
+            focus: point,
+        })
+    }
+
+    pub(crate) fn update(&mut self, column: u16, row: u16) {
+        self.focus = self.viewport.clamped_point(column, row);
+    }
+
+    pub(crate) fn is_empty(&self) -> bool {
+        self.anchor == self.focus
+    }
+
+    pub(crate) fn text(&self) -> String {
+        if self.is_empty() {
+            return String::new();
+        }
+        let (start, end) = self.bounds();
+        let mut output = String::new();
+        for row_index in start.row..=end.row {
+            let row = &self.viewport.rows[row_index];
+            let from = if row_index == start.row {
+                start.column
+            } else {
+                0
+            };
+            let to = if row_index == end.row {
+                end.column
+            } else {
+                u16::MAX
+            };
+            output.push_str(&text_between_columns(&row.text, from, to));
+            if row_index < end.row && row.hard_break_after {
+                output.push('\n');
+            }
+        }
+        output
+    }
+
+    fn bounds(&self) -> (LogPoint, LogPoint) {
+        if self.anchor <= self.focus {
+            (self.anchor, self.focus)
+        } else {
+            (self.focus, self.anchor)
+        }
+    }
+
+    fn contains(&self, row: usize, column: u16, width: u16) -> bool {
+        if self.is_empty() {
+            return false;
+        }
+        let (start, end) = self.bounds();
+        let point_end = column.saturating_add(width.saturating_sub(1));
+        (row > start.row || (row == start.row && point_end >= start.column))
+            && (row < end.row || (row == end.row && column <= end.column))
+    }
+}
+
+impl LogViewport {
+    pub(crate) fn contains(&self, column: u16, row: u16) -> bool {
+        column >= self.area.x
+            && column < self.area.x.saturating_add(self.area.width)
+            && row >= self.area.y
+            && row < self.area.y.saturating_add(self.area.height)
+    }
+
+    fn point_at(&self, column: u16, row: u16) -> Option<LogPoint> {
+        if self.rows.is_empty()
+            || !self.contains(column, row)
+            || row.saturating_sub(self.area.y) as usize >= self.rows.len()
+        {
+            return None;
+        }
+        Some(self.clamped_point(column, row))
+    }
+
+    fn clamped_point(&self, column: u16, row: u16) -> LogPoint {
+        let max_row = self.rows.len().saturating_sub(1);
+        let local_row = row.saturating_sub(self.area.y) as usize;
+        let row = local_row.min(max_row);
+        let max_column = visual_width(&self.rows[row].text).saturating_sub(1) as u16;
+        LogPoint {
+            row,
+            column: column.saturating_sub(self.area.x).min(max_column),
+        }
+    }
+}
+
+fn build_log_viewport(model: &Model, area: Rect) -> LogViewport {
+    let mut rows = Vec::new();
+    if area.width > 0 {
+        for line in &model.logs {
+            let error = line.starts_with("[error]");
+            let wrapped = wrap_log_line(line, area.width as usize);
+            let last = wrapped.len().saturating_sub(1);
+            rows.extend(
+                wrapped
+                    .into_iter()
+                    .enumerate()
+                    .map(|(index, text)| LogDisplayRow {
+                        text,
+                        hard_break_after: index == last,
+                        error,
+                    }),
+            );
+        }
+    }
+    let keep = area.height as usize;
+    if rows.len() > keep {
+        rows.drain(..rows.len() - keep);
+    }
+    LogViewport { area, rows }
+}
+
+fn wrap_log_line(line: &str, width: usize) -> Vec<String> {
+    if line.is_empty() || width == 0 {
+        return vec![String::new()];
+    }
+    let mut rows = vec![String::new()];
+    let mut used = 0;
+    for character in line.chars() {
+        let char_width = UnicodeWidthChar::width(character).unwrap_or(0);
+        if used > 0 && used + char_width > width {
+            rows.push(String::new());
+            used = 0;
+        }
+        rows.last_mut().expect("one row exists").push(character);
+        used += char_width;
+    }
+    rows
+}
+
+fn text_between_columns(text: &str, from: u16, to: u16) -> String {
+    let mut result = String::new();
+    let mut column = 0_u16;
+    for character in text.chars() {
+        let width = UnicodeWidthChar::width(character).unwrap_or(0) as u16;
+        let end = column.saturating_add(width.saturating_sub(1));
+        if end >= from && column <= to {
+            result.push(character);
+        }
+        column = column.saturating_add(width);
+    }
+    result
+}
+
+fn log_display_line(
+    model: &Model,
+    row: &LogDisplayRow,
+    row_index: usize,
+    selection: Option<&LogSelection>,
+) -> Line<'static> {
+    let base = if row.error {
+        model.theme.error()
+    } else {
+        model.theme.normal()
+    };
+    let mut column = 0_u16;
+    let spans = row
+        .text
+        .chars()
+        .map(|character| {
+            let width = UnicodeWidthChar::width(character).unwrap_or(0) as u16;
+            let selected =
+                selection.is_some_and(|selection| selection.contains(row_index, column, width));
+            column = column.saturating_add(width);
+            Span::styled(
+                character.to_string(),
+                if selected {
+                    model.theme.selected()
+                } else {
+                    base
+                },
+            )
+        })
+        .collect::<Vec<_>>();
+    Line::from(spans)
+}
+
+fn main_panes(terminal_area: Rect) -> (Rect, Rect) {
+    let main_area = if terminal_area.height > TRAFFIC_PANEL_HEIGHT + 5 {
+        Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(TRAFFIC_PANEL_HEIGHT),
+                Constraint::Min(0),
+                Constraint::Length(1),
+            ])
+            .split(terminal_area)[1]
+    } else {
+        Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Min(0), Constraint::Length(1)])
+            .split(terminal_area)[0]
+    };
+    let panes = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+        .split(main_area);
+    (panes[0], panes[1])
+}
+
+pub(crate) fn log_viewport(model: &Model, terminal_area: Rect) -> Option<LogViewport> {
+    if model.overlay != Overlay::None {
+        return None;
+    }
+    let (_, logs) = main_panes(terminal_area);
+    let area = Rect::new(
+        logs.x.saturating_add(1),
+        logs.y.saturating_add(1),
+        logs.width.saturating_sub(2),
+        logs.height.saturating_sub(2),
+    );
+    if area.width == 0 || area.height == 0 {
+        return None;
+    }
+    Some(build_log_viewport(model, area))
+}
+
+/// Return the selectable Sources row under a terminal cell. Borders, group
+/// labels, separators, Logs, clipped rows, and every overlay are inert.
+pub(crate) fn source_hit_test(
+    model: &Model,
+    terminal_area: Rect,
+    column: u16,
+    row: u16,
+) -> Option<usize> {
+    if model.overlay != Overlay::None {
+        return None;
+    }
+    let (sources, _) = main_panes(terminal_area);
+    let inside = column > sources.x
+        && column < sources.x.saturating_add(sources.width).saturating_sub(1)
+        && row > sources.y
+        && row < sources.y.saturating_add(sources.height).saturating_sub(1);
+    if !inside {
+        return None;
+    }
+
+    let rows = model.source_rows();
+    let mut visual_rows = Vec::new();
+    let standalone: Vec<_> = rows
+        .iter()
+        .enumerate()
+        .filter(|(_, source)| matches!(source, SourceRow::StandaloneProfile(_)))
+        .map(|(index, _)| index)
+        .collect();
+    if !standalone.is_empty() {
+        visual_rows.push(None); // "Standalone profiles" is only a label.
+        visual_rows.extend(standalone.into_iter().map(Some));
+        visual_rows.push(None);
+    }
+    for sub_idx in 0..model.config.subscriptions.len() {
+        visual_rows.push(rows.iter().position(
+            |source| matches!(source, SourceRow::SubscriptionHeader(index) if *index == sub_idx),
+        ));
+        visual_rows.extend(rows.iter().enumerate().filter_map(|(index, source)| {
+            matches!(source, SourceRow::SubscriptionProfile { sub_idx: index_sub, .. } if *index_sub == sub_idx)
+                .then_some(Some(index))
+        }));
+        visual_rows.push(None);
+    }
+    let line = row.saturating_sub(sources.y + 1) as usize;
+    visual_rows.get(line).copied().flatten()
+}
+
 /// Render the full application UI into the terminal frame.
 pub fn draw(frame: &mut Frame, model: &Model) {
+    draw_with_log_selection(frame, model, None);
+}
+
+pub(crate) fn draw_with_log_selection(
+    frame: &mut Frame,
+    model: &Model,
+    log_selection: Option<&LogSelection>,
+) {
     let area = frame.area();
 
     // Paint the palette's background across the whole frame first so that
@@ -52,7 +357,7 @@ pub fn draw(frame: &mut Frame, model: &Model) {
     if let Some(area) = traffic_area {
         draw_traffic_panel(frame, model, area);
     }
-    draw_main(frame, model, main_area);
+    draw_main(frame, model, main_area, log_selection);
     draw_status_bar(frame, model, status_area);
 
     let theme = &model.theme;
@@ -69,7 +374,7 @@ pub fn draw(frame: &mut Frame, model: &Model) {
 }
 
 /// Draw the main content area with the Sources list and logs.
-fn draw_main(frame: &mut Frame, model: &Model, area: Rect) {
+fn draw_main(frame: &mut Frame, model: &Model, area: Rect, log_selection: Option<&LogSelection>) {
     let theme = &model.theme;
     let content_chunks = Layout::default()
         .direction(Direction::Horizontal)
@@ -83,26 +388,25 @@ fn draw_main(frame: &mut Frame, model: &Model, area: Rect) {
         .borders(Borders::ALL)
         .border_style(theme.border());
 
-    // Show the most recent log lines that fit in the available area.
-    let available_height = content_chunks[1].height.saturating_sub(2) as usize;
-    let start = model.logs.len().saturating_sub(available_height);
-    let log_text: Vec<Line> = model
-        .logs
+    let inner = Rect::new(
+        content_chunks[1].x.saturating_add(1),
+        content_chunks[1].y.saturating_add(1),
+        content_chunks[1].width.saturating_sub(2),
+        content_chunks[1].height.saturating_sub(2),
+    );
+    let viewport = log_selection
+        .map(|selection| &selection.viewport)
+        .filter(|viewport| viewport.area == inner)
+        .cloned()
+        .unwrap_or_else(|| build_log_viewport(model, inner));
+    let log_text: Vec<Line> = viewport
+        .rows
         .iter()
-        .skip(start)
-        .map(|l| {
-            let style = if l.starts_with("[error]") {
-                theme.error()
-            } else {
-                theme.normal()
-            };
-            Line::from(Span::styled(l.as_str(), style))
-        })
+        .enumerate()
+        .map(|(row_index, row)| log_display_line(model, row, row_index, log_selection))
         .collect();
 
-    let logs = Paragraph::new(log_text)
-        .block(log_block)
-        .wrap(Wrap { trim: true });
+    let logs = Paragraph::new(log_text).block(log_block);
     frame.render_widget(logs, content_chunks[1]);
 }
 
@@ -811,6 +1115,151 @@ mod tests {
     use crate::test_helpers::{buffer_to_string, model_with_profiles};
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
+
+    fn mouse_model() -> Model {
+        use crate::config::profile::{Subscription, SubscriptionAutoUpdate};
+        use uuid::Uuid;
+
+        let sub_id = Uuid::new_v4();
+        let standalone = Profile::new_vless("A".into(), "a".into(), 1, "u".into());
+        let mut nested = Profile::new_vless("B".into(), "b".into(), 2, "v".into());
+        nested.subscription_id = Some(sub_id);
+        let mut model = model_with_profiles(vec![standalone, nested]);
+        model.config.subscriptions.push(Subscription {
+            id: sub_id,
+            name: "Sub".into(),
+            url: "https://example.test".into(),
+            auto_update: SubscriptionAutoUpdate::Off,
+            last_updated: None,
+            next_auto_update: None,
+            retry_state: None,
+        });
+        model
+    }
+
+    #[test]
+    fn source_hit_test_maps_rows_in_both_vertical_layouts() {
+        let model = mouse_model();
+        // Tall: traffic panel occupies rows 0..=2, Sources content starts at 4.
+        assert_eq!(
+            source_hit_test(&model, Rect::new(0, 0, 80, 20), 2, 5),
+            Some(0)
+        );
+        assert_eq!(
+            source_hit_test(&model, Rect::new(0, 0, 80, 20), 2, 7),
+            Some(1)
+        );
+        assert_eq!(
+            source_hit_test(&model, Rect::new(0, 0, 80, 20), 2, 8),
+            Some(2)
+        );
+        // Short: traffic is hidden and Sources content starts at row 1.
+        assert_eq!(
+            source_hit_test(&model, Rect::new(0, 0, 80, 8), 2, 2),
+            Some(0)
+        );
+        assert_eq!(
+            source_hit_test(&model, Rect::new(0, 0, 80, 8), 2, 4),
+            Some(1)
+        );
+        assert_eq!(
+            source_hit_test(&model, Rect::new(0, 0, 80, 8), 2, 5),
+            Some(2)
+        );
+    }
+
+    #[test]
+    fn source_hit_test_ignores_labels_borders_separators_logs_clipping_and_overlays() {
+        let mut model = mouse_model();
+        let area = Rect::new(0, 0, 80, 20);
+        assert_eq!(source_hit_test(&model, area, 2, 4), None); // standalone label
+        assert_eq!(source_hit_test(&model, area, 2, 6), None); // separator
+        assert_eq!(source_hit_test(&model, area, 0, 5), None); // border
+        assert_eq!(source_hit_test(&model, area, 50, 5), None); // Logs
+        assert_eq!(source_hit_test(&model, Rect::new(0, 0, 80, 5), 2, 4), None);
+        model.overlay = Overlay::Help;
+        assert_eq!(source_hit_test(&model, area, 2, 5), None);
+    }
+
+    #[test]
+    fn log_viewport_hit_test_excludes_border_and_overlay() {
+        let mut model = mouse_model();
+        model.push_log("hello".into());
+        let area = Rect::new(0, 0, 80, 20);
+        let viewport = log_viewport(&model, area).unwrap();
+        assert!(viewport.contains(41, 4));
+        assert!(!viewport.contains(40, 4));
+        assert!(!viewport.contains(41, 3));
+        model.overlay = Overlay::Help;
+        assert!(log_viewport(&model, area).is_none());
+    }
+
+    #[test]
+    fn log_selection_joins_soft_wraps_and_preserves_real_line_breaks() {
+        let mut model = mouse_model();
+        model.push_log("abcdef".into());
+        model.push_log("ghi".into());
+        let viewport = build_log_viewport(&model, Rect::new(10, 5, 3, 3));
+        assert_eq!(viewport.rows.len(), 3);
+        let mut selection = LogSelection::start(viewport, 10, 5).unwrap();
+        selection.update(12, 7);
+        assert_eq!(selection.text(), "abcdef\nghi");
+    }
+
+    #[test]
+    fn log_selection_works_backwards_and_clamps_to_log_bounds() {
+        let mut model = mouse_model();
+        model.push_log("abc".into());
+        model.push_log("def".into());
+        let viewport = build_log_viewport(&model, Rect::new(10, 5, 3, 2));
+        let mut selection = LogSelection::start(viewport, 12, 6).unwrap();
+        selection.update(0, 0);
+        assert_eq!(selection.text(), "abc\ndef");
+    }
+
+    #[test]
+    fn log_selection_does_not_split_wide_unicode_characters() {
+        let mut model = mouse_model();
+        model.push_log("a界b".into());
+        let viewport = build_log_viewport(&model, Rect::new(0, 0, 4, 1));
+        let mut selection = LogSelection::start(viewport, 1, 0).unwrap();
+        selection.update(2, 0);
+        assert_eq!(selection.text(), "界");
+    }
+
+    #[test]
+    fn log_selection_single_click_is_empty() {
+        let mut model = mouse_model();
+        model.push_log("abc".into());
+        let viewport = build_log_viewport(&model, Rect::new(0, 0, 3, 1));
+        let selection = LogSelection::start(viewport, 1, 0).unwrap();
+        assert!(selection.is_empty());
+        assert!(selection.text().is_empty());
+    }
+
+    #[test]
+    fn active_log_selection_freezes_viewport_until_it_is_cleared() {
+        let mut model = mouse_model();
+        model.push_log("visible before drag".into());
+        let area = Rect::new(0, 0, 80, 20);
+        let viewport = log_viewport(&model, area).unwrap();
+        let mut selection = LogSelection::start(viewport, 41, 4).unwrap();
+        selection.update(42, 4);
+
+        model.push_log("arrived during drag".into());
+        let backend = TestBackend::new(80, 20);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| draw_with_log_selection(frame, &model, Some(&selection)))
+            .unwrap();
+        let frozen = buffer_to_string(terminal.backend().buffer());
+        assert!(frozen.contains("visible before drag"));
+        assert!(!frozen.contains("arrived during drag"));
+
+        terminal.draw(|frame| draw(frame, &model)).unwrap();
+        let current = buffer_to_string(terminal.backend().buffer());
+        assert!(current.contains("arrived during drag"));
+    }
 
     fn snapshot_terminal(model: &Model, width: u16, height: u16) -> String {
         let backend = TestBackend::new(width, height);
