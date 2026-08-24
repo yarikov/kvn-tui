@@ -1,4 +1,4 @@
-use crate::app::model::{ConnectionState, Overlay, TrafficStats};
+use crate::app::model::{ConnectionState, MainPaneFocus, Overlay, TrafficStats};
 use crate::config::profile::{DnsStrategy, Profile, Settings, Subscription};
 use crate::ui::styles::Theme;
 use crossterm::event::{KeyEvent, MouseEvent};
@@ -208,6 +208,12 @@ pub enum IpcCommand {
     SelectSource {
         index: usize,
     },
+    SetMainPaneFocus {
+        focus: MainPaneFocus,
+    },
+    /// Semantic result of a client-local `gg` sequence. The daemon applies
+    /// it to whichever selectable main view or overlay is currently active.
+    GoFirst,
     ConnectProfile {
         profile_id: Uuid,
     },
@@ -272,6 +278,10 @@ mod tests {
                 ctrl: false,
             },
             IpcCommand::SelectSource { index: 1 },
+            IpcCommand::SetMainPaneFocus {
+                focus: MainPaneFocus::Logs,
+            },
+            IpcCommand::GoFirst,
             IpcCommand::ConnectProfile {
                 profile_id: Uuid::nil(),
             },
@@ -336,11 +346,17 @@ pub struct StateSnapshot {
     pub geo_updating: bool,
     pub geo_last_updated: Option<String>,
     pub overlay: Overlay,
+    #[serde(default)]
+    pub main_pane_focus: MainPaneFocus,
     pub profiles: Vec<Profile>,
     pub subscriptions: Vec<Subscription>,
     pub settings: Settings,
     #[serde(default)]
     pub traffic: TrafficStats,
+    /// Byte offsets of the log files at daemon startup. A TUI client uses
+    /// them to restore only the current daemon session when it attaches.
+    #[serde(default)]
+    pub log_session_offsets: Option<LogSessionOffsets>,
     /// Latency results keyed by profile UUID string. `null` = error, number =
     /// ms. Absent key = not yet tested. Transient — not persisted to disk.
     #[serde(default)]
@@ -348,4 +364,10 @@ pub struct StateSnapshot {
     /// Profile UUIDs whose test is currently in-flight (spinner indicator).
     #[serde(default)]
     pub testing_profiles: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, Default, serde::Serialize, serde::Deserialize)]
+pub struct LogSessionOffsets {
+    pub app: u64,
+    pub singbox: u64,
 }

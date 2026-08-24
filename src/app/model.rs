@@ -24,6 +24,15 @@ pub enum Overlay {
     ServiceRouting,
 }
 
+/// Main panel focused by the active daemon session. It is deliberately not
+/// persisted to config: a fresh daemon always starts on Sources.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum MainPaneFocus {
+    #[default]
+    Sources,
+    Logs,
+}
+
 /// A single selectable row in the unified Sources list.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SourceRow {
@@ -144,6 +153,7 @@ pub(crate) fn row_for_subscription_header(config: &Config, sub_idx: usize) -> us
 /// Application data model — no side effects.
 pub struct Model {
     pub overlay: Overlay,
+    pub main_pane_focus: MainPaneFocus,
     pub connection: ConnectionState,
     pub config: Config,
     pub selected: usize,
@@ -361,6 +371,7 @@ impl Model {
 
         let mut model = Self {
             overlay: Overlay::None,
+            main_pane_focus: MainPaneFocus::Sources,
             connection,
             config,
             selected,
@@ -464,6 +475,7 @@ impl Model {
 
         let mut model = Self {
             overlay: Overlay::None,
+            main_pane_focus: MainPaneFocus::Sources,
             connection: ConnectionState::Idle,
             config,
             selected,
@@ -692,6 +704,7 @@ impl Model {
         let selected = 0;
         Self {
             overlay: Overlay::None,
+            main_pane_focus: MainPaneFocus::Sources,
             connection: ConnectionState::Idle,
             config,
             selected,

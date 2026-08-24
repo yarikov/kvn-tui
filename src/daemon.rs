@@ -9,7 +9,7 @@ use anyhow::{Context, Result};
 
 use crate::app::effect::Effect;
 use crate::app::model::{AppStatus, ConnectionState, Model, Overlay, TrafficStats};
-use crate::app::msg::{GeoResult, IpcCommand, Msg, StateSnapshot};
+use crate::app::msg::{GeoResult, IpcCommand, LogSessionOffsets, Msg, StateSnapshot};
 use crate::app::update::update;
 use crate::ipc::{IpcServer, cleanup_socket};
 use crate::singbox::process_handle::ProcessHandle;
@@ -21,6 +21,10 @@ struct ProcessSlot {
 
 /// Run the daemon main loop.
 pub fn run(mut model: Model) -> Result<()> {
+    let log_session_offsets = LogSessionOffsets {
+        app: log_file_len(crate::paths::app_log_path()),
+        singbox: log_file_len(crate::paths::singbox_log_path()),
+    };
     let (tx, rx) = channel::<Msg>();
     let ipc_server = IpcServer::bind(tx.clone())?;
 
@@ -45,6 +49,7 @@ pub fn run(mut model: Model) -> Result<()> {
         process_slot.clone(),
         connect_coordinator.clone(),
         &ipc_server,
+        log_session_offsets,
     );
 
     // Cleanup
@@ -73,6 +78,7 @@ fn run_loop(
     process_slot: Arc<Mutex<ProcessSlot>>,
     connect_coordinator: Arc<Mutex<()>>,
     ipc_server: &IpcServer,
+    log_session_offsets: LogSessionOffsets,
 ) -> Result<()> {
     loop {
         let msg = rx.recv()?;
@@ -110,7 +116,7 @@ fn run_loop(
         }
 
         if should_broadcast {
-            ipc_server.broadcast(&build_snapshot(model));
+            ipc_server.broadcast(&build_snapshot(model, log_session_offsets));
         }
     }
     Ok(())
@@ -1019,7 +1025,7 @@ fn dns_bootstrap_endpoints(
         .collect()
 }
 
-fn build_snapshot(model: &Model) -> StateSnapshot {
+fn build_snapshot(model: &Model, log_session_offsets: LogSessionOffsets) -> StateSnapshot {
     StateSnapshot {
         connection: model.connection,
         status: model.status.text().to_string(),
@@ -1039,10 +1045,12 @@ fn build_snapshot(model: &Model) -> StateSnapshot {
         geo_updating: model.geo_updating,
         geo_last_updated: model.geo_last_updated.clone(),
         overlay: model.overlay,
+        main_pane_focus: model.main_pane_focus,
         profiles: model.config.profiles.clone(),
         subscriptions: model.config.subscriptions.clone(),
         settings: model.config.settings.clone(),
         traffic: model.traffic.clone(),
+        log_session_offsets: Some(log_session_offsets),
         profile_latencies: model
             .profile_latencies
             .iter()
@@ -1054,6 +1062,12 @@ fn build_snapshot(model: &Model) -> StateSnapshot {
             .map(|id| id.to_string())
             .collect(),
     }
+}
+
+fn log_file_len(path: std::path::PathBuf) -> u64 {
+    std::fs::metadata(path)
+        .map(|metadata| metadata.len())
+        .unwrap_or(0)
 }
 
 fn spawn_ticker(tx: Sender<Msg>, process_slot: Weak<Mutex<ProcessSlot>>) {

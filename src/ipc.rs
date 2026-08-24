@@ -242,10 +242,12 @@ mod tests {
             geo_updating: false,
             geo_last_updated: None,
             overlay: Overlay::None,
+            main_pane_focus: Default::default(),
             profiles: vec![],
             subscriptions: vec![],
             settings: Settings::default(),
             traffic: TrafficStats::default(),
+            log_session_offsets: None,
             profile_latencies: Default::default(),
             testing_profiles: Default::default(),
         }

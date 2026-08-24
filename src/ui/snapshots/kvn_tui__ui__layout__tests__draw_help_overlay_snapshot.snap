@@ -6,16 +6,17 @@ expression: "snapshot_terminal(&model, 80, 40)"
 │↑ 0.0 KB/s  ↓ 0.0 KB/s    Total: ↑ 0.0 KB  ↓ 0.0 KB    0 connections          │
 └──────────────────────────────────────────────────────────────────────────────┘
 ┌ Sources ─────────────────────────────┐┌ Logs ────────────────────────────────┐
-│No sources. Press p to paste a profile││                                      │
-│or subscription┌ Help ────────────────────────────────────────┐               │
-│               │Key          Action                           │               │
+│No sources. Pre┌ Help ────────────────────────────────────────┐               │
+│or subscription│Key          Action                           │               │
+│               │h / l        Focus Sources / Logs             │               │
 │               │j / Down     Move down                        │               │
 │               │k / Up       Move up                          │               │
-│               │g            Go to first                      │               │
-│               │G            Go to last                       │               │
+│               │gg           Go to first / buffer top         │               │
+│               │G            Go to last / buffer bottom       │               │
 │               │Enter        Connect to selected profile      │               │
 │               │p            Paste from clipboard             │               │
-│               │y            Yank share link to clipboard     │               │
+│               │y            Yank selected source / log       │               │
+│               │Shift+V      Select multiple logs             │               │
 │               │d            Delete selected source           │               │
 │               │m            Routing mode (popup list)        │               │
 │               │o            Geo region                       │               │
@@ -37,7 +38,6 @@ expression: "snapshot_terminal(&model, 80, 40)"
 │               │?            Show this help                   │               │
 │               │                                              │               │
 │               └──────────────────────────────────────────────┘               │
-│                                      ││                                      │
 │                                      ││                                      │
 │                                      ││                                      │
 └──────────────────────────────────────┘└──────────────────────────────────────┘

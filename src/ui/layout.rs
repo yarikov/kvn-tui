@@ -3,9 +3,10 @@ use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::Modifier;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph, Row, Table, Wrap};
+use std::time::{Duration, Instant};
 use unicode_width::UnicodeWidthChar;
 
-use crate::app::model::{Model, Overlay, SourceRow};
+use crate::app::model::{MainPaneFocus, Model, Overlay, SourceRow};
 use crate::ui::styles::Theme;
 use crate::ui::widgets::{
     StatusBar, format_bps_field, format_bytes_field, format_connections_field,
@@ -16,6 +17,138 @@ use crate::ui::widgets::{
 /// the very top of the UI when the VPN is connected. One content row plus
 /// top/bottom borders = 3 lines.
 const TRAFFIC_PANEL_HEIGHT: u16 = 3;
+
+pub(crate) const LOG_CURSOR_TIMEOUT: Duration = Duration::from_secs(15);
+
+/// TUI-client-local keyboard state for the log pane. Log contents are local
+/// to the client as well, so none of this belongs in the daemon snapshot.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct LogNavigation {
+    cursor: Option<usize>,
+    anchor: Option<usize>,
+    scroll_top_log: Option<usize>,
+    last_activity: Option<Instant>,
+}
+
+impl LogNavigation {
+    pub(crate) fn cursor(&self) -> Option<usize> {
+        self.cursor
+    }
+
+    pub(crate) fn is_visual(&self) -> bool {
+        self.anchor.is_some()
+    }
+
+    pub(crate) fn select_edge(&mut self, viewport: &LogViewport, from_top: bool, now: Instant) {
+        let cursor = if from_top {
+            viewport.first_log_index()
+        } else {
+            viewport.last_log_index()
+        };
+        if let Some(cursor) = cursor {
+            self.cursor = Some(cursor);
+            self.scroll_top_log = viewport.first_log_index();
+            self.last_activity = Some(now);
+        }
+    }
+
+    pub(crate) fn select_buffer_edge(&mut self, log_count: usize, from_top: bool, now: Instant) {
+        if log_count == 0 {
+            return;
+        }
+        let cursor = if from_top { 0 } else { log_count - 1 };
+        self.cursor = Some(cursor);
+        self.scroll_top_log = Some(cursor);
+        self.last_activity = Some(now);
+    }
+
+    pub(crate) fn move_by(&mut self, delta: isize, log_count: usize, now: Instant) {
+        let Some(cursor) = self.cursor else {
+            return;
+        };
+        if log_count == 0 {
+            self.clear();
+            return;
+        }
+        self.cursor = Some(cursor.saturating_add_signed(delta).min(log_count - 1));
+        self.last_activity = Some(now);
+    }
+
+    pub(crate) fn enter_visual(&mut self, now: Instant) {
+        if let Some(cursor) = self.cursor {
+            self.anchor = Some(cursor);
+            self.last_activity = Some(now);
+        }
+    }
+
+    pub(crate) fn cancel_visual(&mut self) {
+        self.anchor = None;
+    }
+
+    pub(crate) fn selected_range(&self) -> Option<std::ops::RangeInclusive<usize>> {
+        let cursor = self.cursor?;
+        let anchor = self.anchor.unwrap_or(cursor);
+        Some(anchor.min(cursor)..=anchor.max(cursor))
+    }
+
+    pub(crate) fn selected_text(&self, model: &Model) -> Option<(String, usize)> {
+        let range = self.selected_range()?;
+        let lines = range
+            .clone()
+            .filter_map(|index| model.logs.get(index))
+            .cloned()
+            .collect::<Vec<_>>();
+        (!lines.is_empty()).then(|| (lines.join("\n"), lines.len()))
+    }
+
+    pub(crate) fn copied(&mut self, now: Instant) {
+        self.anchor = None;
+        self.last_activity = Some(now);
+    }
+
+    pub(crate) fn expire_if_idle(&mut self, now: Instant) -> bool {
+        if self
+            .last_activity
+            .is_some_and(|last| now.saturating_duration_since(last) >= LOG_CURSOR_TIMEOUT)
+        {
+            self.clear();
+            true
+        } else {
+            false
+        }
+    }
+
+    pub(crate) fn oldest_log_evicted(&mut self) {
+        if self.cursor == Some(0) {
+            self.clear();
+            return;
+        }
+        self.cursor = self.cursor.map(|index| index - 1);
+        self.anchor = self.anchor.and_then(|index| index.checked_sub(1));
+        self.scroll_top_log = self
+            .scroll_top_log
+            .and_then(|index| index.checked_sub(1))
+            .or(Some(0));
+    }
+
+    pub(crate) fn clear(&mut self) {
+        self.cursor = None;
+        self.anchor = None;
+        self.scroll_top_log = None;
+        self.last_activity = None;
+    }
+
+    fn contains(&self, log_index: usize) -> bool {
+        self.selected_range()
+            .is_some_and(|range| range.contains(&log_index))
+    }
+
+    fn set_scroll_top_from(&mut self, viewport: &LogViewport) {
+        if self.cursor.is_some() {
+            self.scroll_top_log = viewport.first_log_index();
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) struct LogPoint {
@@ -28,6 +161,7 @@ struct LogDisplayRow {
     text: String,
     hard_break_after: bool,
     error: bool,
+    log_index: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -134,14 +268,22 @@ impl LogViewport {
             column: column.saturating_sub(self.area.x).min(max_column),
         }
     }
+
+    fn first_log_index(&self) -> Option<usize> {
+        self.rows.first().map(|row| row.log_index)
+    }
+
+    fn last_log_index(&self) -> Option<usize> {
+        self.rows.last().map(|row| row.log_index)
+    }
 }
 
-fn build_log_viewport(model: &Model, area: Rect) -> LogViewport {
+fn build_all_log_rows(model: &Model, width: usize) -> Vec<LogDisplayRow> {
     let mut rows = Vec::new();
-    if area.width > 0 {
-        for line in &model.logs {
+    if width > 0 {
+        for (log_index, line) in model.logs.iter().enumerate() {
             let error = line.starts_with("[error]");
-            let wrapped = wrap_log_line(line, area.width as usize);
+            let wrapped = wrap_log_line(line, width);
             let last = wrapped.len().saturating_sub(1);
             rows.extend(
                 wrapped
@@ -151,14 +293,51 @@ fn build_log_viewport(model: &Model, area: Rect) -> LogViewport {
                         text,
                         hard_break_after: index == last,
                         error,
+                        log_index,
                     }),
             );
         }
     }
+    rows
+}
+
+fn build_log_viewport(
+    model: &Model,
+    area: Rect,
+    navigation: Option<&LogNavigation>,
+) -> LogViewport {
+    let all_rows = build_all_log_rows(model, area.width as usize);
     let keep = area.height as usize;
-    if rows.len() > keep {
-        rows.drain(..rows.len() - keep);
+    let auto_start = all_rows.len().saturating_sub(keep);
+    let mut start = navigation
+        .and_then(|nav| nav.cursor.map(|_| nav.scroll_top_log.unwrap_or(0)))
+        .and_then(|top_log| all_rows.iter().position(|row| row.log_index == top_log))
+        .unwrap_or(auto_start);
+
+    if let Some(cursor) = navigation.and_then(LogNavigation::cursor)
+        && let Some(first) = all_rows.iter().position(|row| row.log_index == cursor)
+    {
+        let last = all_rows
+            .iter()
+            .rposition(|row| row.log_index == cursor)
+            .unwrap_or(first);
+        if first < start {
+            start = first;
+        } else if last >= start.saturating_add(keep) {
+            let candidate = last.saturating_add(1).saturating_sub(keep);
+            // Prefer the first complete record boundary that still keeps
+            // the cursor visible. This prevents a wrapped log from becoming
+            // several keyboard navigation positions.
+            start = (candidate..=first)
+                .find(|&index| {
+                    index == 0 || all_rows[index - 1].log_index != all_rows[index].log_index
+                })
+                .unwrap_or(first);
+        }
     }
+
+    start = start.min(all_rows.len().saturating_sub(keep));
+    let rows = all_rows.into_iter().skip(start).take(keep).collect();
     LogViewport { area, rows }
 }
 
@@ -199,6 +378,7 @@ fn log_display_line(
     row: &LogDisplayRow,
     row_index: usize,
     selection: Option<&LogSelection>,
+    navigation: Option<&LogNavigation>,
 ) -> Line<'static> {
     let base = if row.error {
         model.theme.error()
@@ -211,8 +391,8 @@ fn log_display_line(
         .chars()
         .map(|character| {
             let width = UnicodeWidthChar::width(character).unwrap_or(0) as u16;
-            let selected =
-                selection.is_some_and(|selection| selection.contains(row_index, column, width));
+            let selected = navigation.is_some_and(|nav| nav.contains(row.log_index))
+                || selection.is_some_and(|selection| selection.contains(row_index, column, width));
             column = column.saturating_add(width);
             Span::styled(
                 character.to_string(),
@@ -251,6 +431,14 @@ fn main_panes(terminal_area: Rect) -> (Rect, Rect) {
 }
 
 pub(crate) fn log_viewport(model: &Model, terminal_area: Rect) -> Option<LogViewport> {
+    log_viewport_with_navigation(model, terminal_area, None)
+}
+
+pub(crate) fn log_viewport_with_navigation(
+    model: &Model,
+    terminal_area: Rect,
+    navigation: Option<&LogNavigation>,
+) -> Option<LogViewport> {
     if model.overlay != Overlay::None {
         return None;
     }
@@ -264,7 +452,13 @@ pub(crate) fn log_viewport(model: &Model, terminal_area: Rect) -> Option<LogView
     if area.width == 0 || area.height == 0 {
         return None;
     }
-    Some(build_log_viewport(model, area))
+    Some(build_log_viewport(model, area, navigation))
+}
+
+pub(crate) fn sync_log_scroll(model: &Model, terminal_area: Rect, navigation: &mut LogNavigation) {
+    if let Some(viewport) = log_viewport_with_navigation(model, terminal_area, Some(navigation)) {
+        navigation.set_scroll_top_from(&viewport);
+    }
 }
 
 /// Return the selectable Sources row under a terminal cell. Borders, group
@@ -316,12 +510,23 @@ pub(crate) fn source_hit_test(
 
 /// Render the full application UI into the terminal frame.
 pub fn draw(frame: &mut Frame, model: &Model) {
-    draw_with_log_selection(frame, model, None);
+    draw_with_interaction(frame, model, MainPaneFocus::Sources, None, None);
 }
 
+#[cfg(test)]
 pub(crate) fn draw_with_log_selection(
     frame: &mut Frame,
     model: &Model,
+    log_selection: Option<&LogSelection>,
+) {
+    draw_with_interaction(frame, model, MainPaneFocus::Sources, None, log_selection);
+}
+
+pub(crate) fn draw_with_interaction(
+    frame: &mut Frame,
+    model: &Model,
+    pane_focus: MainPaneFocus,
+    log_navigation: Option<&LogNavigation>,
     log_selection: Option<&LogSelection>,
 ) {
     let area = frame.area();
@@ -357,7 +562,14 @@ pub(crate) fn draw_with_log_selection(
     if let Some(area) = traffic_area {
         draw_traffic_panel(frame, model, area);
     }
-    draw_main(frame, model, main_area, log_selection);
+    draw_main(
+        frame,
+        model,
+        main_area,
+        pane_focus,
+        log_navigation,
+        log_selection,
+    );
     draw_status_bar(frame, model, status_area);
 
     let theme = &model.theme;
@@ -374,19 +586,35 @@ pub(crate) fn draw_with_log_selection(
 }
 
 /// Draw the main content area with the Sources list and logs.
-fn draw_main(frame: &mut Frame, model: &Model, area: Rect, log_selection: Option<&LogSelection>) {
+fn draw_main(
+    frame: &mut Frame,
+    model: &Model,
+    area: Rect,
+    pane_focus: MainPaneFocus,
+    log_navigation: Option<&LogNavigation>,
+    log_selection: Option<&LogSelection>,
+) {
     let theme = &model.theme;
     let content_chunks = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
         .split(area);
 
-    draw_sources(frame, model, content_chunks[0]);
+    draw_sources(
+        frame,
+        model,
+        content_chunks[0],
+        pane_focus == MainPaneFocus::Sources,
+    );
 
     let log_block = Block::default()
         .title(" Logs ")
         .borders(Borders::ALL)
-        .border_style(theme.border());
+        .border_style(if pane_focus == MainPaneFocus::Logs {
+            theme.accent()
+        } else {
+            theme.border()
+        });
 
     let inner = Rect::new(
         content_chunks[1].x.saturating_add(1),
@@ -398,12 +626,14 @@ fn draw_main(frame: &mut Frame, model: &Model, area: Rect, log_selection: Option
         .map(|selection| &selection.viewport)
         .filter(|viewport| viewport.area == inner)
         .cloned()
-        .unwrap_or_else(|| build_log_viewport(model, inner));
+        .unwrap_or_else(|| build_log_viewport(model, inner, log_navigation));
     let log_text: Vec<Line> = viewport
         .rows
         .iter()
         .enumerate()
-        .map(|(row_index, row)| log_display_line(model, row, row_index, log_selection))
+        .map(|(row_index, row)| {
+            log_display_line(model, row, row_index, log_selection, log_navigation)
+        })
         .collect();
 
     let logs = Paragraph::new(log_text).block(log_block);
@@ -454,13 +684,15 @@ fn draw_help(frame: &mut Frame, theme: &Theme, area: Rect) {
     let header = Row::new(vec!["Key", "Action"]).style(theme.accent().add_modifier(Modifier::BOLD));
 
     let rows: Vec<Row> = vec![
+        Row::new(vec!["h / l", "Focus Sources / Logs"]),
         Row::new(vec!["j / Down", "Move down"]),
         Row::new(vec!["k / Up", "Move up"]),
-        Row::new(vec!["g", "Go to first"]),
-        Row::new(vec!["G", "Go to last"]),
+        Row::new(vec!["gg", "Go to first / buffer top"]),
+        Row::new(vec!["G", "Go to last / buffer bottom"]),
         Row::new(vec!["Enter", "Connect to selected profile"]),
         Row::new(vec!["p", "Paste from clipboard"]),
-        Row::new(vec!["y", "Yank share link to clipboard"]),
+        Row::new(vec!["y", "Yank selected source / log"]),
+        Row::new(vec!["Shift+V", "Select multiple logs"]),
         Row::new(vec!["d", "Delete selected source"]),
         Row::new(vec!["m", "Routing mode (popup list)"]),
         Row::new(vec!["o", "Geo region"]),
@@ -824,12 +1056,16 @@ fn draw_selection_modal(
 }
 
 /// Draw the unified Sources list: standalone profiles and subscription trees.
-fn draw_sources(frame: &mut Frame, model: &Model, area: Rect) {
+fn draw_sources(frame: &mut Frame, model: &Model, area: Rect, focused: bool) {
     let theme = &model.theme;
     let block = Block::default()
         .title(" Sources ")
         .borders(Borders::ALL)
-        .border_style(theme.border());
+        .border_style(if focused {
+            theme.accent()
+        } else {
+            theme.border()
+        });
 
     let inner_width = area.width.saturating_sub(2) as usize;
     let mut lines: Vec<Line> = Vec::new();
@@ -1195,11 +1431,155 @@ mod tests {
     }
 
     #[test]
+    fn log_navigation_starts_j_at_top_and_k_at_bottom_of_visible_logs() {
+        let mut model = mouse_model();
+        for index in 0..6 {
+            model.push_log(format!("line {index}"));
+        }
+        let area = Rect::new(0, 0, 80, 9); // three log content rows
+        let viewport = log_viewport(&model, area).unwrap();
+        assert_eq!(viewport.first_log_index(), Some(3));
+        assert_eq!(viewport.last_log_index(), Some(5));
+
+        let now = Instant::now();
+        let mut down = LogNavigation::default();
+        down.select_edge(&viewport, true, now);
+        assert_eq!(down.cursor(), Some(3));
+
+        let mut up = LogNavigation::default();
+        up.select_edge(&viewport, false, now);
+        assert_eq!(up.cursor(), Some(5));
+    }
+
+    #[test]
+    fn log_navigation_moves_by_whole_wrapped_records() {
+        let mut model = mouse_model();
+        model.push_log("abcdefgh".into());
+        model.push_log("next".into());
+        let viewport = build_log_viewport(&model, Rect::new(0, 0, 4, 3), None);
+        assert_eq!(viewport.rows.len(), 3);
+        assert_eq!(viewport.rows[0].log_index, 0);
+        assert_eq!(viewport.rows[1].log_index, 0);
+
+        let now = Instant::now();
+        let mut navigation = LogNavigation::default();
+        navigation.select_edge(&viewport, true, now);
+        assert_eq!(navigation.cursor(), Some(0));
+        navigation.move_by(1, model.logs.len(), now);
+        assert_eq!(navigation.cursor(), Some(1));
+        assert_eq!(navigation.selected_text(&model), Some(("next".into(), 1)));
+    }
+
+    #[test]
+    fn log_visual_selection_copies_complete_records_in_both_directions() {
+        let mut model = mouse_model();
+        for line in ["first", "second", "third"] {
+            model.push_log(line.into());
+        }
+        let viewport = build_log_viewport(&model, Rect::new(0, 0, 20, 3), None);
+        let now = Instant::now();
+        let mut navigation = LogNavigation::default();
+        navigation.select_edge(&viewport, false, now);
+        navigation.enter_visual(now);
+        navigation.move_by(-2, model.logs.len(), now);
+        assert_eq!(
+            navigation.selected_text(&model),
+            Some(("first\nsecond\nthird".into(), 3))
+        );
+
+        navigation.copied(now);
+        assert!(!navigation.is_visual());
+        assert_eq!(navigation.cursor(), Some(0));
+    }
+
+    #[test]
+    fn log_navigation_expires_after_fifteen_seconds() {
+        let mut model = mouse_model();
+        model.push_log("line".into());
+        let viewport = build_log_viewport(&model, Rect::new(0, 0, 20, 1), None);
+        let start = Instant::now();
+        let mut navigation = LogNavigation::default();
+        navigation.select_edge(&viewport, true, start);
+        navigation.enter_visual(start);
+
+        assert!(!navigation.expire_if_idle(start + LOG_CURSOR_TIMEOUT - Duration::from_millis(1)));
+        assert!(navigation.is_visual());
+        assert!(navigation.expire_if_idle(start + LOG_CURSOR_TIMEOUT));
+        assert_eq!(navigation.cursor(), None);
+        assert!(!navigation.is_visual());
+    }
+
+    #[test]
+    fn log_buffer_edge_jumps_scroll_to_full_buffer_bounds() {
+        let mut model = mouse_model();
+        for index in 0..6 {
+            model.push_log(format!("line {index}"));
+        }
+        let now = Instant::now();
+        let mut navigation = LogNavigation::default();
+        navigation.select_buffer_edge(model.logs.len(), true, now);
+        let viewport = build_log_viewport(&model, Rect::new(0, 0, 20, 3), Some(&navigation));
+        assert_eq!(navigation.cursor(), Some(0));
+        assert_eq!(viewport.first_log_index(), Some(0));
+
+        navigation.select_buffer_edge(model.logs.len(), false, now);
+        let viewport = build_log_viewport(&model, Rect::new(0, 0, 20, 3), Some(&navigation));
+        assert_eq!(navigation.cursor(), Some(5));
+        assert_eq!(viewport.last_log_index(), Some(5));
+    }
+
+    #[test]
+    fn log_visual_buffer_jumps_extend_beyond_viewport() {
+        let mut model = mouse_model();
+        for index in 0..6 {
+            model.push_log(format!("line {index}"));
+        }
+        let now = Instant::now();
+        let mut navigation = LogNavigation::default();
+        navigation.select_buffer_edge(model.logs.len(), false, now);
+        navigation.move_by(-1, model.logs.len(), now);
+        navigation.enter_visual(now);
+
+        navigation.select_buffer_edge(model.logs.len(), true, now);
+        assert_eq!(navigation.selected_range(), Some(0..=4));
+        assert_eq!(navigation.selected_text(&model).unwrap().1, 5);
+        navigation.select_buffer_edge(model.logs.len(), false, now);
+        assert_eq!(navigation.selected_range(), Some(4..=5));
+    }
+
+    #[test]
+    fn log_buffer_edge_jump_is_noop_when_empty() {
+        let mut navigation = LogNavigation::default();
+        navigation.select_buffer_edge(0, true, Instant::now());
+        assert_eq!(navigation.cursor(), None);
+    }
+
+    #[test]
+    fn log_navigation_tracks_oldest_buffer_eviction() {
+        let mut model = mouse_model();
+        for line in ["old", "selected", "new"] {
+            model.push_log(line.into());
+        }
+        let viewport = build_log_viewport(&model, Rect::new(0, 0, 20, 3), None);
+        let now = Instant::now();
+        let mut navigation = LogNavigation::default();
+        navigation.select_edge(&viewport, true, now);
+        navigation.move_by(1, model.logs.len(), now);
+        navigation.oldest_log_evicted();
+        model.logs.pop_front();
+        assert_eq!(navigation.cursor(), Some(0));
+        assert_eq!(
+            navigation.selected_text(&model),
+            Some(("selected".into(), 1))
+        );
+    }
+
+    #[test]
     fn log_selection_joins_soft_wraps_and_preserves_real_line_breaks() {
         let mut model = mouse_model();
         model.push_log("abcdef".into());
         model.push_log("ghi".into());
-        let viewport = build_log_viewport(&model, Rect::new(10, 5, 3, 3));
+        let viewport = build_log_viewport(&model, Rect::new(10, 5, 3, 3), None);
         assert_eq!(viewport.rows.len(), 3);
         let mut selection = LogSelection::start(viewport, 10, 5).unwrap();
         selection.update(12, 7);
@@ -1211,7 +1591,7 @@ mod tests {
         let mut model = mouse_model();
         model.push_log("abc".into());
         model.push_log("def".into());
-        let viewport = build_log_viewport(&model, Rect::new(10, 5, 3, 2));
+        let viewport = build_log_viewport(&model, Rect::new(10, 5, 3, 2), None);
         let mut selection = LogSelection::start(viewport, 12, 6).unwrap();
         selection.update(0, 0);
         assert_eq!(selection.text(), "abc\ndef");
@@ -1221,7 +1601,7 @@ mod tests {
     fn log_selection_does_not_split_wide_unicode_characters() {
         let mut model = mouse_model();
         model.push_log("a界b".into());
-        let viewport = build_log_viewport(&model, Rect::new(0, 0, 4, 1));
+        let viewport = build_log_viewport(&model, Rect::new(0, 0, 4, 1), None);
         let mut selection = LogSelection::start(viewport, 1, 0).unwrap();
         selection.update(2, 0);
         assert_eq!(selection.text(), "界");
@@ -1231,7 +1611,7 @@ mod tests {
     fn log_selection_single_click_is_empty() {
         let mut model = mouse_model();
         model.push_log("abc".into());
-        let viewport = build_log_viewport(&model, Rect::new(0, 0, 3, 1));
+        let viewport = build_log_viewport(&model, Rect::new(0, 0, 3, 1), None);
         let selection = LogSelection::start(viewport, 1, 0).unwrap();
         assert!(selection.is_empty());
         assert!(selection.text().is_empty());
@@ -1395,12 +1775,14 @@ mod tests {
 
         let content: String = frame.buffer.content.iter().map(|c| c.symbol()).collect();
         let expected = [
+            ("h / l", "Focus Sources / Logs"),
             ("j / Down", "Move down"),
             ("k / Up", "Move up"),
-            ("g", "Go to first"),
-            ("G", "Go to last"),
+            ("gg", "Go to first / buffer top"),
+            ("G", "Go to last / buffer bottom"),
             ("Enter", "Connect to selected profile"),
             ("p", "Paste from clipboard"),
+            ("Shift+V", "Select multiple logs"),
             ("d", "Delete selected source"),
             ("m", "Routing mode (popup list)"),
             ("u", "Update subscription or geo"),
@@ -1440,6 +1822,28 @@ mod tests {
         model.connection = ConnectionState::Connected;
         model.active_profile_id = Some(model.config.profiles[0].id);
         insta::assert_snapshot!(snapshot_terminal(&model, 80, 20));
+    }
+
+    #[test]
+    fn focused_main_pane_uses_accent_border() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+        use ratatui::style::Color;
+
+        let model = mouse_model();
+        let mut terminal = Terminal::new(TestBackend::new(80, 20)).unwrap();
+        let navigation = LogNavigation::default();
+        terminal
+            .draw(|frame| {
+                draw_with_interaction(frame, &model, MainPaneFocus::Logs, Some(&navigation), None)
+            })
+            .unwrap();
+
+        let buffer = terminal.backend().buffer();
+        let source_border = &buffer.content[3 * 80];
+        let log_border = &buffer.content[3 * 80 + 40];
+        assert_eq!(source_border.style().fg, Some(Color::DarkGray));
+        assert_eq!(log_border.style().fg, Some(Color::Cyan));
     }
 
     #[test]

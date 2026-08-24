@@ -828,7 +828,9 @@ fn check_due_subscriptions_at(model: &mut Model, now: chrono::DateTime<Local>) -
 }
 
 fn handle_copied_status(model: &mut Model, name: String, count: usize) -> Vec<Effect> {
-    let msg = if count <= 1 {
+    let msg = if name == "log" && count > 1 {
+        format!("Copied {count} logs")
+    } else if count <= 1 {
         format!("Copied: {name}")
     } else {
         format!("Copied {count} links from {name}")
@@ -1306,6 +1308,8 @@ mod tests {
         let _ = handle_sources(&mut model, key('G'));
         assert_eq!(model.selected, 1);
         let _ = handle_sources(&mut model, key('g'));
+        assert_eq!(model.selected, 1); // a lone g is only a client-side prefix
+        let _ = handle_ipc_command(&mut model, crate::app::msg::IpcCommand::GoFirst);
         assert_eq!(model.selected, 0);
     }
 
@@ -1861,6 +1865,8 @@ mod tests {
         let _ = handle_routing_mode(&mut model, key('k'));
         assert_eq!(model.routing_selected, 1);
         let _ = handle_routing_mode(&mut model, key('g'));
+        assert_eq!(model.routing_selected, 1);
+        let _ = handle_ipc_command(&mut model, crate::app::msg::IpcCommand::GoFirst);
         assert_eq!(model.routing_selected, 0);
         let _ = handle_routing_mode(&mut model, key('G'));
         assert_eq!(model.routing_selected, 2);
@@ -1933,6 +1939,8 @@ mod tests {
         let _ = handle_geo_region(&mut model, key('k'));
         assert_eq!(model.geo_region_selected, 2);
         let _ = handle_geo_region(&mut model, key('g'));
+        assert_eq!(model.geo_region_selected, 2);
+        let _ = handle_ipc_command(&mut model, crate::app::msg::IpcCommand::GoFirst);
         assert_eq!(model.geo_region_selected, 0);
         let _ = handle_geo_region(&mut model, key('G'));
         assert_eq!(model.geo_region_selected, 3);
@@ -2579,6 +2587,8 @@ mod tests {
         let _ = handle_key(&mut model, key('G'));
         assert_eq!(model.selected, 1);
         let _ = handle_key(&mut model, key('g'));
+        assert_eq!(model.selected, 1);
+        let _ = handle_ipc_command(&mut model, crate::app::msg::IpcCommand::GoFirst);
         assert_eq!(model.selected, 0);
     }
 

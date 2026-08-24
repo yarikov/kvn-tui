@@ -5,7 +5,7 @@ pub(crate) mod theme_watch;
 
 use std::io::{self, IsTerminal, Write};
 use std::sync::Arc;
-use std::sync::mpsc::{Sender, channel};
+use std::sync::mpsc::{Receiver, Sender, channel};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -46,6 +46,29 @@ const DOUBLE_CLICK_INTERVAL: Duration = Duration::from_millis(300);
 
 #[derive(Default)]
 struct ClickTracker(Option<(uuid::Uuid, Instant)>);
+
+#[derive(Debug, Default)]
+struct GoFirstSequence {
+    pending: bool,
+}
+
+impl GoFirstSequence {
+    /// Consume one key and report whether it completes a consecutive `gg`.
+    /// Any non-g key cancels a pending prefix before continuing normally.
+    fn feed(&mut self, code: &crossterm::event::KeyCode) -> bool {
+        if *code != crossterm::event::KeyCode::Char('g') {
+            self.pending = false;
+            return false;
+        }
+        if self.pending {
+            self.pending = false;
+            true
+        } else {
+            self.pending = true;
+            false
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 enum PointerShape {
@@ -146,17 +169,18 @@ pub fn run() -> Result<()> {
     theme_watch::spawn_theme_watcher(tx.clone());
     client.spawn_reader(tx.clone())?;
 
+    let mut log_tailer = LogTailer::new(vec![
+        (crate::paths::app_log_path(), "[app]"),
+        (crate::paths::singbox_log_path(), "[sb]"),
+    ]);
+    receive_initial_state(&rx, &mut model, &mut log_tailer)?;
+
     let _terminal_session = TerminalSession::enter()?;
     apply_terminal_bg(model.theme.palette_background());
     let stdout = io::stdout();
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
     input::spawn_event_reader(tx, event_reader_control.clone());
-
-    let mut log_tailer = LogTailer::new(vec![
-        (crate::paths::app_log_path(), "[app]"),
-        (crate::paths::singbox_log_path(), "[sb]"),
-    ]);
 
     run_loop(
         &mut terminal,
@@ -168,6 +192,35 @@ pub fn run() -> Result<()> {
     )
 }
 
+fn receive_initial_state(
+    rx: &Receiver<Msg>,
+    model: &mut Model,
+    log_tailer: &mut LogTailer,
+) -> Result<()> {
+    loop {
+        match rx.recv()? {
+            Msg::StateUpdate(snapshot) => {
+                if let Some(offsets) = snapshot.log_session_offsets {
+                    for line in log_tailer.load_history(
+                        &[offsets.app, offsets.singbox],
+                        crate::app::model::MAX_LOG_LINES,
+                    ) {
+                        model.push_log(line);
+                    }
+                }
+                apply_snapshot(model, *snapshot);
+                return Ok(());
+            }
+            Msg::ThemeChanged(theme)
+                if model.config.settings.theme == theme_watch::OMARCHY_SENTINEL =>
+            {
+                model.theme = theme;
+            }
+            _ => {}
+        }
+    }
+}
+
 fn run_loop(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     model: &mut Model,
@@ -176,6 +229,12 @@ fn run_loop(
     log_tailer: &mut LogTailer,
     event_reader_control: Arc<input::EventReaderControl>,
 ) -> Result<()> {
+    use crate::app::model::MainPaneFocus;
+    use crate::ui::layout::LogNavigation;
+
+    let mut pane_focus = model.main_pane_focus;
+    let mut log_navigation = LogNavigation::default();
+    let mut go_first_sequence = GoFirstSequence::default();
     // Initial draw
     terminal.draw(|f| crate::ui::draw(f, model))?;
     let mut pointer_shape = PointerShape::Default;
@@ -199,19 +258,31 @@ fn run_loop(
                         log_selection = None;
                         log_dragging = false;
                         let area: ratatui::layout::Rect = terminal.size()?.into();
-                        if let Some(selection) = crate::ui::layout::log_viewport(model, area)
-                            .and_then(|viewport| {
-                                crate::ui::layout::LogSelection::start(
-                                    viewport,
-                                    mouse.column,
-                                    mouse.row,
-                                )
-                            })
-                        {
+                        if let Some(selection) = crate::ui::layout::log_viewport_with_navigation(
+                            model,
+                            area,
+                            Some(&log_navigation),
+                        )
+                        .and_then(|viewport| {
+                            crate::ui::layout::LogSelection::start(
+                                viewport,
+                                mouse.column,
+                                mouse.row,
+                            )
+                        }) {
+                            pane_focus = MainPaneFocus::Logs;
+                            client.send(&IpcCommand::SetMainPaneFocus {
+                                focus: MainPaneFocus::Logs,
+                            })?;
+                            log_navigation.clear();
                             click_tracker.reset();
                             log_selection = Some(selection);
                             log_dragging = true;
                         } else if let Some(index) = hit {
+                            pane_focus = MainPaneFocus::Sources;
+                            client.send(&IpcCommand::SetMainPaneFocus {
+                                focus: MainPaneFocus::Sources,
+                            })?;
                             client.send(&IpcCommand::SelectSource { index })?;
                             model.selected = index;
                             let profile_id = match model.source_rows()[index] {
@@ -229,6 +300,12 @@ fn run_loop(
                             } else if profile_id.is_none() {
                                 click_tracker.reset();
                             }
+                        } else if pointer_shape == PointerShape::Logs {
+                            pane_focus = MainPaneFocus::Logs;
+                            client.send(&IpcCommand::SetMainPaneFocus {
+                                focus: MainPaneFocus::Logs,
+                            })?;
+                            click_tracker.reset();
                         } else {
                             click_tracker.reset();
                         }
@@ -266,6 +343,7 @@ fn run_loop(
             }
             Msg::Key(key) => {
                 use crossterm::event::{KeyCode, KeyModifiers};
+                let completes_gg = go_first_sequence.feed(&key.code);
                 let mut forward_key = || {
                     let (code, ch) = match key.code {
                         KeyCode::Char(c) => ("Char".to_string(), Some(c)),
@@ -279,24 +357,150 @@ fn run_loop(
                     })
                 };
                 match key.code {
+                    KeyCode::Char('g') => {
+                        if completes_gg {
+                            if model.overlay == crate::app::model::Overlay::None
+                                && pane_focus == MainPaneFocus::Logs
+                            {
+                                log_navigation.select_buffer_edge(
+                                    model.logs.len(),
+                                    true,
+                                    Instant::now(),
+                                );
+                            } else {
+                                client.send(&IpcCommand::GoFirst)?;
+                            }
+                        }
+                        needs_redraw = true;
+                    }
                     KeyCode::Char('q') | KeyCode::Esc => {
-                        if model.overlay == crate::app::model::Overlay::None {
+                        if key.code == KeyCode::Esc
+                            && model.overlay == crate::app::model::Overlay::None
+                            && pane_focus == MainPaneFocus::Logs
+                            && log_navigation.is_visual()
+                        {
+                            log_navigation.cancel_visual();
+                            needs_redraw = true;
+                        } else if model.overlay == crate::app::model::Overlay::None {
                             client.send(&IpcCommand::Detach)?;
                             break;
+                        } else {
+                            forward_key()?;
                         }
-                        forward_key()?;
                     }
                     KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                         let _ = client.send(&IpcCommand::Quit);
                         std::thread::sleep(Duration::from_millis(300));
                         break;
                     }
+                    KeyCode::Char('h') if model.overlay == crate::app::model::Overlay::None => {
+                        pane_focus = MainPaneFocus::Sources;
+                        client.send(&IpcCommand::SetMainPaneFocus {
+                            focus: MainPaneFocus::Sources,
+                        })?;
+                        needs_redraw = true;
+                    }
+                    KeyCode::Char('l') if model.overlay == crate::app::model::Overlay::None => {
+                        pane_focus = MainPaneFocus::Logs;
+                        client.send(&IpcCommand::SetMainPaneFocus {
+                            focus: MainPaneFocus::Logs,
+                        })?;
+                        needs_redraw = true;
+                    }
+                    KeyCode::Char('j') | KeyCode::Down
+                        if model.overlay == crate::app::model::Overlay::None
+                            && pane_focus == MainPaneFocus::Logs =>
+                    {
+                        let area: ratatui::layout::Rect = terminal.size()?.into();
+                        let now = Instant::now();
+                        if log_navigation.cursor().is_none() {
+                            if let Some(viewport) = crate::ui::layout::log_viewport_with_navigation(
+                                model,
+                                area,
+                                Some(&log_navigation),
+                            ) {
+                                log_navigation.select_edge(&viewport, true, now);
+                            }
+                        } else {
+                            crate::ui::layout::sync_log_scroll(model, area, &mut log_navigation);
+                            log_navigation.move_by(1, model.logs.len(), now);
+                        }
+                        needs_redraw = true;
+                    }
+                    KeyCode::Char('k') | KeyCode::Up
+                        if model.overlay == crate::app::model::Overlay::None
+                            && pane_focus == MainPaneFocus::Logs =>
+                    {
+                        let area: ratatui::layout::Rect = terminal.size()?.into();
+                        let now = Instant::now();
+                        if log_navigation.cursor().is_none() {
+                            if let Some(viewport) = crate::ui::layout::log_viewport_with_navigation(
+                                model,
+                                area,
+                                Some(&log_navigation),
+                            ) {
+                                log_navigation.select_edge(&viewport, false, now);
+                            }
+                        } else {
+                            crate::ui::layout::sync_log_scroll(model, area, &mut log_navigation);
+                            log_navigation.move_by(-1, model.logs.len(), now);
+                        }
+                        needs_redraw = true;
+                    }
+                    KeyCode::Char('G')
+                        if model.overlay == crate::app::model::Overlay::None
+                            && pane_focus == MainPaneFocus::Logs =>
+                    {
+                        log_navigation.select_buffer_edge(model.logs.len(), false, Instant::now());
+                        needs_redraw = true;
+                    }
+                    KeyCode::Char('V')
+                        if model.overlay == crate::app::model::Overlay::None
+                            && pane_focus == MainPaneFocus::Logs =>
+                    {
+                        let now = Instant::now();
+                        if log_navigation.cursor().is_none() {
+                            let area: ratatui::layout::Rect = terminal.size()?.into();
+                            if let Some(viewport) = crate::ui::layout::log_viewport_with_navigation(
+                                model,
+                                area,
+                                Some(&log_navigation),
+                            ) {
+                                log_navigation.select_edge(&viewport, true, now);
+                            }
+                        }
+                        log_navigation.enter_visual(now);
+                        needs_redraw = true;
+                    }
+                    KeyCode::Char('y')
+                        if model.overlay == crate::app::model::Overlay::None
+                            && pane_focus == MainPaneFocus::Logs =>
+                    {
+                        if let Some((text, count)) = log_navigation.selected_text(model) {
+                            match self::clipboard::write_clipboard_text(&text) {
+                                Ok(()) => {
+                                    log_navigation.copied(Instant::now());
+                                    client.send(&IpcCommand::Copied {
+                                        name: "log".into(),
+                                        count,
+                                    })?;
+                                }
+                                Err(error) => client.send(&IpcCommand::ClientError {
+                                    message: format!("Failed to copy log text: {error:#}"),
+                                })?,
+                            }
+                        }
+                        needs_redraw = true;
+                    }
                     KeyCode::Char('p') => {
                         if let Ok(text) = self::clipboard::read_clipboard_text() {
                             client.send(&IpcCommand::Paste { text })?;
                         }
                     }
-                    KeyCode::Char('y') if model.overlay == crate::app::model::Overlay::None => {
+                    KeyCode::Char('y')
+                        if model.overlay == crate::app::model::Overlay::None
+                            && pane_focus == MainPaneFocus::Sources =>
+                    {
                         if let Some(profile) = model.selected_profile() {
                             if let Ok(link) = crate::config::profile::encode_share_link(profile)
                                 && self::clipboard::write_clipboard_text(&link).is_ok()
@@ -368,6 +572,7 @@ fn run_loop(
                 }
             }
             Msg::StateUpdate(snapshot) => {
+                pane_focus = snapshot.main_pane_focus;
                 apply_snapshot(model, *snapshot);
                 if model.overlay != crate::app::model::Overlay::None {
                     log_selection = None;
@@ -377,11 +582,15 @@ fn run_loop(
                 needs_redraw = true;
             }
             Msg::Tick => {
+                log_navigation.expire_if_idle(Instant::now());
                 let new_lines = log_tailer.tail();
                 if !new_lines.is_empty() && !log_dragging {
                     log_selection = None;
                 }
                 for line in new_lines {
+                    if model.logs.len() == crate::app::model::MAX_LOG_LINES {
+                        log_navigation.oldest_log_evicted();
+                    }
                     model.push_log(line);
                 }
                 needs_redraw = true;
@@ -407,7 +616,13 @@ fn run_loop(
 
         if needs_redraw {
             terminal.draw(|f| {
-                crate::ui::layout::draw_with_log_selection(f, model, log_selection.as_ref())
+                crate::ui::layout::draw_with_interaction(
+                    f,
+                    model,
+                    pane_focus,
+                    Some(&log_navigation),
+                    log_selection.as_ref(),
+                )
             })?;
         }
     }
@@ -461,6 +676,7 @@ fn apply_snapshot(model: &mut Model, snapshot: crate::app::msg::StateSnapshot) {
         .active_profile_id
         .and_then(|s| uuid::Uuid::parse_str(&s).ok());
     model.selected = snapshot.selected;
+    model.main_pane_focus = snapshot.main_pane_focus;
     model.routing_selected = snapshot.routing_selected;
     model.geo_region_selected = snapshot.geo_region_selected;
     model.dns_selected = snapshot.dns_selected;
@@ -546,6 +762,27 @@ mod tests {
         assert!(!tracker.profile_pressed(first, start));
         assert!(!tracker.profile_pressed(other, start + Duration::from_millis(100)));
         assert!(!tracker.profile_pressed(other, start + Duration::from_millis(401)));
+    }
+
+    #[test]
+    fn go_first_sequence_requires_two_consecutive_g_keys() {
+        use crossterm::event::KeyCode;
+
+        let mut sequence = GoFirstSequence::default();
+        assert!(!sequence.feed(&KeyCode::Char('g')));
+        assert!(sequence.feed(&KeyCode::Char('g')));
+        assert!(!sequence.feed(&KeyCode::Char('g')));
+    }
+
+    #[test]
+    fn go_first_sequence_is_cancelled_by_another_key() {
+        use crossterm::event::KeyCode;
+
+        let mut sequence = GoFirstSequence::default();
+        assert!(!sequence.feed(&KeyCode::Char('g')));
+        assert!(!sequence.feed(&KeyCode::Char('j')));
+        assert!(!sequence.feed(&KeyCode::Char('g')));
+        assert!(sequence.feed(&KeyCode::Char('g')));
     }
 
     #[test]

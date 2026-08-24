@@ -67,19 +67,7 @@ impl LogTailer {
                     if line.trim().is_empty() {
                         continue;
                     }
-                    let parsed = parse_timestamp(&line);
-                    let formatted = if let Some((dt, prefix_len)) = parsed {
-                        let remainder = line.get(prefix_len..).unwrap_or_default();
-                        format!("{} {}{}", tag, dt.format("%H:%M:%S"), remainder)
-                    } else {
-                        format!("{} {}", tag, line)
-                    };
-                    let sort_key = parsed.map(|(dt, _)| dt).unwrap_or_else(|| {
-                        FixedOffset::east_opt(0)
-                            .unwrap()
-                            .from_utc_datetime(&Local::now().naive_local())
-                    });
-                    entries.push((sort_key, formatted));
+                    entries.push(format_entry(&line, tag));
                 }
                 if let Ok(new_pos) = reader.stream_position() {
                     *pos = new_pos;
@@ -90,6 +78,92 @@ impl LogTailer {
         entries.sort_by_key(|a| a.0);
         entries.into_iter().map(|(_, line)| line).collect()
     }
+
+    /// Load at most `max_lines` entries written since the supplied byte
+    /// offsets, then continue tailing from the current ends of the files.
+    /// A truncated/rotated file starts at byte zero for the new session.
+    pub fn load_history(&mut self, start_positions: &[u64], max_lines: usize) -> Vec<String> {
+        if max_lines == 0 {
+            return Vec::new();
+        }
+
+        let mut entries = Vec::new();
+        for (index, (path, tag, pos)) in self.files.iter_mut().enumerate() {
+            let Ok(mut file) = File::open(path) else {
+                continue;
+            };
+            let Ok(metadata) = file.metadata() else {
+                continue;
+            };
+            let file_len = metadata.len();
+            let requested_start = start_positions.get(index).copied().unwrap_or(file_len);
+            let start = if requested_start <= file_len {
+                requested_start
+            } else {
+                0
+            };
+
+            for line in read_last_lines(&mut file, start, file_len, max_lines) {
+                if line.trim().is_empty() {
+                    continue;
+                }
+                entries.push(format_entry(&line, tag));
+            }
+            *pos = file_len;
+        }
+
+        entries.sort_by_key(|entry| entry.0);
+        let keep_from = entries.len().saturating_sub(max_lines);
+        entries
+            .into_iter()
+            .skip(keep_from)
+            .map(|(_, line)| line)
+            .collect()
+    }
+}
+
+fn format_entry(line: &str, tag: &str) -> (DateTime<FixedOffset>, String) {
+    let parsed = parse_timestamp(line);
+    let formatted = if let Some((dt, prefix_len)) = parsed {
+        let remainder = line.get(prefix_len..).unwrap_or_default();
+        format!("{} {}{}", tag, dt.format("%H:%M:%S"), remainder)
+    } else {
+        format!("{} {}", tag, line)
+    };
+    let sort_key = parsed.map(|(dt, _)| dt).unwrap_or_else(|| {
+        FixedOffset::east_opt(0)
+            .unwrap()
+            .from_utc_datetime(&Local::now().naive_local())
+    });
+    (sort_key, formatted)
+}
+
+fn read_last_lines(file: &mut File, start: u64, end: u64, limit: usize) -> Vec<String> {
+    const CHUNK_SIZE: u64 = 8 * 1024;
+
+    let mut cursor = end;
+    let mut newline_count = 0;
+    let mut chunks = Vec::new();
+    while cursor > start && newline_count <= limit {
+        let chunk_start = cursor.saturating_sub(CHUNK_SIZE).max(start);
+        let mut chunk = vec![0; (cursor - chunk_start) as usize];
+        if file.seek(SeekFrom::Start(chunk_start)).is_err() || file.read_exact(&mut chunk).is_err()
+        {
+            return Vec::new();
+        }
+        newline_count += chunk.iter().filter(|byte| **byte == b'\n').count();
+        chunks.push(chunk);
+        cursor = chunk_start;
+    }
+
+    chunks.reverse();
+    let bytes = chunks.concat();
+    let text = String::from_utf8_lossy(&bytes);
+    let lines: Vec<_> = text.lines().collect();
+    lines[lines.len().saturating_sub(limit)..]
+        .iter()
+        .map(|line| line.trim_end_matches('\r').to_string())
+        .collect()
 }
 
 /// Parse a sing-box style timestamp from the start of a line.
@@ -190,6 +264,57 @@ mod tests {
         assert!(lines[1].starts_with("[app] 00:00:02"));
         assert!(lines[2].starts_with("[sb] 00:00:03"));
         assert!(lines[3].starts_with("[app] 00:00:04"));
+    }
+
+    #[test]
+    fn history_starts_at_daemon_offsets_and_keeps_global_tail() {
+        let mut app = tempfile::NamedTempFile::new().unwrap();
+        let mut singbox = tempfile::NamedTempFile::new().unwrap();
+        writeln!(app, "+0000 2024-01-01 00:00:00 INFO old app").unwrap();
+        writeln!(singbox, "+0000 2024-01-01 00:00:00 INFO old sing-box").unwrap();
+        app.flush().unwrap();
+        singbox.flush().unwrap();
+        let offsets = [
+            app.as_file().metadata().unwrap().len(),
+            singbox.as_file().metadata().unwrap().len(),
+        ];
+
+        writeln!(app, "+0000 2024-01-01 00:00:01 INFO app one").unwrap();
+        writeln!(singbox, "+0000 2024-01-01 00:00:02 INFO sb two").unwrap();
+        writeln!(app, "+0000 2024-01-01 00:00:03 INFO app three").unwrap();
+        writeln!(singbox, "+0000 2024-01-01 00:00:04 INFO sb four").unwrap();
+        app.flush().unwrap();
+        singbox.flush().unwrap();
+
+        let mut tailer = LogTailer::new(vec![
+            (app.path().to_path_buf(), "[app]"),
+            (singbox.path().to_path_buf(), "[sb]"),
+        ]);
+        assert_eq!(
+            tailer.load_history(&offsets, 3),
+            vec![
+                "[sb] 00:00:02 INFO sb two",
+                "[app] 00:00:03 INFO app three",
+                "[sb] 00:00:04 INFO sb four",
+            ]
+        );
+
+        writeln!(app, "+0000 2024-01-01 00:00:05 INFO appended").unwrap();
+        app.flush().unwrap();
+        assert_eq!(tailer.tail(), vec!["[app] 00:00:05 INFO appended"]);
+    }
+
+    #[test]
+    fn history_reads_rotated_file_from_its_new_start() {
+        let mut temp = tempfile::NamedTempFile::new().unwrap();
+        writeln!(temp, "+0000 2024-01-01 00:00:01 INFO new session").unwrap();
+        temp.flush().unwrap();
+
+        let mut tailer = LogTailer::new(vec![(temp.path().to_path_buf(), "[app]")]);
+        assert_eq!(
+            tailer.load_history(&[u64::MAX], 1000),
+            vec!["[app] 00:00:01 INFO new session"]
+        );
     }
 
     #[test]
