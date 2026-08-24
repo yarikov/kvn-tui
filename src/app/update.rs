@@ -131,22 +131,45 @@ pub fn update(model: &mut Model, msg: Msg) -> Vec<Effect> {
             retry_states,
             checked_at,
             next_updates,
+            updated_parts,
+            errors,
         } => {
+            model.geo_updating = false;
             model.service_retry_states = retry_states;
             model.service_checked_at = checked_at;
             model.service_next_updates = next_updates;
-            // The post-connect backstop download also reports here; without
-            // a pending commit there is nothing to do.
+            let mut effects = Vec::new();
+            for part in updated_parts {
+                effects.push(Effect::AppendAppLog {
+                    level: "INFO".to_string(),
+                    message: format!("Updated: {part}"),
+                });
+            }
+            if !errors.is_empty() {
+                push_status(
+                    &mut effects,
+                    model,
+                    AppStatus::Error(format!(
+                        "Service rule-set update failed: {}",
+                        errors.join("; ")
+                    )),
+                );
+                append_download_hint(&mut effects, model, DownloadKind::Geo);
+            }
             if !model.pending_service_reconnect {
-                return vec![];
+                if !effects.is_empty() {
+                    effects.push(Effect::BroadcastState);
+                }
+                return effects;
             }
             model.pending_service_reconnect = false;
             if model.connection != ConnectionState::Connected {
                 // Disconnected while the download ran — the files are on
                 // disk and apply on whatever connect happens next.
-                return vec![];
+                effects.push(Effect::BroadcastState);
+                return effects;
             }
-            let mut effects = vec![Effect::BroadcastState];
+            effects.push(Effect::BroadcastState);
             // Reconnect the ACTIVE profile explicitly — never the cursor's
             // row, which may have moved since the routing change.
             let active = model
@@ -387,6 +410,56 @@ fn push_status(effects: &mut Vec<Effect>, model: &mut Model, status: AppStatus) 
     }
 }
 
+#[derive(Clone, Copy)]
+pub(super) enum DownloadKind {
+    Geo,
+    Subscription,
+}
+
+pub(super) fn download_allowed(model: &Model) -> bool {
+    !model.config.settings.kill_switch || model.connection == ConnectionState::Connected
+}
+
+pub(super) fn push_download_blocked(
+    effects: &mut Vec<Effect>,
+    model: &mut Model,
+    kind: DownloadKind,
+) {
+    let message = match kind {
+        DownloadKind::Geo => {
+            "Geo download is blocked by the kill switch. Connect to VPN and retry."
+        }
+        DownloadKind::Subscription => {
+            "Subscription update is blocked by the kill switch. Connect to VPN and retry."
+        }
+    };
+    push_status(effects, model, AppStatus::Error(message.into()));
+}
+
+fn append_download_hint(effects: &mut Vec<Effect>, model: &Model, kind: DownloadKind) {
+    if model.connection == ConnectionState::Connected {
+        return;
+    }
+    let message = match (model.config.settings.kill_switch, kind) {
+        (true, DownloadKind::Geo) => {
+            "Kill switch is enabled and VPN is disconnected. Reconnect VPN and retry the geo download."
+        }
+        (true, DownloadKind::Subscription) => {
+            "Kill switch is enabled and VPN is disconnected. Reconnect VPN and retry the subscription update."
+        }
+        (false, DownloadKind::Geo) => {
+            "VPN is disconnected. Try connecting to VPN and retrying the geo download."
+        }
+        (false, DownloadKind::Subscription) => {
+            "VPN is disconnected. Try connecting to VPN and retrying the subscription update."
+        }
+    };
+    effects.push(Effect::AppendAppLog {
+        level: "WARN".to_string(),
+        message: message.into(),
+    });
+}
+
 fn handle_config_reloaded(
     model: &mut Model,
     result: Result<crate::config::profile::Config, crate::app::msg::IpcError>,
@@ -534,7 +607,7 @@ fn handle_tick_at(model: &mut Model, now: chrono::DateTime<Local>) -> Vec<Effect
         model.geo_automatic_update = true;
         model.geo_last_attempt_at = Some(now);
         effects.push(Effect::DownloadGeo);
-    } else if !model.geo_updating && model.connection == ConnectionState::Connected {
+    } else if !model.geo_updating && download_allowed(model) {
         let due_services: Vec<_> = model
             .config
             .settings
@@ -816,10 +889,14 @@ fn add_and_fetch_subscription(model: &mut Model, url: &str) -> Vec<Effect> {
         &model.config,
         model.config.subscriptions.len().saturating_sub(1),
     );
+    let mut effects = vec![Effect::SaveConfig];
+    if !download_allowed(model) {
+        push_download_blocked(&mut effects, model, DownloadKind::Subscription);
+        return effects;
+    }
     model.subscription_fetching = true;
     model.subscription_updates.insert(id);
-
-    let mut effects = vec![Effect::SaveConfig, Effect::UpdateSubscription { id }];
+    effects.push(Effect::UpdateSubscription { id });
     push_status(
         &mut effects,
         model,
@@ -969,6 +1046,7 @@ fn handle_subscription_result_at(
                 model,
                 crate::app::model::AppStatus::Error(format!("Subscription failed: {}", err)),
             );
+            append_download_hint(&mut effects, model, DownloadKind::Subscription);
             effects
         }
     };
@@ -1069,6 +1147,9 @@ fn handle_geo_result(model: &mut Model, result: GeoResult) -> Vec<Effect> {
                     message: format!("Geo batch partial failure: {warning}"),
                 });
             }
+            if !warnings.is_empty() {
+                append_download_hint(&mut log_effects, model, DownloadKind::Geo);
+            }
             let status = if warnings.is_empty() {
                 AppStatus::Info("Geo databases updated".into())
             } else {
@@ -1110,6 +1191,9 @@ fn handle_geo_result(model: &mut Model, result: GeoResult) -> Vec<Effect> {
                 ))
             };
             push_status(&mut effects, model, status);
+            if !warnings.is_empty() {
+                append_download_hint(&mut effects, model, DownloadKind::Geo);
+            }
             effects
         }
         GeoResult::Error {
@@ -1133,6 +1217,7 @@ fn handle_geo_result(model: &mut Model, result: GeoResult) -> Vec<Effect> {
                 model,
                 crate::app::model::AppStatus::Error(message),
             );
+            append_download_hint(&mut effects, model, DownloadKind::Geo);
             for part in updated_parts {
                 effects.push(Effect::AppendAppLog {
                     level: "INFO".to_string(),
@@ -2254,7 +2339,16 @@ mod tests {
         assert_eq!(model.geo_retry_state, Some(retry_state));
         assert_eq!(
             effects,
-            vec![app_log_error("net fail"), Effect::BroadcastState]
+            vec![
+                app_log_error("net fail"),
+                Effect::AppendAppLog {
+                    level: "WARN".into(),
+                    message:
+                        "VPN is disconnected. Try connecting to VPN and retrying the geo download."
+                            .into(),
+                },
+                Effect::BroadcastState,
+            ]
         );
     }
 
@@ -2930,6 +3024,8 @@ mod tests {
                 retry_states: Default::default(),
                 checked_at: Default::default(),
                 next_updates: Default::default(),
+                updated_parts: Vec::new(),
+                errors: Vec::new(),
             },
         );
         assert!(!model.pending_service_reconnect, "flag is consumed");
@@ -2961,6 +3057,8 @@ mod tests {
                 retry_states: Default::default(),
                 checked_at: Default::default(),
                 next_updates: Default::default(),
+                updated_parts: Vec::new(),
+                errors: Vec::new(),
             },
         );
         assert!(effects.is_empty());
@@ -2980,6 +3078,8 @@ mod tests {
                 retry_states: Default::default(),
                 checked_at: Default::default(),
                 next_updates: Default::default(),
+                updated_parts: Vec::new(),
+                errors: Vec::new(),
             },
         );
         assert!(!model.pending_service_reconnect);
@@ -3001,6 +3101,8 @@ mod tests {
                 retry_states: Default::default(),
                 checked_at: Default::default(),
                 next_updates: Default::default(),
+                updated_parts: Vec::new(),
+                errors: Vec::new(),
             },
         );
         assert!(!model.pending_service_reconnect);
@@ -3468,7 +3570,12 @@ mod tests {
             effects,
             vec![
                 Effect::SaveConfig,
-                app_log_error("Subscription failed: network down")
+                app_log_error("Subscription failed: network down"),
+                Effect::AppendAppLog {
+                    level: "WARN".into(),
+                    message: "VPN is disconnected. Try connecting to VPN and retrying the subscription update."
+                        .into(),
+                },
             ]
         );
     }
@@ -4526,5 +4633,102 @@ mod tests {
             "failure stores None (shown as err in UI)"
         );
         assert!(effects.iter().any(|e| matches!(e, Effect::BroadcastState)));
+    }
+
+    #[test]
+    fn manual_geo_update_is_blocked_only_by_disconnected_kill_switch() {
+        let mut direct = model_with_profiles(vec![]);
+        direct.config.settings.geo_routing.set_region(GeoRegion::Ru);
+        let effects = update(&mut direct, Msg::Key(key('u')));
+        assert!(effects.contains(&Effect::DownloadGeo));
+
+        let mut blocked = model_with_profiles(vec![]);
+        blocked
+            .config
+            .settings
+            .geo_routing
+            .set_region(GeoRegion::Ru);
+        blocked.config.settings.kill_switch = true;
+        let effects = update(&mut blocked, Msg::Key(key('u')));
+        assert!(!effects.contains(&Effect::DownloadGeo));
+        assert!(!blocked.geo_updating);
+        assert!(effects.iter().any(|effect| matches!(
+            effect,
+            Effect::AppendAppLog { message, .. }
+                if message.contains("blocked by the kill switch")
+        )));
+
+        blocked.connection = ConnectionState::Connected;
+        let effects = update(&mut blocked, Msg::Key(key('u')));
+        assert!(effects.contains(&Effect::DownloadGeo));
+    }
+
+    #[test]
+    fn pasted_subscription_is_saved_but_not_fetched_behind_kill_switch() {
+        let mut model = model_with_profiles(vec![]);
+        model.config.settings.kill_switch = true;
+        let effects = handle_clipboard_text(&mut model, "https://example.com/sub");
+
+        assert_eq!(model.config.subscriptions.len(), 1);
+        assert!(!model.subscription_fetching);
+        assert!(model.subscription_updates.is_empty());
+        assert!(effects.contains(&Effect::SaveConfig));
+        assert!(
+            !effects
+                .iter()
+                .any(|effect| matches!(effect, Effect::UpdateSubscription { .. }))
+        );
+        assert!(effects.iter().any(|effect| matches!(
+            effect,
+            Effect::AppendAppLog { message, .. }
+                if message.contains("Subscription update is blocked")
+        )));
+    }
+
+    #[test]
+    fn pasted_subscription_can_fetch_directly_or_through_vpn() {
+        let mut direct = model_with_profiles(vec![]);
+        let effects = handle_clipboard_text(&mut direct, "https://example.com/direct");
+        assert!(
+            effects
+                .iter()
+                .any(|effect| matches!(effect, Effect::UpdateSubscription { .. }))
+        );
+
+        let mut tunneled = model_with_profiles(vec![]);
+        tunneled.config.settings.kill_switch = true;
+        tunneled.connection = ConnectionState::Connected;
+        let effects = handle_clipboard_text(&mut tunneled, "https://example.com/tunneled");
+        assert!(
+            effects
+                .iter()
+                .any(|effect| matches!(effect, Effect::UpdateSubscription { .. }))
+        );
+    }
+
+    #[test]
+    fn automatic_service_update_can_run_directly_without_kill_switch() {
+        let mut model = model_with_profiles(vec![]);
+        model
+            .config
+            .settings
+            .geo_routing
+            .set_region(GeoRegion::Global);
+        model.config.settings.geo_routing.auto_update = GeoAutoUpdate::Every1d;
+        model.config.settings.geo_routing.service_routes.insert(
+            RoutedService::Steam,
+            crate::config::profile::ServiceRoute::Direct,
+        );
+        let now = after_update_window();
+        model
+            .service_next_updates
+            .insert(RoutedService::Steam, now.date_naive());
+
+        let effects = handle_tick_at(&mut model, now);
+        assert!(effects.iter().any(|effect| matches!(
+            effect,
+            Effect::RetryServiceRuleSets { services }
+                if services == &vec![RoutedService::Steam]
+        )));
     }
 }

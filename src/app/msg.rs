@@ -87,9 +87,8 @@ pub enum Msg {
     },
     /// A service rule-set download pass finished (files may still be missing
     /// if individual downloads failed — absence degrades to "no rule for
-    /// that service"). Consumed by the reducer to run the reconnect that a
-    /// service-routing commit deferred until the rule-sets were fetched
-    /// through the still-active tunnel (`Model::pending_service_reconnect`).
+    /// that service"). Consumed by the reducer to report the result and run
+    /// any reconnect deferred by a service-routing commit.
     ServiceRuleSetsReady {
         retry_states: std::collections::HashMap<
             crate::config::profile::RoutedService,
@@ -101,6 +100,8 @@ pub enum Msg {
         >,
         next_updates:
             std::collections::HashMap<crate::config::profile::RoutedService, chrono::NaiveDate>,
+        updated_parts: Vec<String>,
+        errors: Vec<String>,
     },
     SubscriptionFetched {
         id: Uuid,

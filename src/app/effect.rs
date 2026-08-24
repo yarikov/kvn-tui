@@ -16,9 +16,8 @@ pub enum Effect {
     RevokeKillSwitchExceptions,
     DownloadGeo,
     DownloadGeoIfMissing,
-    /// Fetch rule-sets for enabled service routes if absent. Emitted after a
-    /// successful connect so the download rides the freshly opened tunnel —
-    /// pre-tunnel the source may be unreachable (kill switch or ISP blocks).
+    /// Fetch rule-sets for enabled service routes if absent. This may run
+    /// directly when the kill switch is off, or through an active tunnel.
     DownloadServiceRuleSetsIfMissing,
     RetryServiceRuleSets {
         services: Vec<crate::config::profile::RoutedService>,
