@@ -203,9 +203,8 @@ fn run_loop(
                         input::disable_keyboard_protocol(terminal.backend_mut())?;
                         disable_raw_mode()?;
                         terminal.backend_mut().execute(LeaveAlternateScreen)?;
-                        let result = self::editor::open_profiles_editor(
-                            model.selected_profile_index().unwrap_or(0),
-                        );
+                        let target = model.selected_row().map(self::editor::EditorTarget::from);
+                        let result = self::editor::open_profiles_editor(target);
                         enable_raw_mode()?;
                         terminal.backend_mut().execute(EnterAlternateScreen)?;
                         input::enable_keyboard_protocol(terminal.backend_mut())?;

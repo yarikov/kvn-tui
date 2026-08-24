@@ -595,17 +595,6 @@ impl Model {
         }
     }
 
-    /// Return the index of the currently selected profile in `config.profiles`, if any.
-    pub fn selected_profile_index(&self) -> Option<usize> {
-        match self.selected_row()? {
-            SourceRow::StandaloneProfile(idx)
-            | SourceRow::SubscriptionProfile {
-                profile_idx: idx, ..
-            } => Some(idx),
-            _ => None,
-        }
-    }
-
     /// Return the currently selected subscription, if any.
     pub fn selected_subscription(&self) -> Option<&crate::config::profile::Subscription> {
         match self.selected_row()? {
