@@ -595,6 +595,7 @@ fn draw_main(
     log_selection: Option<&LogSelection>,
 ) {
     let theme = &model.theme;
+    let main_focus_active = model.overlay == Overlay::None;
     let content_chunks = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
@@ -604,13 +605,13 @@ fn draw_main(
         frame,
         model,
         content_chunks[0],
-        pane_focus == MainPaneFocus::Sources,
+        main_focus_active && pane_focus == MainPaneFocus::Sources,
     );
 
     let log_block = Block::default()
         .title(" Logs ")
         .borders(Borders::ALL)
-        .border_style(if pane_focus == MainPaneFocus::Logs {
+        .border_style(if main_focus_active && pane_focus == MainPaneFocus::Logs {
             theme.accent()
         } else {
             theme.border()
@@ -723,7 +724,7 @@ fn draw_help(frame: &mut Frame, theme: &Theme, area: Rect) {
     let block = Block::default()
         .title(" Help ")
         .borders(Borders::ALL)
-        .border_style(theme.border())
+        .border_style(theme.accent())
         .style(theme.popup_bg());
 
     let inner = block.inner(popup_area);
@@ -779,7 +780,7 @@ fn draw_modal(
     let block = Block::default()
         .title(title)
         .borders(Borders::ALL)
-        .border_style(theme.border())
+        .border_style(theme.accent())
         .style(theme.popup_bg());
 
     let paragraph = Paragraph::new(lines)
@@ -906,7 +907,7 @@ fn draw_service_routing(frame: &mut Frame, model: &Model, area: Rect) {
     let block = Block::default()
         .title(" Services ")
         .borders(Borders::ALL)
-        .border_style(theme.border())
+        .border_style(theme.accent())
         .style(theme.popup_bg());
     let inner = block.inner(popup_area);
     frame.render_widget(block, popup_area);
@@ -1844,6 +1845,71 @@ mod tests {
         let log_border = &buffer.content[3 * 80 + 40];
         assert_eq!(source_border.style().fg, Some(Color::DarkGray));
         assert_eq!(log_border.style().fg, Some(Color::Cyan));
+    }
+
+    #[test]
+    fn overlay_focus_temporarily_suspends_and_restores_main_pane_focus() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+        use ratatui::style::Color;
+
+        for pane_focus in [MainPaneFocus::Sources, MainPaneFocus::Logs] {
+            let mut model = mouse_model();
+            model.overlay = Overlay::ConfirmDelete;
+            let mut terminal = Terminal::new(TestBackend::new(80, 20)).unwrap();
+            terminal
+                .draw(|frame| {
+                    draw_with_interaction(frame, &model, pane_focus, None, None);
+                })
+                .unwrap();
+
+            let buffer = terminal.backend().buffer();
+            assert_eq!(buffer.content[3 * 80].style().fg, Some(Color::DarkGray));
+            assert_eq!(
+                buffer.content[3 * 80 + 79].style().fg,
+                Some(Color::DarkGray)
+            );
+
+            model.overlay = Overlay::None;
+            terminal
+                .draw(|frame| {
+                    draw_with_interaction(frame, &model, pane_focus, None, None);
+                })
+                .unwrap();
+            let buffer = terminal.backend().buffer();
+            let focused_border = match pane_focus {
+                MainPaneFocus::Sources => &buffer.content[3 * 80],
+                MainPaneFocus::Logs => &buffer.content[3 * 80 + 40],
+            };
+            assert_eq!(focused_border.style().fg, Some(Color::Cyan));
+        }
+    }
+
+    #[test]
+    fn every_overlay_border_renderer_uses_accent() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+        use ratatui::style::Color;
+
+        for (overlay, height_percent) in [
+            (Overlay::ConfirmDelete, POPUP_HEIGHT_PERCENT),
+            (Overlay::Help, 90),
+            (Overlay::ServiceRouting, POPUP_HEIGHT_PERCENT),
+        ] {
+            let mut model = mouse_model();
+            model.overlay = overlay;
+            let mut terminal = Terminal::new(TestBackend::new(80, 20)).unwrap();
+            terminal
+                .draw(|frame| {
+                    draw_with_interaction(frame, &model, MainPaneFocus::Logs, None, None);
+                })
+                .unwrap();
+
+            let popup = centered_rect(POPUP_WIDTH_PERCENT, height_percent, Rect::new(0, 0, 80, 20));
+            let corner =
+                &terminal.backend().buffer().content[popup.y as usize * 80 + popup.x as usize];
+            assert_eq!(corner.style().fg, Some(Color::Cyan), "overlay: {overlay:?}");
+        }
     }
 
     #[test]
