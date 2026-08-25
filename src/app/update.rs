@@ -1123,7 +1123,7 @@ fn handle_geo_result(model: &mut Model, result: GeoResult) -> Vec<Effect> {
     let mut effects = match result {
         GeoResult::Updated {
             parts,
-            last_updated,
+            last_updated: _,
             checked_at,
             retry_state,
             service_retry_states,
@@ -1137,7 +1137,7 @@ fn handle_geo_result(model: &mut Model, result: GeoResult) -> Vec<Effect> {
             model.service_checked_at = service_checked_at;
             model.geo_next_update = next_update;
             model.service_next_updates = service_next_updates;
-            model.geo_last_updated = last_updated;
+            model.geo_last_updated = Some(checked_at.format("%d %b %H:%M").to_string());
             model.geo_last_checked_at = Some(checked_at);
             let mut log_effects = Vec::new();
             for part in &parts {
@@ -1188,6 +1188,9 @@ fn handle_geo_result(model: &mut Model, result: GeoResult) -> Vec<Effect> {
             model.geo_next_update = next_update;
             model.service_next_updates = service_next_updates;
             model.geo_last_checked_at = checked_at;
+            if let Some(checked_at) = checked_at {
+                model.geo_last_updated = Some(checked_at.format("%d %b %H:%M").to_string());
+            }
             let mut effects = Vec::new();
             let status = if warnings.is_empty() {
                 AppStatus::Info("Geo databases are up to date".into())
