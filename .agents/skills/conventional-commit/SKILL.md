@@ -1,72 +1,49 @@
 ---
 name: conventional-commit
-description: 'Prompt and workflow for generating conventional commit messages using a structured XML format. Guides users to create standardized, descriptive commit messages in line with the Conventional Commits specification, including instructions, examples, and validation.'
+description: Create, review, or use Git commit messages that conform to the Conventional Commits 1.0.0 specification. Use when asked to suggest a commit message, validate one, or commit changes with Conventional Commits formatting.
 ---
 
-### Instructions
+# Conventional Commit
 
-```xml
-	<description>This file contains a prompt template for generating conventional commit messages. It provides instructions, examples, and formatting guidelines to help users write standardized, descriptive commit messages in accordance with the Conventional Commits specification.</description>
+Produce a commit message that accurately describes the changes and conforms to [Conventional Commits 1.0.0](https://www.conventionalcommits.org/en/v1.0.0/#specification).
+
+## Inspect the change
+
+Before choosing a message, inspect the relevant diff:
+
+- For a message describing staged changes, use `git diff --cached` and verify the staged file set with `git status --short`.
+- If nothing is staged and the user only wants a suggestion, inspect `git diff` and clearly say the message describes unstaged changes.
+- If the user asks to commit, stage only changes that are clearly in scope. Do not include unrelated user changes.
+- If the diff contains multiple independent changes, recommend separate commits when practical.
+- Describe only the final state represented by the diff. Do not mention intermediate implementations, failed attempts, temporary states, reverted approaches, or the sequence of work unless that history remains materially relevant to the final change.
+
+## Format
+
+Use this structure:
+
+```text
+<type>[optional scope][optional !]: <description>
+
+[optional body]
+
+[optional footer(s)]
 ```
 
-### Workflow
+Apply these rules:
 
-**Follow these steps:**
+- Start with a type, optionally followed by a noun scope in parentheses, optionally followed by `!`, then `: `.
+- Use `feat` for a new feature and `fix` for a bug fix.
+- Other types are allowed. Choose a conventional type such as `docs`, `style`, `refactor`, `perf`, `test`, `build`, `ci`, `chore`, or `revert` only when it truthfully describes the change.
+- Write a short description immediately after the prefix. Prefer a concise, lowercase, command-style summary for consistency.
+- Separate an optional free-form body from the description with one blank line. Use it to explain context or motivation that is not clear from the summary.
+- Put optional footers after one blank line. Format each as `Token: value` or `Token #value`; replace spaces in tokens with hyphens.
+- Mark a breaking change with `!` immediately before the colon, a `BREAKING CHANGE: <description>` footer, or both. `BREAKING-CHANGE` is an equivalent footer token. A breaking change may use any commit type.
 
-1. Run `git status` to review changed files.
-2. Run `git diff` or `git diff --cached` to inspect changes.
-3. Stage your changes with `git add <file>`.
-4. Construct your commit message using the following XML structure.
-5. After generating your commit message, Copilot will automatically run the following command in your integrated terminal (no confirmation needed):
+Do not invent a scope, issue reference, breaking change, or motivation not supported by the diff or user context.
 
-```bash
-git commit -m "type(scope): description"
-```
+## Deliver or commit
 
-6. Just execute this prompt and Copilot will handle the commit for you in the terminal.
-
-### Commit Message Structure
-
-```xml
-<commit-message>
-	<type>feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert</type>
-	<scope>()</scope>
-	<description>A short, imperative summary of the change</description>
-	<body>(optional: more detailed explanation)</body>
-	<footer>(optional: e.g. BREAKING CHANGE: details, or issue references)</footer>
-</commit-message>
-```
-
-### Examples
-
-```xml
-<examples>
-	<example>feat(parser): add ability to parse arrays</example>
-	<example>fix(ui): correct button alignment</example>
-	<example>docs: update README with usage instructions</example>
-	<example>refactor: improve performance of data processing</example>
-	<example>chore: update dependencies</example>
-	<example>feat!: send email on registration (BREAKING CHANGE: email service required)</example>
-</examples>
-```
-
-### Validation
-
-```xml
-<validation>
-	<type>Must be one of the allowed types. See <reference>https://www.conventionalcommits.org/en/v1.0.0/#specification</reference></type>
-	<scope>Optional, but recommended for clarity.</scope>
-	<description>Required. Use the imperative mood (e.g., "add", not "added").</description>
-	<body>Optional. Use for additional context.</body>
-	<footer>Use for breaking changes or issue references.</footer>
-</validation>
-```
-
-### Final Step
-
-```xml
-<final-step>
-	<cmd>git commit -m "type(scope): description"</cmd>
-	<note>Replace with your constructed message. Include body and footer if needed.</note>
-</final-step>
-```
+- If asked only for a message, return the final message in a plain text code block, without XML or placeholder syntax.
+- If asked to validate a message, identify specification violations separately from optional style improvements.
+- If asked to commit, show or state the selected message and run `git commit` only after the requested changes are staged. Preserve multiline bodies and footers as separate paragraphs.
+- Do not push, amend, rebase, or otherwise rewrite history unless explicitly requested.
