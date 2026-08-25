@@ -320,6 +320,13 @@ Version 0.20.0 moved daemon startup from Hyprland autostart to a systemd user se
 
 Created and maintained by [Dmitry Yarikov](https://github.com/yarikov) — <dmitry@yarikov.com>.
 
+## Contributing
+
+Contributions are welcome. Before opening a pull request, read
+[CONTRIBUTING.md](CONTRIBUTING.md) for branch naming, Conventional Commit and
+pull request title requirements, testing, and coverage expectations. Pull
+request titles are used in generated release notes.
+
 ## License
 
 MIT
