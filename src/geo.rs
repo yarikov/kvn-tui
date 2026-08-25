@@ -377,13 +377,14 @@ impl GeoManager {
         }
     }
 
-    /// Return a human-readable string of the last update time for the given region, or None.
+    /// Return a human-readable string of the last successful synchronization
+    /// time for the given region, or `None`.
     pub fn last_updated(&self, region: GeoRegion) -> Option<String> {
         if matches!(region, GeoRegion::Global) {
             return None;
         }
         let meta = self.load_metadata().ok()?;
-        meta.updated_at
+        meta.checked_at
             .get(&region)
             .map(|dt| dt.format("%d %b %H:%M").to_string())
     }
@@ -1357,16 +1358,16 @@ mod tests {
     }
 
     #[test]
-    fn last_updated_returns_formatted_string_after_save() {
+    fn last_updated_returns_last_check_formatted_after_save() {
         let _guard = crate::test_helpers::ENV_LOCK.lock().unwrap();
         let dir = tempfile::tempdir().unwrap();
         unsafe { std::env::set_var("XDG_CONFIG_HOME", dir.path()) };
         let gm = GeoManager::new().unwrap();
-        let mut updated_at = HashMap::new();
+        let mut checked_at = HashMap::new();
         let dt = Local::now();
-        updated_at.insert(GeoRegion::Ru, dt);
+        checked_at.insert(GeoRegion::Ru, dt);
         let meta = GeoMetadata {
-            updated_at,
+            checked_at,
             ..GeoMetadata::default()
         };
         gm.save_metadata(&meta).unwrap();
