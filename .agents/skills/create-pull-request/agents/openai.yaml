@@ -1,0 +1,4 @@
+interface:
+  display_name: "Create Pull Request"
+  short_description: "Run preflight and open a GitHub draft PR"
+  default_prompt: "Use $create-pull-request to validate this branch and open a GitHub pull request."
