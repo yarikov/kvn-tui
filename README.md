@@ -106,7 +106,8 @@ systemctl --user enable --now kvn-tui.service
 ```
 
 `sing-box` is installed automatically. The user service keeps the daemon
-available after login.
+available after login. The package also restores the TUN capabilities on
+`/usr/bin/sing-box` automatically after pacman upgrades it.
 
 ### Polkit setup (recommended)
 

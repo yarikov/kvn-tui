@@ -12,12 +12,15 @@ The Arch package installs:
 |------|------|---------|
 | `/usr/bin/kvn-tui` | `0755` | Application binary |
 | `/usr/lib/systemd/user/kvn-tui.service` | `0644` | Per-user daemon service |
+| `/usr/share/libalpm/hooks/kvn-tui-sing-box-capabilities.hook` | `0644` | Restores sing-box capabilities after package updates |
 | `/usr/share/licenses/kvn-tui/LICENSE` | `0644` | MIT license for the source package |
 | `/usr/share/licenses/kvn-tui-bin/LICENSE` | `0644` | MIT license for the binary package |
 
 The package post-install hook grants `/usr/bin/sing-box` the
 `cap_net_admin,cap_net_raw+ep` capabilities required for TUN operation. It does
-not enable the daemon service automatically; enable it as your regular user:
+not enable the daemon service automatically. An ALPM hook restores these
+capabilities whenever pacman installs or upgrades `/usr/bin/sing-box`; manually
+replaced binaries are not covered. Enable the daemon as your regular user:
 
 ```bash
 systemctl --user enable --now kvn-tui.service
@@ -29,8 +32,8 @@ Before removing the package, stop and disable the service:
 systemctl --user disable --now kvn-tui.service
 ```
 
-Removing kvn-tui does not remove capabilities from sing-box. If no other
-software needs them, they can be revoked explicitly:
+Removing kvn-tui removes the ALPM hook but does not remove capabilities already
+set on sing-box. If no other software needs them, they can be revoked explicitly:
 
 ```bash
 sudo setcap -r /usr/bin/sing-box
