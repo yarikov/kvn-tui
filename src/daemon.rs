@@ -19,14 +19,49 @@ struct ProcessSlot {
     handle: Option<ProcessHandle>,
 }
 
+struct DaemonShared {
+    process_slot: Arc<Mutex<ProcessSlot>>,
+    connect_coordinator: Arc<Mutex<()>>,
+    singbox_log_pruned_at: Arc<Mutex<Option<Instant>>>,
+}
+
+const LOG_PRUNE_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60);
+
 /// Run the daemon main loop.
 pub fn run(mut model: Model) -> Result<()> {
+    let (tx, rx) = channel::<Msg>();
+    let ipc_server = IpcServer::bind(tx.clone())?;
+
+    let app_log_path = crate::paths::app_log_path();
+    if let Err(error) = crate::services::log_tailer::prune_log_to_lines(
+        &app_log_path,
+        model.config.settings.logs.line_retention.app,
+    ) {
+        tracing::warn!(
+            "Failed to enforce log line limit for {:?}: {}",
+            app_log_path,
+            error
+        );
+    }
+    let singbox_log_path = crate::paths::singbox_log_path();
+    let singbox_log_pruned_at = match crate::services::log_tailer::prune_log_to_lines(
+        &singbox_log_path,
+        model.config.settings.logs.line_retention.singbox,
+    ) {
+        Ok(()) => Some(Instant::now()),
+        Err(error) => {
+            tracing::warn!(
+                "Failed to enforce log line limit for {:?}: {}",
+                singbox_log_path,
+                error
+            );
+            None
+        }
+    };
     let log_session_offsets = LogSessionOffsets {
         app: log_file_len(crate::paths::app_log_path()),
         singbox: log_file_len(crate::paths::singbox_log_path()),
     };
-    let (tx, rx) = channel::<Msg>();
-    let ipc_server = IpcServer::bind(tx.clone())?;
 
     spawn_suspend_watcher(tx.clone());
     if let Err(e) = spawn_signal_handler(tx.clone()) {
@@ -35,28 +70,31 @@ pub fn run(mut model: Model) -> Result<()> {
 
     reconcile_kill_switch_state(&mut model);
 
-    let process_slot = Arc::new(Mutex::new(ProcessSlot {
-        attempt_id: model.connect_attempt_id,
-        handle: None,
-    }));
-    spawn_ticker(tx.clone(), Arc::downgrade(&process_slot));
-    let connect_coordinator = Arc::new(Mutex::new(()));
+    let shared = DaemonShared {
+        process_slot: Arc::new(Mutex::new(ProcessSlot {
+            attempt_id: model.connect_attempt_id,
+            handle: None,
+        })),
+        connect_coordinator: Arc::new(Mutex::new(())),
+        singbox_log_pruned_at: Arc::new(Mutex::new(singbox_log_pruned_at)),
+    };
+    spawn_ticker(tx.clone(), Arc::downgrade(&shared.process_slot));
 
     let result = run_loop(
         &mut model,
         rx,
         &tx,
-        process_slot.clone(),
-        connect_coordinator.clone(),
+        &shared,
         &ipc_server,
         log_session_offsets,
     );
 
     // Cleanup
-    let _coordinator = connect_coordinator
+    let _coordinator = shared
+        .connect_coordinator
         .lock()
         .unwrap_or_else(|p| p.into_inner());
-    if let Some(mut handle) = lock_process_slot(&process_slot).handle.take()
+    if let Some(mut handle) = lock_process_slot(&shared.process_slot).handle.take()
         && let Err(e) = handle.kill_and_wait()
     {
         tracing::warn!("Failed to stop sing-box on exit: {}", e);
@@ -75,8 +113,7 @@ fn run_loop(
     model: &mut Model,
     rx: std::sync::mpsc::Receiver<Msg>,
     tx: &Sender<Msg>,
-    process_slot: Arc<Mutex<ProcessSlot>>,
-    connect_coordinator: Arc<Mutex<()>>,
+    shared: &DaemonShared,
     ipc_server: &IpcServer,
     log_session_offsets: LogSessionOffsets,
 ) -> Result<()> {
@@ -86,7 +123,7 @@ fn run_loop(
         // `queue_connect` advances the generation before the next Tick emits
         // `Effect::Connect`. Publish that invalidation immediately so an old
         // worker cannot install its process during the intervening 250 ms.
-        lock_process_slot(&process_slot).attempt_id = model.connect_attempt_id;
+        lock_process_slot(&shared.process_slot).attempt_id = model.connect_attempt_id;
         let mut should_broadcast = false;
 
         for effect in &effects {
@@ -108,7 +145,7 @@ fn run_loop(
         }
 
         for effect in effects {
-            execute_daemon_effect(effect, tx, model, &process_slot, &connect_coordinator)?;
+            execute_daemon_effect(effect, tx, model, shared)?;
         }
 
         if model.should_quit {
@@ -126,8 +163,7 @@ fn execute_daemon_effect(
     effect: Effect,
     tx: &Sender<Msg>,
     model: &mut Model,
-    process_slot: &Arc<Mutex<ProcessSlot>>,
-    connect_coordinator: &Arc<Mutex<()>>,
+    shared: &DaemonShared,
 ) -> Result<()> {
     match effect {
         Effect::Connect {
@@ -136,7 +172,7 @@ fn execute_daemon_effect(
             attempt_id,
         } => {
             let previous = {
-                let mut slot = lock_process_slot(process_slot);
+                let mut slot = lock_process_slot(&shared.process_slot);
                 slot.attempt_id = attempt_id;
                 slot.handle.take()
             };
@@ -147,8 +183,9 @@ fn execute_daemon_effect(
             }
             model.connection = ConnectionState::ConnectPending;
             let tx = tx.clone();
-            let slot = process_slot.clone();
-            let coordinator = connect_coordinator.clone();
+            let slot = shared.process_slot.clone();
+            let coordinator = shared.connect_coordinator.clone();
+            let log_pruned_at = shared.singbox_log_pruned_at.clone();
             let kill_switch = model.config.settings.kill_switch;
             let dns = settings.dns.clone();
             thread::spawn(move || {
@@ -190,6 +227,23 @@ fn execute_daemon_effect(
                 if !is_current_attempt(&slot, attempt_id) {
                     return;
                 }
+                let now = Instant::now();
+                let mut last_pruned = log_pruned_at.lock().unwrap_or_else(|p| p.into_inner());
+                if log_prune_due(*last_pruned, now) {
+                    let log_path = crate::paths::singbox_log_path();
+                    match crate::services::log_tailer::prune_log_to_lines(
+                        &log_path,
+                        settings.logs.line_retention.singbox,
+                    ) {
+                        Ok(()) => *last_pruned = Some(now),
+                        Err(error) => tracing::warn!(
+                            "Failed to enforce log line limit for {:?}: {}",
+                            log_path,
+                            error
+                        ),
+                    }
+                }
+                drop(last_pruned);
                 match crate::singbox::runner::start(&profile, &settings) {
                     Ok(handle) => {
                         let pid = handle.pid;
@@ -232,16 +286,17 @@ fn execute_daemon_effect(
         Effect::Disconnect => {
             model.connect_attempt_id = model.connect_attempt_id.wrapping_add(1);
             {
-                let mut slot = lock_process_slot(process_slot);
+                let mut slot = lock_process_slot(&shared.process_slot);
                 slot.attempt_id = model.connect_attempt_id;
             }
             // Wait for an in-flight setup to observe invalidation and stop
             // before flushing its temporary kill-switch exceptions.
-            let _coordinator = connect_coordinator
+            let _coordinator = shared
+                .connect_coordinator
                 .lock()
                 .unwrap_or_else(|p| p.into_inner());
             let previous = {
-                let mut slot = lock_process_slot(process_slot);
+                let mut slot = lock_process_slot(&shared.process_slot);
                 slot.handle.take()
             };
             if let Some(mut handle) = previous
@@ -577,7 +632,7 @@ fn execute_daemon_effect(
         Effect::BroadcastState => {}
         Effect::Quit => {
             model.connect_attempt_id = model.connect_attempt_id.wrapping_add(1);
-            lock_process_slot(process_slot).attempt_id = model.connect_attempt_id;
+            lock_process_slot(&shared.process_slot).attempt_id = model.connect_attempt_id;
             model.should_quit = true;
         }
         Effect::AppendAppLog { level, message } => {
@@ -1125,6 +1180,10 @@ fn is_current_attempt(slot: &Arc<Mutex<ProcessSlot>>, attempt_id: u64) -> bool {
     lock_process_slot(slot).attempt_id == attempt_id
 }
 
+fn log_prune_due(last_pruned: Option<Instant>, now: Instant) -> bool {
+    last_pruned.is_none_or(|last| now.duration_since(last) >= LOG_PRUNE_INTERVAL)
+}
+
 fn spawn_suspend_watcher(tx: Sender<Msg>) {
     thread::spawn(move || {
         crate::services::suspend::listen_blocking(tx);
@@ -1153,12 +1212,27 @@ fn spawn_signal_handler(tx: Sender<Msg>) -> Result<()> {
 mod tests {
     use super::{
         ProcessSlot, ServiceRefreshResult, finalize_geo_result, handshake_protocols,
-        lock_process_slot, poll_process_exit,
+        lock_process_slot, log_prune_due, poll_process_exit,
     };
     use crate::app::msg::{GeoResult, Msg};
     use crate::config::profile::Protocol;
     use crate::singbox::process_handle::ProcessHandle;
     use std::sync::{Arc, Mutex};
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn log_prune_is_due_initially_and_after_twenty_four_hours() {
+        let start = Instant::now();
+        assert!(log_prune_due(None, start));
+        assert!(!log_prune_due(
+            Some(start),
+            start + Duration::from_secs(24 * 60 * 60 - 1)
+        ));
+        assert!(log_prune_due(
+            Some(start),
+            start + Duration::from_secs(24 * 60 * 60)
+        ));
+    }
 
     #[test]
     fn handshake_protocols_match_outbound_transports() {

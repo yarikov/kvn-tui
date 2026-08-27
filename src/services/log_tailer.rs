@@ -1,7 +1,61 @@
 use chrono::{DateTime, FixedOffset, Local, TimeZone};
 use std::fs::{File, OpenOptions};
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
+use std::path::Path;
 use std::path::PathBuf;
+
+/// Atomically retain at most the last `max_lines` physical lines of a log.
+/// Scans backward from the end so a large file does not need to be loaded
+/// into memory; only the retained tail is allocated for the atomic rewrite.
+pub fn prune_log_to_lines(path: &Path, max_lines: u32) -> anyhow::Result<()> {
+    let mut file = match File::open(path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error.into()),
+    };
+    let file_len = file.metadata()?.len();
+    if max_lines == 0 {
+        return if file_len == 0 {
+            Ok(())
+        } else {
+            crate::atomic_write::write(path, &[])
+        };
+    }
+    let start = tail_start(&mut file, file_len, max_lines as usize)?;
+    if start == 0 {
+        return Ok(());
+    }
+
+    file.seek(SeekFrom::Start(start))?;
+    let mut retained = Vec::with_capacity((file_len - start) as usize);
+    file.read_to_end(&mut retained)?;
+    crate::atomic_write::write(path, &retained)
+}
+
+fn tail_start(file: &mut File, file_len: u64, max_lines: usize) -> std::io::Result<u64> {
+    const CHUNK_SIZE: u64 = 8 * 1024;
+
+    let mut cursor = file_len;
+    let mut newline_count = 0;
+    while cursor > 0 {
+        let chunk_start = cursor.saturating_sub(CHUNK_SIZE);
+        let mut chunk = vec![0; (cursor - chunk_start) as usize];
+        file.seek(SeekFrom::Start(chunk_start))?;
+        file.read_exact(&mut chunk)?;
+
+        for (index, byte) in chunk.iter().enumerate().rev() {
+            let position = chunk_start + index as u64;
+            if *byte == b'\n' && position != file_len.saturating_sub(1) {
+                newline_count += 1;
+                if newline_count == max_lines {
+                    return Ok(position + 1);
+                }
+            }
+        }
+        cursor = chunk_start;
+    }
+    Ok(0)
+}
 
 /// Append an app-generated log line to the application log file.
 /// Format matches sing-box style: `+HHMM YYYY-MM-DD HH:MM:SS LEVEL message`
@@ -190,6 +244,88 @@ fn parse_timestamp(line: &str) -> Option<(DateTime<FixedOffset>, usize)> {
 mod tests {
     use super::*;
     use std::io::Write;
+
+    #[test]
+    fn prune_keeps_last_physical_lines_verbatim() {
+        let temp = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(temp.path(), b"one\ntwo\nplain continuation\nfour\n").unwrap();
+
+        prune_log_to_lines(temp.path(), 2).unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(temp.path()).unwrap(),
+            "plain continuation\nfour\n"
+        );
+    }
+
+    #[test]
+    fn prune_handles_file_without_trailing_newline() {
+        let temp = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(temp.path(), b"one\ntwo\nthree").unwrap();
+
+        prune_log_to_lines(temp.path(), 2).unwrap();
+
+        assert_eq!(std::fs::read_to_string(temp.path()).unwrap(), "two\nthree");
+    }
+
+    #[test]
+    fn prune_leaves_file_at_or_below_limit_unchanged() {
+        let temp = tempfile::NamedTempFile::new().unwrap();
+        let contents = b"one\ntwo\n";
+        std::fs::write(temp.path(), contents).unwrap();
+
+        prune_log_to_lines(temp.path(), 2).unwrap();
+
+        assert_eq!(std::fs::read(temp.path()).unwrap(), contents);
+    }
+
+    #[test]
+    fn prune_finds_boundary_across_read_chunks() {
+        let temp = tempfile::NamedTempFile::new().unwrap();
+        let long = "x".repeat(9_000);
+        std::fs::write(temp.path(), format!("old\n{long}\nlast\n")).unwrap();
+
+        prune_log_to_lines(temp.path(), 2).unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(temp.path()).unwrap(),
+            format!("{long}\nlast\n")
+        );
+    }
+
+    #[test]
+    fn prune_handles_missing_and_empty_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("missing.log");
+        prune_log_to_lines(&missing, 10).unwrap();
+
+        let empty = dir.path().join("empty.log");
+        std::fs::write(&empty, []).unwrap();
+        prune_log_to_lines(&empty, 10).unwrap();
+        assert!(std::fs::read(empty).unwrap().is_empty());
+    }
+
+    #[test]
+    fn prune_zero_limit_empties_file() {
+        let temp = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(temp.path(), b"one\ntwo\n").unwrap();
+
+        prune_log_to_lines(temp.path(), 0).unwrap();
+
+        assert!(std::fs::read(temp.path()).unwrap().is_empty());
+    }
+
+    #[test]
+    fn prune_replaces_file_atomically_without_leaving_temp_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("app.log");
+        std::fs::write(&path, b"old\nrecent\n").unwrap();
+
+        prune_log_to_lines(&path, 1).unwrap();
+
+        assert!(!dir.path().join("app.log.tmp").exists());
+        assert_eq!(std::fs::read_to_string(path).unwrap(), "recent\n");
+    }
 
     #[test]
     fn tail_reads_new_lines() {
