@@ -16,11 +16,11 @@ with a partial file.
 
 ## File structure
 
-The current schema version is 2. A minimal configuration is:
+The current schema version is 4. A minimal configuration is:
 
 ```json
 {
-  "schema_version": 2,
+  "schema_version": 4,
   "profiles": [],
   "subscriptions": [],
   "settings": {}
@@ -49,10 +49,22 @@ A subscription contains `id`, `name`, `url`, `auto_update`, and an optional
 | `kill_switch` | `false` | Persisted kill-switch state |
 | `last_connected_profile` | `null` | Last connected profile; maintained by the application |
 | `theme` | `tokyo-night` | Bundled palette slug or `omarchy` |
-| `log_level` | `info` | `trace`, `debug`, `info`, `warn`, or `error` |
+| `logs.level` | `info` | `trace`, `debug`, `info`, `warn`, or `error` |
+| `logs.line_retention.app` | `1000` | Physical lines retained in `app.log` |
+| `logs.line_retention.singbox` | `100000` | Physical lines retained in `sing-box.log` |
+
+```json
+"logs": {
+  "level": "info",
+  "line_retention": {
+    "app": 1000,
+    "singbox": 100000
+  }
+}
+```
 
 `dns_strategy` is a legacy compatibility field mirrored from `dns.strategy`.
-Edit `dns.strategy` instead. `RUST_LOG`, when set, overrides `log_level`.
+Edit `dns.strategy` instead. `RUST_LOG`, when set, overrides `logs.level`.
 
 ## DNS
 
@@ -141,15 +153,21 @@ Press `C` to choose one of the 22 palettes bundled from [`themes/`](../themes/).
 The special `omarchy` value follows the active Omarchy theme. Fresh non-Omarchy
 installations use `tokyo-night`.
 
-`log_level` controls both application and generated sing-box logging. Accepted
+`logs.level` controls both application and generated sing-box logging. Accepted
 values are `trace`, `debug`, `info`, `warn`, and `error`; `RUST_LOG` takes
 precedence when present.
+
+`logs.line_retention.app` and `logs.line_retention.singbox` are line limits for
+the two on-disk log files. Both values must be at least `1000`. Both files are
+checked when the daemon starts; `sing-box.log` is additionally checked at a
+safe reconnect point no more than once every 24 hours. Active sing-box logging
+is never truncated in place.
 
 ## Validation and migrations
 
 Configuration is parsed, migrated, and semantically validated before use.
 Validation checks profile references and required values, DNS tags and server
-references, the TUN interface, theme slug, and log level.
+references, the TUN interface, theme slug, log level, and minimum log limits.
 
 The TUN interface must contain only ASCII letters, digits, `-`, or `_`, and be
 at most 15 characters. `default_profile`, when set, must reference an existing

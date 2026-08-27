@@ -103,7 +103,7 @@ pub fn generate_config(
 
     let mut config = json!({
         "log": {
-            "level": crate::config::profile::normalized_log_level(&settings.log_level),
+            "level": crate::config::profile::normalized_log_level(&settings.logs.level),
             "output": crate::paths::singbox_log_path().to_string_lossy(),
             "timestamp": true
         },
@@ -474,10 +474,8 @@ mod tests {
     #[test]
     fn generated_config_log_level_follows_settings() {
         let profile = test_profile();
-        let settings = Settings {
-            log_level: "debug".to_string(),
-            ..Settings::default()
-        };
+        let mut settings = Settings::default();
+        settings.logs.level = "debug".to_string();
         let config = generate_config(&profile, &settings, &GeoAvailability::all()).unwrap();
         assert_eq!(config["log"]["level"].as_str(), Some("debug"));
     }
@@ -485,10 +483,8 @@ mod tests {
     #[test]
     fn generated_config_log_level_falls_back_on_garbage() {
         let profile = test_profile();
-        let settings = Settings {
-            log_level: "verbose".to_string(),
-            ..Settings::default()
-        };
+        let mut settings = Settings::default();
+        settings.logs.level = "verbose".to_string();
         let config = generate_config(&profile, &settings, &GeoAvailability::all()).unwrap();
         assert_eq!(config["log"]["level"].as_str(), Some("info"));
     }

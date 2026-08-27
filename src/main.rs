@@ -38,18 +38,18 @@ fn main() -> Result<()> {
     }
 
     // Ensure configuration directories exist before reading the config so
-    // logging can be initialized from `settings.log_level`.
+    // logging can be initialized from `settings.logs.level`.
     ensure_config_dirs()?;
 
     let cfg = crate::config::load_config().unwrap_or_default();
-    let (filter, bad_level) = resolve_log_filter(cfg.settings.log_level.as_str());
+    let (filter, bad_level) = resolve_log_filter(cfg.settings.logs.level.as_str());
     tracing_subscriber::registry()
         .with(filter)
         .with(tracing_subscriber::fmt::layer().without_time())
         .init();
     if let Some(invalid) = bad_level {
         tracing::warn!(
-            "settings.log_level={:?} is not one of trace/debug/info/warn/error; using info",
+            "settings.logs.level={:?} is not one of trace/debug/info/warn/error; using info",
             invalid
         );
     }
@@ -71,7 +71,7 @@ fn main() -> Result<()> {
 }
 
 /// Resolve the tracing filter from environment and config. Precedence:
-/// `RUST_LOG` > `settings.log_level` (if it parses as one of the five
+/// `RUST_LOG` > `settings.logs.level` (if it parses as one of the five
 /// canonical levels) > `info`. Returns the bad value as the second tuple
 /// element so the caller can warn after the subscriber is live.
 fn resolve_log_filter(level: &str) -> (EnvFilter, Option<String>) {

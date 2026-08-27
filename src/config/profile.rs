@@ -1286,6 +1286,43 @@ impl GeoRouting {
     }
 }
 
+/// Per-file on-disk log line limits.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct LineRetention {
+    #[serde(default = "default_app_line_retention")]
+    pub app: u32,
+    #[serde(default = "default_singbox_line_retention")]
+    pub singbox: u32,
+}
+
+impl Default for LineRetention {
+    fn default() -> Self {
+        Self {
+            app: default_app_line_retention(),
+            singbox: default_singbox_line_retention(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct LogsConfig {
+    #[serde(default = "default_log_level")]
+    pub level: String,
+    #[serde(default)]
+    pub line_retention: LineRetention,
+}
+
+impl Default for LogsConfig {
+    fn default() -> Self {
+        Self {
+            level: default_log_level(),
+            line_retention: LineRetention::default(),
+        }
+    }
+}
+
 /// Application settings stored alongside profiles.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
@@ -1314,12 +1351,11 @@ pub struct Settings {
     /// names a bundled palette (see `src/ui/palette.rs`).
     #[serde(default = "default_theme")]
     pub theme: String,
-    /// Tracing filter applied at startup. Accepted values:
-    /// `trace`, `debug`, `info`, `warn`, `error`. Anything else falls back
-    /// to `info` at read time. The `RUST_LOG` env var, if set, wins over
-    /// this field. Edited only via the JSON editor (`e` in the TUI).
-    #[serde(default = "default_log_level")]
-    pub log_level: String,
+    #[serde(default)]
+    pub logs: LogsConfig,
+    /// Pre-v4 compatibility field migrated into `logs.level` on load.
+    #[serde(default, rename = "log_level", skip_serializing)]
+    pub(crate) legacy_log_level: Option<String>,
 }
 
 /// Accept `address` if it parses as a bare IPv4/IPv6 literal or as a hostname.
@@ -1355,10 +1391,20 @@ pub fn default_log_level() -> String {
     "info".to_string()
 }
 
+pub fn default_app_line_retention() -> u32 {
+    1_000
+}
+
+pub fn default_singbox_line_retention() -> u32 {
+    100_000
+}
+
 /// Canonical log-level values accepted by both `tracing_subscriber::EnvFilter`
 /// and sing-box's `log.level`. Also used as the allow-list by
 /// [`Settings::validate`].
 pub const LOG_LEVELS: &[&str] = &["trace", "debug", "info", "warn", "error"];
+
+const MIN_LOG_LINES: u32 = 1_000;
 
 /// Linux IFNAMSIZ − 1 (the kernel reserves one byte for the terminator).
 const MAX_TUN_INTERFACE_LEN: usize = 15;
@@ -1372,7 +1418,7 @@ pub const OMARCHY_THEME_SENTINEL: &str = "omarchy";
 // `ui` depends on `config`, so a dep in the other direction would be circular.
 include!(concat!(env!("OUT_DIR"), "/bundled_theme_names.rs"));
 
-/// Map a `settings.log_level` value to one of the five canonical levels
+/// Map a `settings.logs.level` value to one of the five canonical levels
 /// (`trace`/`debug`/`info`/`warn`/`error`). Anything else returns `"info"`.
 /// Used both by the tracing filter in `main.rs` and by the sing-box config
 /// generator, so the level the user sets in the JSON applies to both.
@@ -1429,12 +1475,19 @@ impl Settings {
             );
         }
 
-        if !LOG_LEVELS.contains(&self.log_level.as_str()) {
+        if !LOG_LEVELS.contains(&self.logs.level.as_str()) {
             anyhow::bail!(
-                "settings.log_level {:?} is not one of {:?}",
-                self.log_level,
+                "settings.logs.level {:?} is not one of {:?}",
+                self.logs.level,
                 LOG_LEVELS,
             );
+        }
+
+        if self.logs.line_retention.app < MIN_LOG_LINES {
+            anyhow::bail!("settings.logs.line_retention.app must be at least {MIN_LOG_LINES}");
+        }
+        if self.logs.line_retention.singbox < MIN_LOG_LINES {
+            anyhow::bail!("settings.logs.line_retention.singbox must be at least {MIN_LOG_LINES}");
         }
 
         Ok(())
@@ -1453,14 +1506,15 @@ impl Default for Settings {
             kill_switch: false,
             last_connected_profile: None,
             theme: default_theme(),
-            log_level: default_log_level(),
+            logs: LogsConfig::default(),
+            legacy_log_level: None,
         }
     }
 }
 
 /// Current schema version for `profiles.json`. Bumped on every breaking
 /// change to the persisted shape; new migrations go in `Config::migrate`.
-pub const CURRENT_SCHEMA_VERSION: u32 = 3;
+pub const CURRENT_SCHEMA_VERSION: u32 = 4;
 
 fn default_schema_version() -> u32 {
     // Files written before the version was introduced are treated as v0
@@ -1561,6 +1615,10 @@ impl Config {
             self.migrate_v2_to_v3();
             self.schema_version = 3;
         }
+        if self.schema_version == 3 {
+            self.migrate_v3_to_v4();
+            self.schema_version = 4;
+        }
         debug_assert_eq!(self.schema_version, CURRENT_SCHEMA_VERSION);
         Ok(())
     }
@@ -1611,6 +1669,12 @@ impl Config {
         }
         if self.settings.geo_routing.auto_update == GeoAutoUpdate::Every12h {
             self.settings.geo_routing.auto_update = GeoAutoUpdate::Every1d;
+        }
+    }
+
+    fn migrate_v3_to_v4(&mut self) {
+        if let Some(level) = self.settings.legacy_log_level.take() {
+            self.settings.logs.level = level;
         }
     }
 }
@@ -1754,19 +1818,22 @@ mod tests {
         assert!(s.geo_routing.selected_region_modes.is_empty());
         assert_eq!(s.geo_routing.auto_update, GeoAutoUpdate::Off);
         assert_eq!(s.geo_routing.mode(), RoutingMode::Global);
-        assert_eq!(s.log_level, "info");
+        assert_eq!(s.logs.level, "info");
+        assert_eq!(s.logs.line_retention.app, 1_000);
+        assert_eq!(s.logs.line_retention.singbox, 100_000);
     }
 
     #[test]
     fn settings_log_level_round_trips_through_json() {
-        let s = Settings {
-            log_level: "debug".to_string(),
-            ..Settings::default()
-        };
+        let mut s = Settings::default();
+        s.logs.level = "debug".to_string();
         let json = serde_json::to_string(&s).unwrap();
-        assert!(json.contains("\"log_level\":\"debug\""));
+        assert!(json.contains("\"logs\":{\"level\":\"debug\""));
+        assert!(!json.contains("\"log_level\""));
         let restored: Settings = serde_json::from_str(&json).unwrap();
-        assert_eq!(restored.log_level, "debug");
+        assert_eq!(restored.logs.level, "debug");
+        assert_eq!(restored.logs.line_retention.app, 1_000);
+        assert_eq!(restored.logs.line_retention.singbox, 100_000);
     }
 
     #[test]
@@ -1792,7 +1859,9 @@ mod tests {
             "auto_connect": false
         }"#;
         let s: Settings = serde_json::from_str(json).unwrap();
-        assert_eq!(s.log_level, "info");
+        assert_eq!(s.logs.level, "info");
+        assert_eq!(s.logs.line_retention.app, 1_000);
+        assert_eq!(s.logs.line_retention.singbox, 100_000);
         assert_eq!(s.geo_routing.auto_update, GeoAutoUpdate::Off);
     }
 
@@ -2356,32 +2425,53 @@ mod tests {
     #[test]
     fn settings_validate_accepts_every_canonical_log_level() {
         for level in LOG_LEVELS {
-            let s = Settings {
-                log_level: (*level).to_string(),
-                ..Settings::default()
-            };
+            let mut s = Settings::default();
+            s.logs.level = (*level).to_string();
             s.validate().unwrap();
         }
     }
 
     #[test]
     fn settings_validate_rejects_unknown_log_level() {
-        let s = Settings {
-            log_level: "verbose".into(),
-            ..Settings::default()
-        };
+        let mut s = Settings::default();
+        s.logs.level = "verbose".into();
         let err = s.validate().unwrap_err().to_string();
-        assert!(err.contains("log_level"), "Error was: {}", err);
+        assert!(err.contains("logs.level"), "Error was: {}", err);
+    }
+
+    #[test]
+    fn settings_validate_rejects_log_line_limits_below_minimum() {
+        for value in [0, 1, 999] {
+            let mut app = Settings::default();
+            app.logs.line_retention.app = value;
+            assert!(app.validate().unwrap_err().to_string().contains(".app"));
+
+            let mut singbox = Settings::default();
+            singbox.logs.line_retention.singbox = value;
+            assert!(
+                singbox
+                    .validate()
+                    .unwrap_err()
+                    .to_string()
+                    .contains(".singbox")
+            );
+        }
+    }
+
+    #[test]
+    fn settings_validate_accepts_minimum_log_line_limits() {
+        let mut settings = Settings::default();
+        settings.logs.line_retention.app = MIN_LOG_LINES;
+        settings.logs.line_retention.singbox = MIN_LOG_LINES;
+        settings.validate().unwrap();
     }
 
     #[test]
     fn settings_validate_rejects_uppercased_log_level() {
         // normalized_log_level lowercases at runtime, but on-disk config is
         // validated case-sensitively so the JSON does not silently drift.
-        let s = Settings {
-            log_level: "INFO".into(),
-            ..Settings::default()
-        };
+        let mut s = Settings::default();
+        s.logs.level = "INFO".into();
         assert!(s.validate().is_err());
     }
 
@@ -3421,9 +3511,25 @@ mod tests {
     }
 
     #[test]
-    fn migrate_chains_v0_through_v2() {
-        // schema_version=0 must arrive at v2 in a single migrate() call,
-        // running both v0→v1 and v1→v2 steps.
+    fn migrate_v3_to_v4_nests_legacy_log_level() {
+        let mut cfg = Config {
+            schema_version: 3,
+            ..Config::default()
+        };
+        cfg.settings.legacy_log_level = Some("debug".into());
+
+        cfg.migrate().unwrap();
+
+        assert_eq!(cfg.schema_version, CURRENT_SCHEMA_VERSION);
+        assert_eq!(cfg.settings.logs.level, "debug");
+        assert!(cfg.settings.legacy_log_level.is_none());
+        let json = serde_json::to_string(&cfg).unwrap();
+        assert!(!json.contains("log_level"));
+    }
+
+    #[test]
+    fn migrate_chains_v0_through_current() {
+        // schema_version=0 must arrive at the current version in one call.
         let mut cfg = Config {
             schema_version: 0,
             ..Config::default()

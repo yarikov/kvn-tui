@@ -159,7 +159,7 @@ mod tests {
             loaded.settings.geo_routing.auto_update,
             profile::GeoAutoUpdate::Every1d
         );
-        assert!(persisted.contains("\"schema_version\": 3"));
+        assert!(persisted.contains("\"schema_version\": 4"));
         assert!(persisted.contains("\"auto_update\": \"every1d\""));
         assert!(!persisted.contains("every1h"));
         assert!(!persisted.contains("every_12h"));

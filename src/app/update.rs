@@ -597,7 +597,7 @@ fn connection_settings_changed(
         || old.dns != new.dns
         || old.geo_routing.mode() != new.geo_routing.mode()
         || old.geo_routing.service_routes != new.geo_routing.service_routes
-        || old.log_level != new.log_level
+        || old.logs.level != new.logs.level
 }
 
 fn handle_tick(model: &mut Model) -> Vec<Effect> {
@@ -1663,7 +1663,7 @@ mod tests {
         assert!(connection_settings_changed(&original, &changed));
 
         let mut changed = original.clone();
-        changed.log_level = "debug".into();
+        changed.logs.level = "debug".into();
         assert!(connection_settings_changed(&original, &changed));
 
         let mut changed = original.clone();
