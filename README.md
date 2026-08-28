@@ -23,7 +23,7 @@
   - [AUR](#aur-recommended)
   - [Polkit setup](#polkit-setup-recommended)
   - [Kill switch setup](#kill-switch-setup-optional)
-  - [Omarchy](#omarchy-optional)
+  - [Omarchy integration](#omarchy-integration-optional)
   - [Build from source](#build-from-source)
 - [Diagnostics](#diagnostics)
 - [Default Key Bindings](#default-key-bindings)
@@ -143,9 +143,13 @@ the kill switch can also be installed together:
 sudo kvn-tui setup --polkit --killswitch
 ```
 
-### Omarchy (optional)
+### Omarchy integration (optional)
 
-Enable Shell/Waybar, launcher, Hyprland, and floating-window integration with:
+[Omarchy](https://omarchy.org/) is an Arch-based Linux distribution built around
+Hyprland. If you do not use Omarchy, skip this section.
+
+Omarchy users can enable Shell/Waybar, launcher, Hyprland, and floating-window
+integration with:
 
 ```bash
 kvn-tui setup --omarchy
