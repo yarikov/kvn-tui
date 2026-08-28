@@ -89,7 +89,7 @@ fn resolve_log_filter(level: &str) -> (EnvFilter, Option<String>) {
 /// Start the packaged systemd user service when available. Source builds and
 /// manual installations may not have the unit, so retain the detached-process
 /// fallback that lets the TUI remain self-contained.
-fn start_daemon() -> Result<()> {
+pub(crate) fn start_daemon() -> Result<()> {
     use std::process::{Command, Stdio};
 
     let systemd_status = Command::new("systemctl")

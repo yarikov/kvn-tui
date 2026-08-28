@@ -16,7 +16,7 @@ The app does **not** implement VPN protocols itself. It is a configuration gener
 
 | Module | Path | Responsibility |
 |--------|------|----------------|
-| `cli` | `src/cli.rs` | CLI argument parsing (`--waybar-status`, `setup --omarchy`, `--version`) |
+| `cli` | `src/cli.rs` | CLI argument parsing (`--waybar-status`, `status`/`connect`/`disconnect`/`reconnect`/`toggle` one-shot IPC clients, `setup --omarchy`, `--version`) |
 | `app` | `src/app.rs`, `src/app/model.rs`, `src/app/msg.rs`, `src/app/update.rs`, `src/app/effect.rs` | TEA core: Model, Msg, Update, Effect — pure data, messages, business logic, side-effect declarations |
 | `model` | `src/app/model.rs` | Application state (`Model`), overlay + connection state + subscription state, input state — pure data, no side effects |
 | `msg` | `src/app/msg.rs` | Message enum (`Msg`) — all external events (keys, ticks, logs, geo, resume, etc.) |
@@ -40,6 +40,7 @@ The app does **not** implement VPN protocols itself. It is a configuration gener
 | `clipboard` | `src/tui_client/clipboard.rs` | System clipboard integration; auto-detects Wayland (`wl-paste` / `wl-copy`) or X11 (`xclip`, falls back to `xsel`); reads clipboard content and passes it to `parse_share_link` or the subscription fetcher |
 | `editor` | `src/tui_client/editor.rs` | Launch `$EDITOR` / `$VISUAL` on `profiles.json`, temporarily restore terminal |
 | `theme_watch` | `src/tui_client/theme_watch.rs` | Resolves `settings.theme` slug to a `Theme` (with `"omarchy"` sentinel falling back to `tokyo-night`); watches Omarchy 4's XDG state current-theme directory or the Omarchy 3 XDG config fallback and emits `Msg::ThemeChanged`; no-op when Omarchy isn't installed |
+| `omarchy plugin` | `contrib/omarchy-plugin/` | Quickshell bar module (`kvn.tui`) for Omarchy 4: `Widget.qml` (icon + popup panel), `KvnService.qml` (persistent NDJSON socket client to the daemon). Embedded into the binary via `include_str!`, materialized by `cli::write_omarchy_plugin_files`, installed to `~/.config/omarchy/plugins/kvn.tui/` by `contrib/setup-omarchy.sh` (falls back to the legacy `command` bar module when the shell plugin registry is absent) |
 
 ---
 
@@ -161,7 +162,7 @@ The application follows **The Elm Architecture (TEA)**:
 4. **Effects** (`app/effect.rs`) are declarative descriptions of side effects (`Connect`, `DownloadGeo`, `SaveConfig`, `Quit`, etc.).
 5. **Daemon** (`daemon.rs`) owns the canonical `Model`, the `mpsc` channel, the sing-box `process_slot`, and all background services (ticker, suspend watcher, log tailer, IPC server). It exposes a Unix domain socket IPC server (`ipc.rs`) that accepts NDJSON commands from TUI clients.
 6. **TUI Client** (`tui_client.rs`) connects to the daemon socket, enters the alternate screen, renders the UI using ratatui, and forwards keyboard input (plus clipboard/editor actions) as IPC commands. It has its own local `Model` that is kept in sync via `StateSnapshot` broadcasts from the daemon.
-7. **IPC Protocol** (`ipc.rs`) uses newline-delimited JSON over a Unix socket. Commands: `Attach`, `Detach`, `Key`, `Paste`, `ReloadConfig`, `Quit`. Responses: `StateSnapshot` pushed by the daemon after every state change.
+7. **IPC Protocol** (`ipc.rs`) uses newline-delimited JSON over a Unix socket. Commands: `Attach`, `Detach`, `Key`, `SelectSource`, `SetMainPaneFocus`, `GoFirst`, `ConnectProfile`, `Disconnect`, `Reconnect`, `SetRoutingMode`, `SetGeoRegion`, `SetKillSwitch`, `SetAutoConnect`, `Paste`, `Copied`, `ReloadConfig`, `Quit`, `ClientError`. Responses: `StateSnapshot` pushed by the daemon after every state change. The semantic commands (`ConnectProfile` through `SetAutoConnect`) exist for non-TUI clients — the Omarchy Quickshell module and the `kvn-tui status/connect/disconnect/reconnect/toggle` CLI subcommands. Overlay commits (routing mode, geo region) are shared between the key handlers and IPC via `commit_routing_mode` / `commit_geo_region` in `update.rs` so both paths run identical logic.
 
 This separation makes `update.rs` fully synchronous and trivial to unit-test.
 

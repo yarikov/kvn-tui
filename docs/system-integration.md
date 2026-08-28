@@ -160,9 +160,22 @@ backup if the restart fails.
 
 The installer updates:
 
-- `~/.config/omarchy/shell.json` — clickable status module;
+- `~/.config/omarchy/plugins/kvn.tui/` — Quickshell bar module
+  (`manifest.json`, `Widget.qml`, `KvnService.qml`), installed when the shell
+  plugin registry is available. The widget connects to the daemon's Unix
+  socket (`$XDG_RUNTIME_DIR/kvn-tui.sock`) and exchanges NDJSON: snapshots
+  in, semantic commands (`ConnectProfile`, `Disconnect`, `SetRoutingMode`,
+  `SetGeoRegion`, `SetKillSwitch`, `SetAutoConnect`) out. Without the plugin
+  registry the installer falls back to a `command` bar module running
+  `kvn-tui --waybar-status`;
+- `~/.config/omarchy/shell.json` — the `kvn.tui` bar entry (or the legacy
+  `kvn-tui` command module on fallback), inserted before `omarchy.bluetooth`;
 - `~/.config/hypr/bindings.lua` — optional launcher binding;
 - `~/.config/hypr/hyprland.lua` — floating-window rule.
+
+When `omarchy-shell` is running, the installer also triggers a plugin rescan
+and an idempotent `omarchy bar put kvn.tui` so the widget appears without a
+re-login. Upgrades from the command-module integration replace the old entry.
 
 The selected shortcut is explicitly unbound before being assigned to kvn-tui.
 The suggested `Super + Ctrl + K` shortcut replaces the default Herdr binding.
@@ -192,5 +205,5 @@ only the backups created by kvn-tui with:
 kvn-tui clean --omarchy
 ```
 
-`clean --omarchy` does not remove the launcher or undo active Shell, Waybar, or
-Hyprland configuration.
+`clean --omarchy` also removes the `kvn.tui` plugin directory. It does not
+remove the launcher or undo active Shell, Waybar, or Hyprland configuration.

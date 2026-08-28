@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "id": "kvn.tui",
+  "name": "kvn-tui VPN",
+  "version": "1.0.0",
+  "author": "Dmitry Yarikov",
+  "license": "MIT",
+  "description": "kvn-tui VPN control in the Omarchy bar: connect/disconnect, profile picker, routing mode, geo region, kill switch, and auto-connect.",
+  "kinds": [
+    "bar-widget"
+  ],
+  "entryPoints": {
+    "barWidget": "Widget.qml"
+  },
+  "barWidget": {
+    "displayName": "kvn-tui VPN",
+    "description": "Toggle the VPN, pick a profile, switch routing mode and region, kill switch, auto-connect.",
+    "category": "Network",
+    "allowMultiple": false,
+    "defaultSection": "right"
+  }
+}
