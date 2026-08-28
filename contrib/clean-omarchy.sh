@@ -34,3 +34,9 @@ if [ "$removed" -eq 0 ]; then
 else
   echo "Removed $removed kvn-tui Omarchy backup file(s)."
 fi
+
+plugin_dir="${HOME}/.config/omarchy/plugins/kvn.tui"
+if [ -d "$plugin_dir" ]; then
+  rm -rf -- "$plugin_dir"
+  echo "Removed $plugin_dir (the kvn.tui bar plugin)."
+fi

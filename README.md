@@ -154,6 +154,17 @@ integration with:
 kvn-tui setup --omarchy
 ```
 
+On **Omarchy 4 (Quattro)** this installs a native Quickshell bar module
+(`kvn.tui`): a shield icon with live connection state, a popup for picking
+profiles and toggling routing mode, geo region, kill switch, and auto-connect,
+plus a one-click VPN toggle. Left click opens the panel, right click toggles
+the VPN, middle click opens the full TUI. The module talks to the daemon over its
+Unix socket, so it reflects connection changes and traffic instantly. On
+Omarchy 3 (or builds without the shell plugin registry) it falls back to a
+Waybar status module that opens the TUI on click.
+
+![kvn-tui Omarchy 4 bar module](assets/omarchy-bar-module.png)
+
 The idempotent installer detects Omarchy 3 or 4 and creates backups before
 editing user configuration. Remove those backups after verification with:
 
@@ -161,7 +172,23 @@ editing user configuration. Remove those backups after verification with:
 kvn-tui clean --omarchy
 ```
 
-This removes only backups, not the active integration.
+This removes only backups (and the `kvn.tui` plugin files), not the rest of
+the active integration.
+
+### Scripting and status bars
+
+One-shot commands talk to the daemon over the same socket as the TUI:
+
+```bash
+kvn-tui status            # one-line summary (or --json for the full snapshot)
+kvn-tui connect <name>    # by UUID, exact name, or unique name prefix
+kvn-tui disconnect
+kvn-tui reconnect
+kvn-tui toggle            # connect last-used profile, or disconnect
+```
+
+`status` is read-only and never starts the daemon; the other commands start it
+if needed (same path as launching the TUI).
 
 ### Build from source
 

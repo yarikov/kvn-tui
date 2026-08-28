@@ -178,6 +178,34 @@ impl IpcClient {
         Ok(())
     }
 
+    /// Read a single state snapshot line, for one-shot CLI clients
+    /// (`kvn-tui status`, `kvn-tui connect`). Reads byte-wise from the raw
+    /// stream so nothing past the first `\n` is consumed — a follow-up read
+    /// after sending a command still sees the daemon's next broadcast.
+    pub fn read_snapshot(&mut self, timeout: Duration) -> anyhow::Result<StateSnapshot> {
+        use std::io::Read;
+        self.stream
+            .set_read_timeout(Some(timeout))
+            .context("Failed to set IPC read timeout")?;
+        let mut line = Vec::new();
+        let mut byte = [0u8; 1];
+        loop {
+            match self.stream.read(&mut byte) {
+                Ok(0) => anyhow::bail!("Daemon closed the connection"),
+                Ok(_) if byte[0] == b'\n' => break,
+                Ok(_) => line.push(byte[0]),
+                Err(e) => {
+                    return Err(anyhow::Error::new(e)
+                        .context("Timed out waiting for a state snapshot from the daemon"));
+                }
+            }
+            if line.len() > 16 * 1024 * 1024 {
+                anyhow::bail!("State snapshot exceeds 16 MiB");
+            }
+        }
+        serde_json::from_slice(&line).context("Malformed state snapshot from the daemon")
+    }
+
     /// Spawn a background thread that reads state snapshots from the daemon
     /// and forwards them into the given mpsc channel.
     pub fn spawn_reader(&self, tx: Sender<Msg>) -> anyhow::Result<()> {

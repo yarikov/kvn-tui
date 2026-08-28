@@ -1,7 +1,16 @@
 use anyhow::{Context, Result};
 use clap::{ArgGroup, Parser, Subcommand};
+use std::time::Duration;
+use uuid::Uuid;
 
+use crate::app::model::ConnectionState;
+use crate::app::msg::{IpcCommand, StateSnapshot};
+use crate::ipc::IpcClient;
 use crate::services::waybar;
+
+/// How long a one-shot CLI client waits for the daemon to answer with a
+/// state snapshot before giving up.
+const SNAPSHOT_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Parser)]
 #[command(version, about)]
@@ -23,6 +32,28 @@ pub struct Cli {
 enum Command {
     /// Check whether kvn-tui and its runtime dependencies are ready.
     Doctor,
+
+    /// Show the daemon's current status as a summary line.
+    Status {
+        /// Print the full state snapshot as JSON instead of a summary.
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Connect to a profile (by UUID, exact name, or unique name prefix).
+    Connect {
+        /// Profile UUID or name.
+        profile: String,
+    },
+
+    /// Disconnect the active VPN tunnel.
+    Disconnect,
+
+    /// Reconnect the active profile.
+    Reconnect,
+
+    /// Connect the last-used profile, or disconnect when connected.
+    Toggle,
 
     /// Set up one or more optional kvn-tui integrations.
     #[command(group(
@@ -59,12 +90,43 @@ enum Command {
     },
 }
 
+/// Materialize the embedded Quickshell bar plugin files into a temp
+/// directory for the Omarchy setup script to install from.
+fn write_omarchy_plugin_files() -> Result<std::path::PathBuf> {
+    let dir = std::env::temp_dir().join(format!("kvn-tui-plugin-{}", std::process::id()));
+    std::fs::create_dir_all(&dir)?;
+    let files = [
+        (
+            "manifest.json",
+            include_str!("../contrib/omarchy-plugin/manifest.json"),
+        ),
+        (
+            "Widget.qml",
+            include_str!("../contrib/omarchy-plugin/Widget.qml"),
+        ),
+        (
+            "KvnService.qml",
+            include_str!("../contrib/omarchy-plugin/KvnService.qml"),
+        ),
+    ];
+    for (name, content) in files {
+        std::fs::write(dir.join(name), content)?;
+    }
+    Ok(dir)
+}
+
 /// Run the embedded Omarchy integration installer script.
 fn install_omarchy() -> Result<()> {
+    let plugin_dir = write_omarchy_plugin_files()?;
     let script = include_str!("../contrib/setup-omarchy.sh");
     let tmp = std::env::temp_dir().join("kvn-tui-setup-omarchy.sh");
     std::fs::write(&tmp, script)?;
-    let status = std::process::Command::new("bash").arg(&tmp).status()?;
+    let status = std::process::Command::new("bash")
+        .arg(&tmp)
+        .env("KVN_TUI_PLUGIN_DIR", &plugin_dir)
+        .status();
+    let _ = std::fs::remove_dir_all(&plugin_dir);
+    let status = status?;
     std::fs::remove_file(&tmp).ok();
     if !status.success() {
         anyhow::bail!("setup-omarchy.sh exited with status {}", status);
@@ -120,6 +182,184 @@ fn install_killswitch() -> Result<()> {
     Ok(())
 }
 
+// ---- one-shot IPC clients (CLI + Omarchy bar module backends) ----
+
+/// Connect to the daemon without starting it. For read-only commands where
+/// silently spawning a daemon would be surprising.
+fn attach_client() -> Result<IpcClient> {
+    IpcClient::connect().context(
+        "Cannot reach the kvn-tui daemon. Start it with `kvn-tui` or \
+         `systemctl --user start kvn-tui.service`.",
+    )
+}
+
+/// Connect to the daemon, auto-starting it first when it is not running
+/// (same startup path as launching the TUI).
+fn attach_or_start_client() -> Result<IpcClient> {
+    if !crate::ipc::is_daemon_running() {
+        crate::start_daemon()?;
+        if !crate::ipc::wait_for_daemon(Duration::from_millis(2000)) {
+            anyhow::bail!("daemon failed to start within 2s");
+        }
+    }
+    attach_client()
+}
+
+fn fetch_snapshot(client: &mut IpcClient) -> Result<StateSnapshot> {
+    client.send(&IpcCommand::Attach)?;
+    client.read_snapshot(SNAPSHOT_TIMEOUT)
+}
+
+/// Send a command and return the snapshot the daemon broadcasts in response.
+fn send_command(client: &mut IpcClient, cmd: IpcCommand) -> Result<StateSnapshot> {
+    client.send(&cmd)?;
+    client.read_snapshot(SNAPSHOT_TIMEOUT)
+}
+
+fn run_status(json: bool) -> Result<()> {
+    let mut client = attach_client()?;
+    let snap = fetch_snapshot(&mut client)?;
+    if json {
+        println!("{}", serde_json::to_string_pretty(&snap)?);
+    } else {
+        println!("{}", format_status_line(&snap));
+        if snap.status_is_error {
+            eprintln!("last error: {}", snap.status);
+        }
+    }
+    Ok(())
+}
+
+fn run_connect(query: &str) -> Result<()> {
+    let mut client = attach_or_start_client()?;
+    let snap = fetch_snapshot(&mut client)?;
+    let id = resolve_profile(&snap, query).with_context(|| {
+        format!(
+            "no profile matches '{query}' ({} profiles configured)",
+            snap.profiles.len()
+        )
+    })?;
+    let snap = send_command(&mut client, IpcCommand::ConnectProfile { profile_id: id })?;
+    println!("{}", format_status_line(&snap));
+    Ok(())
+}
+
+fn run_disconnect() -> Result<()> {
+    let mut client = attach_or_start_client()?;
+    fetch_snapshot(&mut client)?;
+    let snap = send_command(&mut client, IpcCommand::Disconnect)?;
+    println!("{}", format_status_line(&snap));
+    Ok(())
+}
+
+fn run_reconnect() -> Result<()> {
+    let mut client = attach_or_start_client()?;
+    fetch_snapshot(&mut client)?;
+    let snap = send_command(&mut client, IpcCommand::Reconnect)?;
+    println!("{}", format_status_line(&snap));
+    Ok(())
+}
+
+fn run_toggle() -> Result<()> {
+    let mut client = attach_or_start_client()?;
+    let snap = fetch_snapshot(&mut client)?;
+    if snap.connection == ConnectionState::Connected {
+        let snap = send_command(&mut client, IpcCommand::Disconnect)?;
+        println!("{}", format_status_line(&snap));
+        return Ok(());
+    }
+    let Some(id) = snap.settings.last_connected_profile else {
+        anyhow::bail!("no previous profile to connect — run `kvn-tui connect <name>` first");
+    };
+    let snap = send_command(&mut client, IpcCommand::ConnectProfile { profile_id: id })?;
+    println!("{}", format_status_line(&snap));
+    Ok(())
+}
+
+/// Resolve a profile query: exact UUID, exact (case-insensitive) name, or
+/// unique case-insensitive name prefix. Ambiguous prefixes resolve to none.
+fn resolve_profile(snap: &StateSnapshot, query: &str) -> Option<Uuid> {
+    if let Ok(id) = Uuid::parse_str(query)
+        && snap.profiles.iter().any(|p| p.id == id)
+    {
+        return Some(id);
+    }
+    let lower = query.to_lowercase();
+    let exact: Vec<_> = snap
+        .profiles
+        .iter()
+        .filter(|p| p.name.to_lowercase() == lower)
+        .collect();
+    if exact.len() == 1 {
+        return Some(exact[0].id);
+    }
+    let prefix: Vec<_> = snap
+        .profiles
+        .iter()
+        .filter(|p| p.name.to_lowercase().starts_with(&lower))
+        .collect();
+    match prefix.len() {
+        1 => Some(prefix[0].id),
+        _ => None,
+    }
+}
+
+fn active_profile_name(snap: &StateSnapshot) -> Option<&str> {
+    let id = snap.active_profile_id.as_deref()?;
+    snap.profiles
+        .iter()
+        .find(|p| p.id.to_string() == id)
+        .map(|p| p.name.as_str())
+}
+
+/// One-line human summary of a snapshot, e.g.
+/// `connected to Work VPN (↑ 1.2 MiB/s · ↓ 3.4 MiB/s) [kill switch]`.
+fn format_status_line(snap: &StateSnapshot) -> String {
+    match snap.connection {
+        ConnectionState::Connected => {
+            let name = active_profile_name(snap).unwrap_or("unknown profile");
+            let mut line = format!("connected to {name}");
+            if snap.traffic.up_rate_bps > 0 || snap.traffic.down_rate_bps > 0 {
+                line.push_str(&format!(
+                    " (↑ {}/s · ↓ {}/s)",
+                    format_rate(snap.traffic.up_rate_bps),
+                    format_rate(snap.traffic.down_rate_bps)
+                ));
+            }
+            if snap.settings.kill_switch {
+                line.push_str(" [kill switch]");
+            }
+            line
+        }
+        ConnectionState::Connecting | ConnectionState::ConnectPending => {
+            format!("connecting — {}", snap.status)
+        }
+        ConnectionState::Idle => {
+            if snap.status_is_error {
+                format!("disconnected — {}", snap.status)
+            } else {
+                "disconnected".to_string()
+            }
+        }
+    }
+}
+
+/// Human-readable byte rate (input is bytes per second).
+fn format_rate(bytes_per_sec: u64) -> String {
+    const UNITS: [&str; 5] = ["B", "KiB", "MiB", "GiB", "TiB"];
+    let mut value = bytes_per_sec as f64;
+    let mut unit = 0;
+    while value >= 1024.0 && unit < UNITS.len() - 1 {
+        value /= 1024.0;
+        unit += 1;
+    }
+    if unit == 0 {
+        format!("{} {}", bytes_per_sec, UNITS[unit])
+    } else {
+        format!("{value:.1} {}", UNITS[unit])
+    }
+}
+
 /// Parse CLI arguments and execute any non-TUI commands.
 ///
 /// Returns `Some(Ok(()))` or `Some(Err(_))` if a CLI action was handled
@@ -134,6 +374,11 @@ pub fn try_run() -> Option<Result<()>> {
 pub fn try_run_from_parsed(cli: &Cli) -> Option<Result<()>> {
     match &cli.command {
         Some(Command::Doctor) => return Some(crate::doctor::run()),
+        Some(Command::Status { json }) => return Some(run_status(*json)),
+        Some(Command::Connect { profile }) => return Some(run_connect(profile)),
+        Some(Command::Disconnect) => return Some(run_disconnect()),
+        Some(Command::Reconnect) => return Some(run_reconnect()),
+        Some(Command::Toggle) => return Some(run_toggle()),
         Some(Command::Setup {
             omarchy,
             polkit,
@@ -214,6 +459,26 @@ mod tests {
         let _lock = crate::test_helpers::ENV_LOCK.lock().unwrap();
         let script = root.path().join("setup-omarchy.sh");
         fs::write(&script, include_str!("../contrib/setup-omarchy.sh")).unwrap();
+        // Materialize the embedded plugin files exactly like install_omarchy
+        // does, so the script test exercises the real install path.
+        let plugin_dir = root.path().join("omarchy-plugin");
+        fs::create_dir_all(&plugin_dir).unwrap();
+        for (name, content) in [
+            (
+                "manifest.json",
+                include_str!("../contrib/omarchy-plugin/manifest.json"),
+            ),
+            (
+                "Widget.qml",
+                include_str!("../contrib/omarchy-plugin/Widget.qml"),
+            ),
+            (
+                "KvnService.qml",
+                include_str!("../contrib/omarchy-plugin/KvnService.qml"),
+            ),
+        ] {
+            fs::write(plugin_dir.join(name), content).unwrap();
+        }
         let path = format!(
             "{}:{}",
             root.path().join("bin").display(),
@@ -223,6 +488,7 @@ mod tests {
             .arg(&script)
             .env("HOME", home)
             .env("PATH", path)
+            .env("KVN_TUI_PLUGIN_DIR", &plugin_dir)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -384,6 +650,135 @@ mod tests {
     }
 
     #[test]
+    fn ipc_subcommands_detected() {
+        let cli = Cli::parse_from(["kvn-tui", "status", "--json"]);
+        assert!(matches!(cli.command, Some(Command::Status { json: true })));
+        let cli = Cli::parse_from(["kvn-tui", "status"]);
+        assert!(matches!(cli.command, Some(Command::Status { json: false })));
+        let cli = Cli::parse_from(["kvn-tui", "connect", "Work"]);
+        assert!(matches!(
+            cli.command,
+            Some(Command::Connect { profile }) if profile == "Work"
+        ));
+        assert!(matches!(
+            Cli::parse_from(["kvn-tui", "disconnect"]).command,
+            Some(Command::Disconnect)
+        ));
+        assert!(matches!(
+            Cli::parse_from(["kvn-tui", "reconnect"]).command,
+            Some(Command::Reconnect)
+        ));
+        assert!(matches!(
+            Cli::parse_from(["kvn-tui", "toggle"]).command,
+            Some(Command::Toggle)
+        ));
+    }
+
+    fn snapshot_with_profiles() -> StateSnapshot {
+        let mut snap = StateSnapshot {
+            connection: ConnectionState::Idle,
+            status: "ok".into(),
+            status_is_error: false,
+            singbox_pid: None,
+            active_profile_id: None,
+            selected: 0,
+            routing_selected: 0,
+            geo_region_selected: 0,
+            dns_selected: 0,
+            dns_strategy_draft: None,
+            dns_fakeip_draft: None,
+            theme_selected: 0,
+            theme_draft: None,
+            service_routing_selected: 0,
+            service_routing_draft: None,
+            geo_updating: false,
+            geo_last_updated: None,
+            overlay: crate::app::model::Overlay::None,
+            main_pane_focus: Default::default(),
+            profiles: vec![
+                crate::config::profile::Profile::new_vless(
+                    "Work VPN".into(),
+                    "1.1.1.1".into(),
+                    443,
+                    "u1".into(),
+                ),
+                crate::config::profile::Profile::new_vless(
+                    "Home".into(),
+                    "2.2.2.2".into(),
+                    443,
+                    "u2".into(),
+                ),
+            ],
+            subscriptions: vec![],
+            settings: crate::config::profile::Settings::default(),
+            traffic: Default::default(),
+            log_session_offsets: None,
+            profile_latencies: Default::default(),
+            testing_profiles: Default::default(),
+        };
+        snap.settings.last_connected_profile = Some(snap.profiles[0].id);
+        snap
+    }
+
+    #[test]
+    fn resolve_profile_by_uuid_exact_and_prefix() {
+        let snap = snapshot_with_profiles();
+        let work_id = snap.profiles[0].id;
+
+        assert_eq!(resolve_profile(&snap, &work_id.to_string()), Some(work_id));
+        assert_eq!(resolve_profile(&snap, "work"), Some(work_id));
+        assert_eq!(resolve_profile(&snap, "WORK VPN"), Some(work_id));
+        assert_eq!(resolve_profile(&snap, "home"), Some(snap.profiles[1].id));
+        // Ambiguous / unknown.
+        assert_eq!(resolve_profile(&snap, "nope"), None);
+        assert_eq!(resolve_profile(&snap, &Uuid::new_v4().to_string()), None);
+    }
+
+    #[test]
+    fn format_status_line_variants() {
+        let mut snap = snapshot_with_profiles();
+        assert_eq!(format_status_line(&snap), "disconnected");
+
+        snap.status = "Connect failed: timeout".into();
+        snap.status_is_error = true;
+        assert_eq!(
+            format_status_line(&snap),
+            "disconnected — Connect failed: timeout"
+        );
+
+        snap.status_is_error = false;
+        snap.status = "Connecting to Work VPN…".into();
+        snap.connection = ConnectionState::Connecting;
+        assert_eq!(
+            format_status_line(&snap),
+            "connecting — Connecting to Work VPN…"
+        );
+
+        snap.connection = ConnectionState::Connected;
+        snap.active_profile_id = Some(snap.profiles[0].id.to_string());
+        assert_eq!(format_status_line(&snap), "connected to Work VPN");
+
+        snap.traffic.up_rate_bps = 1536;
+        snap.traffic.down_rate_bps = 5 * 1024 * 1024;
+        assert_eq!(
+            format_status_line(&snap),
+            "connected to Work VPN (↑ 1.5 KiB/s · ↓ 5.0 MiB/s)"
+        );
+
+        snap.settings.kill_switch = true;
+        assert!(format_status_line(&snap).ends_with(" [kill switch]"));
+    }
+
+    #[test]
+    fn format_rate_units() {
+        assert_eq!(format_rate(0), "0 B");
+        assert_eq!(format_rate(999), "999 B");
+        assert_eq!(format_rate(1024), "1.0 KiB");
+        assert_eq!(format_rate(1024 * 1024), "1.0 MiB");
+        assert_eq!(format_rate(3 * 1024 * 1024 * 1024), "3.0 GiB");
+    }
+
+    #[test]
     fn omarchy_v4_installer_updates_shell_and_lua_idempotently() {
         let (root, home) = installer_fixture(4);
         let omarchy = home.join(".config/omarchy");
@@ -399,20 +794,38 @@ mod tests {
         assert_eq!(
             right
                 .iter()
-                .filter(|entry| entry["id"] == "kvn-tui")
+                .filter(|entry| entry["id"] == "kvn.tui")
                 .count(),
             1
         );
+        // The legacy command-module entry must be gone.
+        assert_eq!(
+            right
+                .iter()
+                .filter(|entry| entry["id"] == "kvn-tui")
+                .count(),
+            0
+        );
         let kvn_index = right
             .iter()
-            .position(|entry| entry["id"] == "kvn-tui")
+            .position(|entry| entry["id"] == "kvn.tui")
             .unwrap();
         let bluetooth_index = right
             .iter()
             .position(|entry| entry["id"] == "omarchy.bluetooth")
             .unwrap();
         assert_eq!(kvn_index + 1, bluetooth_index);
-        assert_eq!(right[kvn_index]["exec"], "kvn-tui --waybar-status");
+        // A plugin entry carries no command-module fields.
+        assert!(right[kvn_index].get("exec").is_none());
+        assert!(right[kvn_index].get("type").is_none());
+
+        // Plugin files are installed.
+        let plugin = home.join(".config/omarchy/plugins/kvn.tui");
+        for file in ["manifest.json", "Widget.qml", "KvnService.qml"] {
+            assert!(plugin.join(file).is_file(), "missing {file}");
+        }
+        let manifest = fs::read_to_string(plugin.join("manifest.json")).unwrap();
+        assert!(manifest.contains("\"kvn.tui\""));
 
         let bindings = fs::read_to_string(hypr.join("bindings.lua")).unwrap();
         assert_eq!(bindings.matches("-- kvn-tui keybinding: begin").count(), 1);
@@ -437,6 +850,61 @@ mod tests {
         for file in ["bindings.lua", "hyprland.lua"] {
             assert_eq!(backup_files(&hypr.join(file)).len(), 1);
         }
+    }
+
+    #[test]
+    fn omarchy_v4_installer_falls_back_to_command_module_without_plugin_registry() {
+        let (root, home) = installer_fixture(4);
+        // Simulate an Omarchy 4 build without the shell plugin registry.
+        write_executable(
+            &root.path().join("bin/omarchy"),
+            "#!/bin/bash\ncase ${1:-} in version) echo '4.0.0-1';; plugin) exit 1;; esac\n",
+        );
+        write_omarchy_v4_config(&home);
+
+        assert_success(&run_installer(&root, &home, "y\n\n"));
+
+        let shell: serde_json::Value =
+            serde_json::from_slice(&fs::read(home.join(".config/omarchy/shell.json")).unwrap())
+                .unwrap();
+        let right = shell["bar"]["layout"]["right"].as_array().unwrap();
+        let entry = right
+            .iter()
+            .find(|entry| entry["id"] == "kvn-tui")
+            .expect("legacy command module entry");
+        assert_eq!(entry["exec"], "kvn-tui --waybar-status");
+        assert!(!home.join(".config/omarchy/plugins/kvn.tui").exists());
+    }
+
+    #[test]
+    fn omarchy_v4_installer_upgrades_command_module_to_plugin() {
+        let (root, home) = installer_fixture(4);
+        let shell_config = home.join(".config/omarchy/shell.json");
+        write_omarchy_v4_config(&home);
+        // Simulate the previous release's command module.
+        let mut shell: serde_json::Value =
+            serde_json::from_slice(&fs::read(&shell_config).unwrap()).unwrap();
+        shell["bar"]["layout"]["right"]
+            .as_array_mut()
+            .unwrap()
+            .insert(
+                0,
+                serde_json::json!({"id": "kvn-tui", "type": "command", "exec": "kvn-tui --waybar-status", "interval": 5, "onClick": "omarchy-launch-kvn-tui"}),
+            );
+        fs::write(&shell_config, serde_json::to_vec_pretty(&shell).unwrap()).unwrap();
+
+        assert_success(&run_installer(&root, &home, "y\n\n"));
+
+        let shell: serde_json::Value =
+            serde_json::from_slice(&fs::read(&shell_config).unwrap()).unwrap();
+        let ids: Vec<&str> = shell["bar"]["layout"]["right"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|e| e["id"].as_str().unwrap())
+            .collect();
+        assert_eq!(ids.iter().filter(|id| **id == "kvn.tui").count(), 1);
+        assert!(!ids.contains(&"kvn-tui"));
     }
 
     #[test]
@@ -486,12 +954,16 @@ mod tests {
         fs::write(&legacy, "legacy").unwrap();
         fs::write(&timestamped, "timestamped").unwrap();
         fs::write(&unrelated, "keep").unwrap();
+        let plugin = omarchy.join("plugins/kvn.tui");
+        fs::create_dir_all(&plugin).unwrap();
+        fs::write(plugin.join("manifest.json"), "{}").unwrap();
 
         assert_success(&run_omarchy_cleanup(&root, &home));
 
         assert!(!legacy.exists());
         assert!(!timestamped.exists());
         assert!(unrelated.exists());
+        assert!(!plugin.exists(), "bar plugin directory should be removed");
     }
 
     #[test]

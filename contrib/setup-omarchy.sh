@@ -224,6 +224,47 @@ append_marker_block() {
   replace_if_changed "$tmp" "$file"
 }
 
+plugin_dir_created=0
+
+# Install the Quickshell bar plugin (Omarchy 4 "Quattro" with the shell
+# plugin registry). Plugin files come from KVN_TUI_PLUGIN_DIR (set by the
+# Rust installer, which embeds them) or from a sibling `omarchy-plugin/`
+# directory when the script runs straight from a git checkout. Returns
+# non-zero when the files or the plugin registry are unavailable — the
+# caller then falls back to the plain command bar module.
+install_omarchy_v4_plugin() {
+  local script_dir source_dir name dir tmp
+  script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+  source_dir="${KVN_TUI_PLUGIN_DIR:-$script_dir/../omarchy-plugin}"
+  for name in manifest.json Widget.qml KvnService.qml; do
+    [[ -f $source_dir/$name ]] || {
+      echo "Bar plugin files not found in $source_dir;" >&2
+      echo "falling back to the command bar module." >&2
+      return 1
+    }
+  done
+
+  omarchy plugin list >/dev/null 2>&1 || {
+    echo "This Omarchy build lacks the shell plugin registry;" >&2
+    echo "falling back to the command bar module." >&2
+    return 1
+  }
+
+  dir="$HOME/.config/omarchy/plugins/kvn.tui"
+  [[ -d $dir ]] || plugin_dir_created=1
+  echo "Installing the kvn.tui bar plugin to $dir..."
+  mkdir -p "$dir"
+  for name in manifest.json Widget.qml KvnService.qml; do
+    tmp=$(mktemp "${dir}/${name}.tmp.XXXXXX")
+    cp -- "$source_dir/$name" "$tmp"
+    chmod 0644 "$tmp"
+    mv -f -- "$tmp" "$dir/$name"
+  done
+
+  return 0
+}
+
+
 install_omarchy_v4() {
   command -v jq >/dev/null 2>&1 || {
     echo "Error: jq is required for Omarchy Shell integration." >&2
@@ -260,6 +301,9 @@ $V4_TRANSACTION_DIR/shell.json $V4_SHELL_CONFIG
 $V4_TRANSACTION_DIR/bindings.lua $V4_HYPR_BINDINGS
 $V4_TRANSACTION_DIR/hyprland.lua $V4_HYPR_MAIN
 EOF
+    if (( plugin_dir_created )); then
+      rm -rf -- "$HOME/.config/omarchy/plugins/kvn.tui"
+    fi
     hyprctl reload >/dev/null 2>&1 || true
   }
 
@@ -276,21 +320,29 @@ EOF
   trap cleanup_v4 EXIT
 
   echo "Adding kvn-tui module to Omarchy Shell..."
-  local module tmp
-  module='{"id":"kvn-tui","type":"command","exec":"kvn-tui --waybar-status","interval":5,"tooltip":"kvn-tui VPN client","onClick":"omarchy-launch-kvn-tui"}'
+  local module module_id plugin_installed=0 tmp
+  if install_omarchy_v4_plugin; then
+    plugin_installed=1
+    module_id="kvn.tui"
+    module='{"id":"kvn.tui"}'
+  else
+    module_id="kvn-tui"
+    module='{"id":"kvn-tui","type":"command","exec":"kvn-tui --waybar-status","interval":5,"tooltip":"kvn-tui VPN client","onClick":"omarchy-launch-kvn-tui"}'
+  fi
   tmp=$(mktemp "${shell_config}.tmp.XXXXXX")
   jq --argjson module "$module" '
     def entry_id: if type == "object" then (.id // "") else tostring end;
+    def kvn_entry: entry_id == "kvn-tui" or entry_id == "kvn.tui";
     .bar.layout.left = (.bar.layout.left // [])
     | .bar.layout.center = (.bar.layout.center // [])
     | .bar.layout.right = (.bar.layout.right // [])
     | ([.bar.layout.left[], .bar.layout.center[], .bar.layout.right[]]
-       | map(select(entry_id == "kvn-tui"))
+       | map(select(kvn_entry) | if type == "object" then del(.type, .exec, .interval, .tooltip, .onClick) else . end)
        | first // {}) as $existing
     | ($existing + $module) as $entry
-    | .bar.layout.left |= map(select(entry_id != "kvn-tui"))
-    | .bar.layout.center |= map(select(entry_id != "kvn-tui"))
-    | .bar.layout.right |= map(select(entry_id != "kvn-tui"))
+    | .bar.layout.left |= map(select(kvn_entry | not))
+    | .bar.layout.center |= map(select(kvn_entry | not))
+    | .bar.layout.right |= map(select(kvn_entry | not))
     | (.bar.layout.right | map(entry_id)
        | (index("omarchy.bluetooth") // index("omarchy.network"))) as $index
     | if $index == null then
@@ -301,6 +353,18 @@ EOF
   ' "$shell_config" >"$tmp"
   jq -e '.version == 1 and (.bar.layout | type == "object")' "$tmp" >/dev/null
   replace_if_changed "$tmp" "$shell_config"
+
+  # Poke a live shell so the widget appears without a re-login: rescan picks
+  # up the freshly installed plugin files, and `bar put` is an idempotent
+  # no-op when the watcher already applied the shell.json change above.
+  if (( plugin_installed )) && command -v omarchy-shell >/dev/null 2>&1; then
+    timeout 15 omarchy-shell shell rescanPlugins >/dev/null 2>&1 || true
+    if timeout 15 omarchy bar put kvn.tui --before omarchy.bluetooth >/dev/null 2>&1; then
+      echo "Placed kvn.tui on the bar."
+    else
+      echo "Note: omarchy-shell is not running; kvn.tui appears on the bar at next login."
+    fi
+  fi
 
   install_launcher 4
 
