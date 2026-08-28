@@ -25,13 +25,12 @@
   - [Kill switch setup](#kill-switch-setup-optional)
   - [Omarchy integration](#omarchy-integration-optional)
   - [Build from source](#build-from-source)
+- [Upgrading](docs/upgrading.md)
 - [Diagnostics](#diagnostics)
 - [Default Key Bindings](#default-key-bindings)
 - [Configuration](#configuration)
 - [Technology Stack](#technology-stack)
 - [Architecture Highlights](#architecture-highlights)
-- [Upgrading to v0.22.0 on Omarchy](#upgrading-to-v0220-on-omarchy)
-- [Upgrading to v0.20.0](#upgrading-to-v0200)
 - [Platform Support](#platform-support)
 - [Contributing](#contributing)
 - [Author](#author)
@@ -309,18 +308,6 @@ advanced DNS and routing, validation, migrations, and runtime file locations.
 - **TEA-style core** — `Model`, `Msg`, `update`, and declarative `Effect` values separate state transitions from runtime I/O and keep business logic testable.
 - **Safe sing-box lifecycle** — 1.12+ configuration is generated, validated with `sing-box check`, and only then started with immediate-failure detection.
 - **Headless background work** — reconnect after suspend, subscription and rule-set updates, traffic statistics, logs, and persisted state continue without an attached TUI.
-
----
-
-## Upgrading to v0.22.0 on Omarchy
-
-Version 0.22.0 adds native Omarchy 4 Shell and Lua integration, updates active-theme detection, and retains the Omarchy 3 Waybar flow. Omarchy users upgrading from an earlier kvn-tui release should follow the [v0.22.0 migration guide](docs/migrations/v0.22.0.md).
-
----
-
-## Upgrading to v0.20.0
-
-Version 0.20.0 moved daemon startup from Hyprland autostart to a systemd user service. If you are upgrading from v0.19.1 or earlier, follow the [v0.20.0 migration guide](docs/migrations/v0.20.0.md).
 
 ---
 
