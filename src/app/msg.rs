@@ -1,5 +1,7 @@
 use crate::app::model::{ConnectionState, MainPaneFocus, Overlay, TrafficStats};
-use crate::config::profile::{DnsStrategy, Profile, Settings, Subscription};
+use crate::config::profile::{
+    DnsStrategy, GeoRegion, Profile, RoutingMode, Settings, Subscription,
+};
 use crate::ui::styles::Theme;
 use crossterm::event::{KeyEvent, MouseEvent};
 use uuid::Uuid;
@@ -217,6 +219,31 @@ pub enum IpcCommand {
     ConnectProfile {
         profile_id: Uuid,
     },
+    /// Disconnect the active tunnel. No-op unless currently connected.
+    Disconnect,
+    /// Reconnect the active profile. No-op unless currently connected.
+    Reconnect,
+    /// Set the routing mode outright, bypassing the TUI overlay. Rejected
+    /// (status error, no state change) when the mode is unavailable for the
+    /// current geo region — mirrors the overlay's available-modes list.
+    SetRoutingMode {
+        mode: RoutingMode,
+    },
+    /// Switch the geo region: saves the old region's routing mode, restores
+    /// the new region's stored mode, downloads missing geo databases, and
+    /// reconnects when a tunnel is active — same commit as the region overlay.
+    SetGeoRegion {
+        region: GeoRegion,
+    },
+    /// Enable or disable the nftables kill switch. No-op when a toggle is
+    /// already in flight or the requested state is already set.
+    SetKillSwitch {
+        enabled: bool,
+    },
+    /// Enable or disable auto-connect on startup.
+    SetAutoConnect {
+        enabled: bool,
+    },
     Paste {
         text: String,
     },
@@ -285,6 +312,16 @@ mod tests {
             IpcCommand::ConnectProfile {
                 profile_id: Uuid::nil(),
             },
+            IpcCommand::Disconnect,
+            IpcCommand::Reconnect,
+            IpcCommand::SetRoutingMode {
+                mode: RoutingMode::Bypass(GeoRegion::Ru),
+            },
+            IpcCommand::SetGeoRegion {
+                region: GeoRegion::Cn,
+            },
+            IpcCommand::SetKillSwitch { enabled: true },
+            IpcCommand::SetAutoConnect { enabled: false },
             IpcCommand::Paste {
                 text: "hello".into(),
             },

@@ -462,6 +462,77 @@ pub(super) fn handle_ipc_command(
             queue_connect(model, profile_id);
             vec![]
         }
+        IpcCommand::Disconnect => {
+            if model.connection == ConnectionState::Connected {
+                vec![Effect::Disconnect]
+            } else {
+                vec![]
+            }
+        }
+        IpcCommand::Reconnect => {
+            if model.connection == ConnectionState::Connected
+                && let Some(profile) = model.active_profile_id.and_then(|id| {
+                    model
+                        .config
+                        .profiles
+                        .iter()
+                        .find(|profile| profile.id == id)
+                })
+            {
+                let profile_id = profile.id;
+                let profile_name = profile.name.clone();
+                let mut effects = vec![];
+                push_status(
+                    &mut effects,
+                    model,
+                    AppStatus::Info(format!("Reconnecting to {profile_name}…")),
+                );
+                queue_connect(model, profile_id);
+                effects
+            } else {
+                vec![]
+            }
+        }
+        IpcCommand::SetRoutingMode { mode } => commit_routing_mode(model, mode),
+        IpcCommand::SetGeoRegion { region } => commit_geo_region(model, region),
+        IpcCommand::SetKillSwitch { enabled } => {
+            // Same guardrails as the `K` key: never stack a toggle on an
+            // in-flight one, and make an explicit no-op a real no-op instead
+            // of prompting for privileges just to re-apply the current state.
+            if model.kill_switch_pending.is_some() || model.config.settings.kill_switch == enabled {
+                vec![]
+            } else {
+                model.kill_switch_pending = Some(enabled);
+                let mut effects = vec![];
+                push_status(
+                    &mut effects,
+                    model,
+                    AppStatus::Info(format!(
+                        "Kill switch {}…",
+                        if enabled { "enabling" } else { "disabling" }
+                    )),
+                );
+                effects.push(Effect::ApplyKillSwitch { enabled });
+                effects
+            }
+        }
+        IpcCommand::SetAutoConnect { enabled } => {
+            if model.config.settings.auto_connect == enabled {
+                vec![]
+            } else {
+                model.config.settings.auto_connect = enabled;
+                let mut effects = vec![Effect::SaveConfig];
+                push_status(
+                    &mut effects,
+                    model,
+                    AppStatus::Info(format!(
+                        "Auto-connect {}",
+                        if enabled { "enabled" } else { "disabled" }
+                    )),
+                );
+                effects
+            }
+        }
         IpcCommand::Paste { text } => handle_clipboard_text(model, &text),
         IpcCommand::Copied { name, count } => handle_copied_status(model, name, count),
         IpcCommand::ReloadConfig => {
@@ -533,31 +604,8 @@ pub(super) fn handle_routing_mode(model: &mut Model, key: KeyEvent) -> Vec<Effec
         }
         KeyCode::Enter => {
             if let Some(&mode) = available.get(model.routing_selected) {
-                let changed = model.config.settings.geo_routing.mode() != mode;
-                model.config.settings.geo_routing.set_mode(mode);
                 model.overlay = Overlay::None;
-                let mut effects = vec![Effect::SaveConfig];
-                push_status(
-                    &mut effects,
-                    model,
-                    crate::app::model::AppStatus::Info(format!("Routing mode: {}", mode)),
-                );
-
-                if changed
-                    && model.connection == ConnectionState::Connected
-                    && let Some(active_id) = model.active_profile_id
-                    && queue_connect(model, active_id)
-                {
-                    push_status(
-                        &mut effects,
-                        model,
-                        crate::app::model::AppStatus::Info(format!(
-                            "Mode changed to {} — reconnecting",
-                            mode
-                        )),
-                    );
-                }
-                return effects;
+                return commit_routing_mode(model, mode);
             }
         }
         KeyCode::Char('q') | KeyCode::Esc => {
@@ -632,97 +680,8 @@ pub(super) fn handle_geo_region(model: &mut Model, key: KeyEvent) -> Vec<Effect>
         }
         KeyCode::Enter => {
             if let Some(&region) = regions.get(model.geo_region_selected) {
-                let old_region = model.config.settings.geo_routing.current_region;
-                let old_mode = model.config.settings.geo_routing.mode();
-                let changed = old_region != Some(region);
-                model.config.settings.geo_routing.set_region(region);
                 model.overlay = Overlay::None;
-                let mut effects = vec![Effect::SaveConfig];
-                if changed {
-                    effects.push(Effect::RefreshGeoLastUpdated);
-                }
-                push_status(
-                    &mut effects,
-                    model,
-                    crate::app::model::AppStatus::Info(format!("Geo region: {}", region.as_str())),
-                );
-
-                // If the region changed and is not Global, check whether geo databases
-                // are present and download them automatically if they are missing.
-                if changed && region != GeoRegion::Global {
-                    if download_allowed(model) {
-                        model.geo_updating = true;
-                        model.geo_last_attempt_at = Some(chrono::Local::now());
-                        push_status(
-                            &mut effects,
-                            model,
-                            crate::app::model::AppStatus::Info(
-                                "Checking geo databases...".to_string(),
-                            ),
-                        );
-                        effects.push(Effect::DownloadGeoIfMissing);
-                    } else {
-                        push_download_blocked(&mut effects, model, DownloadKind::Geo);
-                    }
-                }
-
-                // Persist the previously active routing mode under the old region
-                // and restore the mode stored for the newly selected region.
-                if changed {
-                    if let Some(old_region) = old_region {
-                        model
-                            .config
-                            .settings
-                            .geo_routing
-                            .selected_region_modes
-                            .insert(old_region, old_mode);
-                    }
-                    let new_mode = model.config.settings.geo_routing.mode();
-                    if new_mode != old_mode {
-                        push_status(
-                            &mut effects,
-                            model,
-                            crate::app::model::AppStatus::Info(format!(
-                                "Routing mode: {}",
-                                new_mode
-                            )),
-                        );
-                    }
-                }
-
-                // Trigger auto-connect immediately after picking a region
-                // so the user does not have to restart the app.
-                if model.connection == ConnectionState::Idle
-                    && model.config.settings.auto_connect
-                    && let Some(profile_id) = model.config.settings.last_connected_profile
-                    && let Some(idx) = model
-                        .config
-                        .profiles
-                        .iter()
-                        .position(|p| p.id == profile_id)
-                {
-                    model.selected = crate::app::model::row_for_profile(&model.config, idx);
-                    queue_connect(model, profile_id);
-                    if let Some(profile) = model.config.profiles.get(idx) {
-                        push_status(
-                            &mut effects,
-                            model,
-                            crate::app::model::AppStatus::Info(format!(
-                                "Auto-connecting to {}…",
-                                profile.name
-                            )),
-                        );
-                    }
-                }
-
-                if changed
-                    && model.connection == ConnectionState::Connected
-                    && let Some(active_id) = model.active_profile_id
-                    && queue_connect(model, active_id)
-                {
-                    model.logs.push_back("Region changed — reconnecting".into());
-                }
-                return effects;
+                return commit_geo_region(model, region);
             }
         }
         KeyCode::Char('q') | KeyCode::Esc

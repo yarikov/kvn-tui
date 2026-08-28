@@ -2,7 +2,7 @@ use crate::app::effect::Effect;
 use crate::app::model::{AppStatus, ConnectionState, Model, Overlay, TrafficStats};
 use crate::app::msg::{GeoResult, Msg};
 use crate::config::profile::{
-    GeoRegion, Profile, RoutedService, Subscription, SubscriptionAutoUpdate,
+    GeoRegion, Profile, RoutedService, RoutingMode, Subscription, SubscriptionAutoUpdate,
 };
 use chrono::Local;
 use crossterm::event::KeyCode;
@@ -736,6 +736,135 @@ pub(super) fn queue_connect(model: &mut Model, profile_id: Uuid) -> bool {
     }
 }
 
+/// Commit a routing-mode change: shared by the routing overlay's Enter key
+/// and the `SetRoutingMode` IPC command so both run identical logic.
+/// Rejects modes unavailable for the current geo region.
+pub(super) fn commit_routing_mode(model: &mut Model, mode: RoutingMode) -> Vec<Effect> {
+    let region = model.config.settings.geo_routing.current_region;
+    if !RoutingMode::available(region).contains(&mode) {
+        let mut effects = vec![];
+        push_status(
+            &mut effects,
+            model,
+            AppStatus::Error(format!(
+                "Routing mode {mode} is unavailable for region {}",
+                region.map(|r| r.code_upper()).unwrap_or("GLOBAL")
+            )),
+        );
+        return effects;
+    }
+    let changed = model.config.settings.geo_routing.mode() != mode;
+    model.config.settings.geo_routing.set_mode(mode);
+    let mut effects = vec![Effect::SaveConfig];
+    push_status(
+        &mut effects,
+        model,
+        AppStatus::Info(format!("Routing mode: {mode}")),
+    );
+
+    if changed
+        && model.connection == ConnectionState::Connected
+        && let Some(active_id) = model.active_profile_id
+        && queue_connect(model, active_id)
+    {
+        push_status(
+            &mut effects,
+            model,
+            AppStatus::Info(format!("Mode changed to {mode} — reconnecting")),
+        );
+    }
+    effects
+}
+
+/// Commit a geo-region switch: shared by the region overlay's Enter key and
+/// the `SetGeoRegion` IPC command. Persists the old region's routing mode,
+/// restores the new region's stored mode, kicks off missing-database
+/// downloads, and reconnects/auto-connects as the overlay does.
+pub(super) fn commit_geo_region(model: &mut Model, region: GeoRegion) -> Vec<Effect> {
+    let old_region = model.config.settings.geo_routing.current_region;
+    let old_mode = model.config.settings.geo_routing.mode();
+    let changed = old_region != Some(region);
+    model.config.settings.geo_routing.set_region(region);
+    let mut effects = vec![Effect::SaveConfig];
+    if changed {
+        effects.push(Effect::RefreshGeoLastUpdated);
+    }
+    push_status(
+        &mut effects,
+        model,
+        AppStatus::Info(format!("Geo region: {}", region.as_str())),
+    );
+
+    // If the region changed and is not Global, check whether geo databases
+    // are present and download them automatically if they are missing.
+    if changed && region != GeoRegion::Global {
+        if download_allowed(model) {
+            model.geo_updating = true;
+            model.geo_last_attempt_at = Some(chrono::Local::now());
+            push_status(
+                &mut effects,
+                model,
+                AppStatus::Info("Checking geo databases...".to_string()),
+            );
+            effects.push(Effect::DownloadGeoIfMissing);
+        } else {
+            push_download_blocked(&mut effects, model, DownloadKind::Geo);
+        }
+    }
+
+    // Persist the previously active routing mode under the old region
+    // and restore the mode stored for the newly selected region.
+    if changed {
+        if let Some(old_region) = old_region {
+            model
+                .config
+                .settings
+                .geo_routing
+                .selected_region_modes
+                .insert(old_region, old_mode);
+        }
+        let new_mode = model.config.settings.geo_routing.mode();
+        if new_mode != old_mode {
+            push_status(
+                &mut effects,
+                model,
+                AppStatus::Info(format!("Routing mode: {new_mode}")),
+            );
+        }
+    }
+
+    // Trigger auto-connect immediately after picking a region
+    // so the user does not have to restart the app.
+    if model.connection == ConnectionState::Idle
+        && model.config.settings.auto_connect
+        && let Some(profile_id) = model.config.settings.last_connected_profile
+        && let Some(idx) = model
+            .config
+            .profiles
+            .iter()
+            .position(|p| p.id == profile_id)
+    {
+        model.selected = crate::app::model::row_for_profile(&model.config, idx);
+        queue_connect(model, profile_id);
+        if let Some(profile) = model.config.profiles.get(idx) {
+            push_status(
+                &mut effects,
+                model,
+                AppStatus::Info(format!("Auto-connecting to {}…", profile.name)),
+            );
+        }
+    }
+
+    if changed
+        && model.connection == ConnectionState::Connected
+        && let Some(active_id) = model.active_profile_id
+        && queue_connect(model, active_id)
+    {
+        model.logs.push_back("Region changed — reconnecting".into());
+    }
+    effects
+}
+
 fn geo_update_due(model: &Model, now: chrono::DateTime<Local>) -> bool {
     if model.geo_updating {
         return false;
@@ -1463,6 +1592,252 @@ mod tests {
         let mut model = model_with_profiles(vec![]);
         let effects = handle_ipc_command(&mut model, crate::app::msg::IpcCommand::ReloadConfig);
         assert_eq!(effects, vec![Effect::ReloadConfig, Effect::BroadcastState]);
+    }
+
+    // ---- semantic IPC commands (bar widget / CLI clients) ----
+
+    fn connected_model() -> (Model, Uuid) {
+        let a = Profile::new_vless("A".into(), "1.1.1.1".into(), 443, "u1".into());
+        let a_id = a.id;
+        let mut model = model_with_profiles(vec![a]);
+        model.connection = ConnectionState::Connected;
+        model.active_profile_id = Some(a_id);
+        (model, a_id)
+    }
+
+    #[test]
+    fn ipc_command_disconnect_when_connected() {
+        let (mut model, _) = connected_model();
+        let effects = handle_ipc_command(&mut model, crate::app::msg::IpcCommand::Disconnect);
+        assert_eq!(effects, vec![Effect::Disconnect, Effect::BroadcastState]);
+    }
+
+    #[test]
+    fn ipc_command_disconnect_when_idle_is_noop() {
+        let mut model = model_with_profiles(vec![]);
+        let effects = handle_ipc_command(&mut model, crate::app::msg::IpcCommand::Disconnect);
+        assert_eq!(effects, vec![Effect::BroadcastState]);
+    }
+
+    #[test]
+    fn ipc_command_reconnect_when_connected() {
+        let (mut model, a_id) = connected_model();
+        let effects = handle_ipc_command(&mut model, crate::app::msg::IpcCommand::Reconnect);
+        assert_eq!(model.connection, ConnectionState::Connecting);
+        assert_eq!(model.connecting_profile_id, Some(a_id));
+        assert_eq!(
+            effects,
+            vec![app_log_info("Reconnecting to A…"), Effect::BroadcastState]
+        );
+    }
+
+    #[test]
+    fn ipc_command_reconnect_when_idle_is_noop() {
+        let mut model = model_with_profiles(vec![]);
+        let effects = handle_ipc_command(&mut model, crate::app::msg::IpcCommand::Reconnect);
+        assert_eq!(effects, vec![Effect::BroadcastState]);
+        assert_eq!(model.connection, ConnectionState::Idle);
+    }
+
+    #[test]
+    fn ipc_command_set_routing_mode_commits_and_saves() {
+        let mut model = model_with_profiles(vec![]);
+        model.config.settings.geo_routing.set_region(GeoRegion::Ru);
+        let effects = handle_ipc_command(
+            &mut model,
+            crate::app::msg::IpcCommand::SetRoutingMode {
+                mode: RoutingMode::Bypass(GeoRegion::Ru),
+            },
+        );
+        assert_eq!(
+            model.config.settings.geo_routing.mode(),
+            RoutingMode::Bypass(GeoRegion::Ru)
+        );
+        assert_eq!(
+            effects,
+            vec![
+                Effect::SaveConfig,
+                app_log_info("Routing mode: Bypass RU"),
+                Effect::BroadcastState,
+            ]
+        );
+    }
+
+    #[test]
+    fn ipc_command_set_routing_mode_reconnects_when_connected() {
+        let (mut model, _) = connected_model();
+        model.config.settings.geo_routing.set_region(GeoRegion::Ru);
+        let effects = handle_ipc_command(
+            &mut model,
+            crate::app::msg::IpcCommand::SetRoutingMode {
+                mode: RoutingMode::Bypass(GeoRegion::Ru),
+            },
+        );
+        assert_eq!(model.connection, ConnectionState::Connecting);
+        assert_eq!(
+            effects,
+            vec![
+                Effect::SaveConfig,
+                app_log_info("Routing mode: Bypass RU"),
+                app_log_info("Mode changed to Bypass RU — reconnecting"),
+                Effect::BroadcastState,
+            ]
+        );
+    }
+
+    #[test]
+    fn ipc_command_set_routing_mode_rejects_unavailable_mode() {
+        let mut model = model_with_profiles(vec![]);
+        // No region selected (or Global) → only RoutingMode::Global is valid.
+        let effects = handle_ipc_command(
+            &mut model,
+            crate::app::msg::IpcCommand::SetRoutingMode {
+                mode: RoutingMode::Only(GeoRegion::Ru),
+            },
+        );
+        assert_eq!(
+            model.config.settings.geo_routing.mode(),
+            RoutingMode::Global
+        );
+        assert!(!effects.contains(&Effect::SaveConfig));
+        assert_eq!(
+            effects,
+            vec![
+                app_log_error("Routing mode Only RU is unavailable for region GLOBAL"),
+                Effect::BroadcastState,
+            ]
+        );
+    }
+
+    #[test]
+    fn ipc_command_set_geo_region_switches_and_restores_mode() {
+        let mut model = model_with_profiles(vec![]);
+        model.config.settings.geo_routing.set_region(GeoRegion::Ru);
+        model
+            .config
+            .settings
+            .geo_routing
+            .set_mode(RoutingMode::Bypass(GeoRegion::Ru));
+        model
+            .config
+            .settings
+            .geo_routing
+            .selected_region_modes
+            .insert(GeoRegion::Cn, RoutingMode::Only(GeoRegion::Cn));
+
+        let effects = handle_ipc_command(
+            &mut model,
+            crate::app::msg::IpcCommand::SetGeoRegion {
+                region: GeoRegion::Cn,
+            },
+        );
+
+        assert_eq!(
+            model.config.settings.geo_routing.current_region,
+            Some(GeoRegion::Cn)
+        );
+        // Old region's mode was persisted, new region's restored.
+        assert_eq!(
+            model
+                .config
+                .settings
+                .geo_routing
+                .selected_region_modes
+                .get(&GeoRegion::Ru),
+            Some(&RoutingMode::Bypass(GeoRegion::Ru))
+        );
+        assert_eq!(
+            model.config.settings.geo_routing.mode(),
+            RoutingMode::Only(GeoRegion::Cn)
+        );
+        assert!(
+            model.geo_updating,
+            "missing geo databases should be fetched"
+        );
+        assert!(effects.contains(&Effect::SaveConfig));
+        assert!(effects.contains(&Effect::DownloadGeoIfMissing));
+        assert!(effects.contains(&Effect::RefreshGeoLastUpdated));
+    }
+
+    #[test]
+    fn ipc_command_set_geo_region_same_region_only_saves() {
+        let mut model = model_with_profiles(vec![]);
+        model.config.settings.geo_routing.set_region(GeoRegion::Ru);
+        let effects = handle_ipc_command(
+            &mut model,
+            crate::app::msg::IpcCommand::SetGeoRegion {
+                region: GeoRegion::Ru,
+            },
+        );
+        assert!(!model.geo_updating);
+        assert!(!effects.contains(&Effect::DownloadGeoIfMissing));
+        assert!(!effects.contains(&Effect::RefreshGeoLastUpdated));
+        assert!(effects.contains(&Effect::SaveConfig));
+    }
+
+    #[test]
+    fn ipc_command_set_kill_switch_applies_and_saves_via_result() {
+        let mut model = model_with_profiles(vec![]);
+        assert!(!model.config.settings.kill_switch);
+        let effects = handle_ipc_command(
+            &mut model,
+            crate::app::msg::IpcCommand::SetKillSwitch { enabled: true },
+        );
+        assert_eq!(model.kill_switch_pending, Some(true));
+        assert_eq!(
+            effects,
+            vec![
+                app_log_info("Kill switch enabling…"),
+                Effect::ApplyKillSwitch { enabled: true },
+                Effect::BroadcastState,
+            ]
+        );
+
+        // While the first toggle is still in flight, a second is ignored.
+        let effects = handle_ipc_command(
+            &mut model,
+            crate::app::msg::IpcCommand::SetKillSwitch { enabled: false },
+        );
+        assert_eq!(effects, vec![Effect::BroadcastState]);
+        assert_eq!(model.kill_switch_pending, Some(true));
+    }
+
+    #[test]
+    fn ipc_command_set_kill_switch_noop_when_already_set() {
+        let mut model = model_with_profiles(vec![]);
+        model.config.settings.kill_switch = true;
+        let effects = handle_ipc_command(
+            &mut model,
+            crate::app::msg::IpcCommand::SetKillSwitch { enabled: true },
+        );
+        assert_eq!(effects, vec![Effect::BroadcastState]);
+        assert_eq!(model.kill_switch_pending, None);
+    }
+
+    #[test]
+    fn ipc_command_set_auto_connect_flips_and_saves() {
+        let mut model = model_with_profiles(vec![]);
+        assert!(!model.config.settings.auto_connect);
+        let effects = handle_ipc_command(
+            &mut model,
+            crate::app::msg::IpcCommand::SetAutoConnect { enabled: true },
+        );
+        assert!(model.config.settings.auto_connect);
+        assert_eq!(
+            effects,
+            vec![
+                Effect::SaveConfig,
+                app_log_info("Auto-connect enabled"),
+                Effect::BroadcastState,
+            ]
+        );
+
+        // Setting the same value again is a no-op (no redundant save).
+        let effects = handle_ipc_command(
+            &mut model,
+            crate::app::msg::IpcCommand::SetAutoConnect { enabled: true },
+        );
+        assert_eq!(effects, vec![Effect::BroadcastState]);
     }
 
     #[test]
