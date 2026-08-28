@@ -32,6 +32,7 @@
 - [Architecture Highlights](#architecture-highlights)
 - [Upgrading to v0.22.0 on Omarchy](#upgrading-to-v0220-on-omarchy)
 - [Upgrading to v0.20.0](#upgrading-to-v0200)
+- [Platform Support](#platform-support)
 - [Contributing](#contributing)
 - [Author](#author)
 - [License](#license)
@@ -318,9 +319,16 @@ Version 0.20.0 moved daemon startup from Hyprland autostart to a systemd user se
 
 ---
 
+## Platform Support
+
+Arch Linux and Omarchy are the officially supported platforms. The project may
+compile and run on other Linux distributions, but their installation and system
+integration are not tested or maintained by the project.
+
 ## Contributing
 
-Contributions are welcome. Before opening a pull request, read
+Contributions are welcome, including support for other distributions from users
+who can test and help maintain it. Before opening a pull request, read
 [CONTRIBUTING.md](CONTRIBUTING.md) for branch naming, Conventional Commit and
 pull request title requirements, testing, and coverage expectations. Pull
 request titles are used in generated release notes.
