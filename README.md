@@ -116,6 +116,7 @@ Install the polkit rule to avoid repeated authentication prompts when sing-box
 changes DNS settings or routes:
 
 ```bash
+sudo pacman -S --needed polkit
 sudo kvn-tui setup --polkit
 ```
 
@@ -128,7 +129,7 @@ The kill switch requires `nftables` and blocks outbound traffic when the VPN is
 not active:
 
 ```bash
-sudo pacman -S nftables
+sudo pacman -S --needed nftables
 sudo kvn-tui setup --killswitch
 ```
 
