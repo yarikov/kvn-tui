@@ -1,7 +1,5 @@
 # Upgrading kvn-tui
 
-[Back to README](../README.md)
-
 Upgrade kvn-tui through your usual package source. Review the applicable
 migration guides below when crossing a version that requires additional steps.
 
