@@ -473,9 +473,15 @@ esac
         let _lock = crate::test_helpers::ENV_LOCK.lock().unwrap();
         let script = root.path().join("clean-omarchy.sh");
         fs::write(&script, include_str!("../contrib/clean-omarchy.sh")).unwrap();
+        let path = format!(
+            "{}:{}",
+            root.path().join("bin").display(),
+            std::env::var("PATH").unwrap()
+        );
         ProcessCommand::new("bash")
             .arg(&script)
             .env("HOME", home)
+            .env("PATH", path)
             .output()
             .unwrap()
     }
