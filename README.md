@@ -156,21 +156,10 @@ kvn-tui setup --omarchy
 
 On **Omarchy 4 (Quattro)** this installs the standalone
 [omakvn](https://github.com/yarikov/omakvn) Quickshell bar plugin (`yarikov.omakvn`):
-a shield icon with live connection state, a popup for picking profiles and
-toggling routing mode, geo region, kill switch, and auto-connect, plus a
-one-click VPN toggle. Left click opens the panel, right click toggles the VPN,
-and middle click opens the full TUI. The plugin talks to the daemon over its
-Unix socket, so it reflects connection changes and traffic instantly. On
-Omarchy 3 (or builds without the shell plugin registry) setup falls back to a
-Waybar status module that opens the TUI on click.
-
-![kvn-tui Omarchy 4 bar module](https://raw.githubusercontent.com/yarikov/omakvn/master/preview.png)
-
-The plugin can also be installed independently through Omarchy:
-
-```bash
-omarchy plugin add https://github.com/yarikov/omakvn.git --enable
-```
+it shows live VPN status and provides profile selection and common VPN controls
+directly from the bar. On Omarchy 3 (or builds without the shell plugin
+registry), setup falls back to a Waybar status module that opens the TUI on
+click.
 
 The idempotent installer detects Omarchy 3 or 4 and creates backups before
 editing user configuration. Remove those backups after verification with:
