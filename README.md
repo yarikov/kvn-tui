@@ -172,21 +172,6 @@ This removes only the backups and leaves the active integration unchanged.
 Removal instructions are documented in
 [`docs/system-integration.md`](docs/system-integration.md#backups-and-removal).
 
-### Scripting and status bars
-
-One-shot commands talk to the daemon over the same socket as the TUI:
-
-```bash
-kvn-tui status            # one-line summary (or --json for the full snapshot)
-kvn-tui connect <name>    # by UUID, exact name, or unique name prefix
-kvn-tui disconnect
-kvn-tui reconnect
-kvn-tui toggle            # connect last-used profile, or disconnect
-```
-
-`status` is read-only and never starts the daemon; the other commands start it
-if needed (same path as launching the TUI).
-
 ### Build from source
 
 Requires Rust 1.88+, sing-box 1.12+, `base-devel`, `dbus`, and a clipboard tool
