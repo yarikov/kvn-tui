@@ -40,3 +40,24 @@ if [ -d "$plugin_dir" ]; then
   rm -rf -- "$plugin_dir"
   echo "Removed $plugin_dir (the kvn.tui bar plugin)."
 fi
+
+shell_config="${HOME}/.config/omarchy/shell.json"
+if [ -f "$shell_config" ] && command -v jq >/dev/null 2>&1; then
+  tmp=$(mktemp "${shell_config}.tmp.XXXXXX")
+  jq '
+    def entry_id: if type == "object" then (.id // "") else tostring end;
+    .bar.layout.left = ((.bar.layout.left // []) | map(select(entry_id != "kvn.tui")))
+    | .bar.layout.center = ((.bar.layout.center // []) | map(select(entry_id != "kvn.tui")))
+    | .bar.layout.right = ((.bar.layout.right // []) | map(select(entry_id != "kvn.tui")))
+    | .plugins = ((.plugins // []) | map(select(entry_id != "kvn.tui")))
+  ' "$shell_config" >"$tmp"
+  if cmp -s -- "$tmp" "$shell_config"; then
+    rm -- "$tmp"
+  else
+    chmod --reference="$shell_config" "$tmp"
+    mv -f -- "$tmp" "$shell_config"
+    echo "Removed kvn.tui from $shell_config."
+  fi
+fi
+
+omarchy-shell shell rescanPlugins >/dev/null 2>&1 || true

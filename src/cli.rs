@@ -90,43 +90,12 @@ enum Command {
     },
 }
 
-/// Materialize the embedded Quickshell bar plugin files into a temp
-/// directory for the Omarchy setup script to install from.
-fn write_omarchy_plugin_files() -> Result<std::path::PathBuf> {
-    let dir = std::env::temp_dir().join(format!("kvn-tui-plugin-{}", std::process::id()));
-    std::fs::create_dir_all(&dir)?;
-    let files = [
-        (
-            "manifest.json",
-            include_str!("../contrib/omarchy-plugin/manifest.json"),
-        ),
-        (
-            "Widget.qml",
-            include_str!("../contrib/omarchy-plugin/Widget.qml"),
-        ),
-        (
-            "KvnService.qml",
-            include_str!("../contrib/omarchy-plugin/KvnService.qml"),
-        ),
-    ];
-    for (name, content) in files {
-        std::fs::write(dir.join(name), content)?;
-    }
-    Ok(dir)
-}
-
 /// Run the embedded Omarchy integration installer script.
 fn install_omarchy() -> Result<()> {
-    let plugin_dir = write_omarchy_plugin_files()?;
     let script = include_str!("../contrib/setup-omarchy.sh");
     let tmp = std::env::temp_dir().join("kvn-tui-setup-omarchy.sh");
     std::fs::write(&tmp, script)?;
-    let status = std::process::Command::new("bash")
-        .arg(&tmp)
-        .env("KVN_TUI_PLUGIN_DIR", &plugin_dir)
-        .status();
-    let _ = std::fs::remove_dir_all(&plugin_dir);
-    let status = status?;
+    let status = std::process::Command::new("bash").arg(&tmp).status()?;
     std::fs::remove_file(&tmp).ok();
     if !status.success() {
         anyhow::bail!("setup-omarchy.sh exited with status {}", status);
@@ -440,12 +409,28 @@ mod tests {
         let bin = root.path().join("bin");
         fs::create_dir_all(&home).unwrap();
         fs::create_dir_all(&bin).unwrap();
-        write_executable(
-            &bin.join("omarchy"),
-            &format!(
-                "#!/bin/bash\nif [[ ${{1:-}} == version ]]; then echo '{version}.0.0-1'; fi\n"
-            ),
-        );
+        let omarchy_stub = r#"#!/bin/bash
+case "${1:-}:${2:-}" in
+version:)
+  echo '@VERSION@.0.0-1'
+  ;;
+plugin:add)
+  [[ ${3:-} == --help ]] && exit 0
+  target="$HOME/.config/omarchy/plugins/kvn.tui"
+  mkdir -p "$target"
+  git -C "$target" init -q
+  git -C "$target" remote add origin "${3:-}"
+  printf '%s\n' '{"schemaVersion":1,"id":"kvn.tui","name":"kvn-tui VPN","version":"1.0.0","kinds":["bar-widget"],"entryPoints":{"barWidget":"Widget.qml"}}' >"$target/manifest.json"
+  printf '%s\n' 'import QtQuick' >"$target/Widget.qml"
+  printf '%s\n' 'import QtQuick' >"$target/KvnService.qml"
+  ;;
+plugin:update|plugin:validate|plugin:list|bar:put)
+  exit 0
+  ;;
+esac
+"#
+        .replace("@VERSION@", &version.to_string());
+        write_executable(&bin.join("omarchy"), &omarchy_stub);
         write_executable(
             &bin.join("hyprctl"),
             "#!/bin/bash\ncase ${1:-} in configerrors) exit 0;; reload) exit 0;; esac\n",
@@ -459,26 +444,6 @@ mod tests {
         let _lock = crate::test_helpers::ENV_LOCK.lock().unwrap();
         let script = root.path().join("setup-omarchy.sh");
         fs::write(&script, include_str!("../contrib/setup-omarchy.sh")).unwrap();
-        // Materialize the embedded plugin files exactly like install_omarchy
-        // does, so the script test exercises the real install path.
-        let plugin_dir = root.path().join("omarchy-plugin");
-        fs::create_dir_all(&plugin_dir).unwrap();
-        for (name, content) in [
-            (
-                "manifest.json",
-                include_str!("../contrib/omarchy-plugin/manifest.json"),
-            ),
-            (
-                "Widget.qml",
-                include_str!("../contrib/omarchy-plugin/Widget.qml"),
-            ),
-            (
-                "KvnService.qml",
-                include_str!("../contrib/omarchy-plugin/KvnService.qml"),
-            ),
-        ] {
-            fs::write(plugin_dir.join(name), content).unwrap();
-        }
         let path = format!(
             "{}:{}",
             root.path().join("bin").display(),
@@ -488,7 +453,6 @@ mod tests {
             .arg(&script)
             .env("HOME", home)
             .env("PATH", path)
-            .env("KVN_TUI_PLUGIN_DIR", &plugin_dir)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -908,6 +872,94 @@ mod tests {
     }
 
     #[test]
+    fn omarchy_v4_installer_migrates_embedded_plugin_to_git_checkout() {
+        let (root, home) = installer_fixture(4);
+        write_omarchy_v4_config(&home);
+        let plugin = home.join(".config/omarchy/plugins/kvn.tui");
+        fs::create_dir_all(&plugin).unwrap();
+        fs::write(plugin.join("manifest.json"), r#"{"id":"kvn.tui"}"#).unwrap();
+        fs::write(plugin.join("Widget.qml"), "legacy").unwrap();
+
+        assert_success(&run_installer(&root, &home, "\n"));
+
+        assert!(plugin.join(".git").is_dir());
+        assert_eq!(
+            ProcessCommand::new("git")
+                .args([
+                    "-C",
+                    plugin.to_str().unwrap(),
+                    "remote",
+                    "get-url",
+                    "origin"
+                ])
+                .output()
+                .unwrap()
+                .stdout,
+            b"https://github.com/yarikov/omakvn.git\n"
+        );
+        assert_ne!(
+            fs::read_to_string(plugin.join("Widget.qml")).unwrap(),
+            "legacy"
+        );
+    }
+
+    #[test]
+    fn omarchy_v4_installer_restores_embedded_plugin_when_remote_install_fails() {
+        let (root, home) = installer_fixture(4);
+        write_omarchy_v4_config(&home);
+        let plugin = home.join(".config/omarchy/plugins/kvn.tui");
+        fs::create_dir_all(&plugin).unwrap();
+        fs::write(plugin.join("manifest.json"), r#"{"id":"kvn.tui"}"#).unwrap();
+        fs::write(plugin.join("Widget.qml"), "legacy").unwrap();
+        write_executable(
+            &root.path().join("bin/omarchy"),
+            "#!/bin/bash\nif [[ ${1:-} == version ]]; then echo '4.0.0-1'; elif [[ ${1:-}:${2:-}:${3:-} == plugin:add:--help ]]; then exit 0; else exit 1; fi\n",
+        );
+
+        assert_success(&run_installer(&root, &home, "\n"));
+
+        assert!(!plugin.join(".git").exists());
+        assert_eq!(
+            fs::read_to_string(plugin.join("Widget.qml")).unwrap(),
+            "legacy"
+        );
+    }
+
+    #[test]
+    fn omarchy_v4_installer_refuses_conflicting_git_origin() {
+        let (root, home) = installer_fixture(4);
+        write_omarchy_v4_config(&home);
+        let plugin = home.join(".config/omarchy/plugins/kvn.tui");
+        fs::create_dir_all(&plugin).unwrap();
+        assert_success(
+            &ProcessCommand::new("git")
+                .args(["-C", plugin.to_str().unwrap(), "init", "-q"])
+                .output()
+                .unwrap(),
+        );
+        assert_success(
+            &ProcessCommand::new("git")
+                .args([
+                    "-C",
+                    plugin.to_str().unwrap(),
+                    "remote",
+                    "add",
+                    "origin",
+                    "https://example.com/not-omakvn.git",
+                ])
+                .output()
+                .unwrap(),
+        );
+
+        let output = run_installer(&root, &home, "\n");
+        assert!(!output.status.success());
+        assert!(
+            String::from_utf8_lossy(&output.stderr)
+                .contains("managed by a different Git repository")
+        );
+    }
+
+    #[test]
     fn omarchy_installer_keeps_only_five_backups_per_changed_file() {
         let (root, home) = installer_fixture(4);
         let shell_config = home.join(".config/omarchy/shell.json");
@@ -944,10 +996,10 @@ mod tests {
     }
 
     #[test]
-    fn clean_omarchy_removes_legacy_and_timestamp_backups_only() {
+    fn clean_omarchy_removes_backups_plugin_and_bar_entry() {
         let (root, home) = installer_fixture(4);
         let omarchy = home.join(".config/omarchy");
-        fs::create_dir_all(&omarchy).unwrap();
+        write_omarchy_v4_config(&home);
         let legacy = omarchy.join("shell.json.bak.before-kvn-tui");
         let timestamped = omarchy.join("shell.json.bak.before-kvn-tui.20260821143012");
         let unrelated = omarchy.join("shell.json.bak.before-kvn-tui.notes");
@@ -958,12 +1010,30 @@ mod tests {
         fs::create_dir_all(&plugin).unwrap();
         fs::write(plugin.join("manifest.json"), "{}").unwrap();
 
+        let shell_config = omarchy.join("shell.json");
+        let mut shell: serde_json::Value =
+            serde_json::from_slice(&fs::read(&shell_config).unwrap()).unwrap();
+        shell["bar"]["layout"]["right"]
+            .as_array_mut()
+            .unwrap()
+            .insert(0, serde_json::json!({"id": "kvn.tui"}));
+        fs::write(&shell_config, serde_json::to_vec_pretty(&shell).unwrap()).unwrap();
+
         assert_success(&run_omarchy_cleanup(&root, &home));
 
         assert!(!legacy.exists());
         assert!(!timestamped.exists());
         assert!(unrelated.exists());
         assert!(!plugin.exists(), "bar plugin directory should be removed");
+        let shell: serde_json::Value =
+            serde_json::from_slice(&fs::read(shell_config).unwrap()).unwrap();
+        assert!(
+            !shell["bar"]["layout"]["right"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|entry| entry["id"] == "kvn.tui")
+        );
     }
 
     #[test]
