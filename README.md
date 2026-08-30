@@ -168,8 +168,9 @@ editing user configuration. Remove those backups after verification with:
 kvn-tui clean --omarchy
 ```
 
-This removes the backups, the `yarikov.omakvn` plugin checkout, and its bar entry. It
-does not remove the launcher, keybinding, window rule, or Omarchy 3 integration.
+This removes only the backups and leaves the active integration unchanged.
+Removal instructions are documented in
+[`docs/system-integration.md`](docs/system-integration.md#backups-and-removal).
 
 ### Scripting and status bars
 

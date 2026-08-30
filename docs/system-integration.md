@@ -192,8 +192,14 @@ bindings.lua.bak.before-kvn-tui.20260821143012
 ```
 
 At most five kvn-tui backups are retained for each file. To fully remove the
-integration, first restore a suitable backup or manually remove the kvn-tui
-module, binding, and window-rule entries. Then remove the launcher:
+integration on Omarchy 4, first remove the plugin with Omarchy's plugin manager:
+
+```bash
+omarchy plugin remove yarikov.omakvn
+```
+
+Then restore a suitable backup or manually remove the kvn-tui module, binding,
+and window-rule entries. Remove the launcher separately:
 
 ```bash
 rm ~/.local/bin/omarchy-launch-kvn-tui
@@ -206,6 +212,5 @@ only the backups created by kvn-tui with:
 kvn-tui clean --omarchy
 ```
 
-`clean --omarchy` also removes the `yarikov.omakvn` checkout and its Omarchy 4 bar
-entry. It does not remove the launcher, keybinding, window rule, or undo the
-Omarchy 3 Waybar integration.
+`clean --omarchy` removes only these backups. It does not remove the plugin,
+launcher, keybinding, window rule, or undo the Omarchy 3 Waybar integration.

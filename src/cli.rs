@@ -1006,7 +1006,7 @@ esac
     }
 
     #[test]
-    fn clean_omarchy_removes_backups_plugin_and_bar_entry() {
+    fn clean_omarchy_removes_only_backups() {
         let (root, home) = installer_fixture(4);
         let omarchy = home.join(".config/omarchy");
         write_omarchy_v4_config(&home);
@@ -1041,19 +1041,26 @@ esac
         assert!(!legacy.exists());
         assert!(!timestamped.exists());
         assert!(unrelated.exists());
-        assert!(!plugin.exists(), "bar plugin directory should be removed");
+        assert!(plugin.exists(), "bar plugin directory should be preserved");
         assert!(
-            !legacy_plugin.exists(),
-            "legacy bar plugin directory should be removed"
+            legacy_plugin.exists(),
+            "legacy bar plugin directory should be preserved"
         );
         let shell: serde_json::Value =
             serde_json::from_slice(&fs::read(shell_config).unwrap()).unwrap();
         assert!(
-            !shell["bar"]["layout"]["right"]
+            shell["bar"]["layout"]["right"]
                 .as_array()
                 .unwrap()
                 .iter()
-                .any(|entry| matches!(entry["id"].as_str(), Some("yarikov.omakvn" | "kvn.tui")))
+                .any(|entry| entry["id"] == "yarikov.omakvn")
+        );
+        assert!(
+            shell["bar"]["layout"]["right"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|entry| entry["id"] == "kvn.tui")
         );
     }
 
