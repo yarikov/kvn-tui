@@ -437,6 +437,8 @@ esac
         );
         write_executable(&bin.join("pgrep"), "#!/bin/bash\nexit 0\n");
         write_executable(&bin.join("sleep"), "#!/bin/bash\nexit 0\n");
+        // Avoid sending rescanPlugins IPC to the user's live Omarchy Shell.
+        write_executable(&bin.join("omarchy-shell"), "#!/bin/bash\nexit 0\n");
         (root, home)
     }
 
