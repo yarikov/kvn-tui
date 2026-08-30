@@ -1455,6 +1455,8 @@ mod tests {
             last_updated: None,
             next_auto_update: None,
             retry_state: None,
+            send_hwid: false,
+            hwid: None,
         });
         model.connection = ConnectionState::Connected;
         model.active_profile_id = Some(model.config.profiles[0].id);
@@ -1633,6 +1635,8 @@ mod tests {
             last_updated: None,
             next_auto_update: None,
             retry_state: None,
+            send_hwid: false,
+            hwid: None,
         });
         model.overlay = Overlay::ConfirmDelete;
         model.selected = crate::app::model::row_for_subscription_header(&model.config, 0);
