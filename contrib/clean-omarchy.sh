@@ -35,7 +35,7 @@ else
   echo "Removed $removed kvn-tui Omarchy backup file(s)."
 fi
 
-for plugin_id in omakvn kvn.tui; do
+for plugin_id in yarikov.omakvn kvn.tui; do
   plugin_dir="${HOME}/.config/omarchy/plugins/${plugin_id}"
   if [ -d "$plugin_dir" ]; then
     rm -rf -- "$plugin_dir"
@@ -48,7 +48,7 @@ if [ -f "$shell_config" ] && command -v jq >/dev/null 2>&1; then
   tmp=$(mktemp "${shell_config}.tmp.XXXXXX")
   jq '
     def entry_id: if type == "object" then (.id // "") else tostring end;
-    def is_kvn: entry_id == "omakvn" or entry_id == "kvn.tui";
+    def is_kvn: entry_id == "yarikov.omakvn" or entry_id == "kvn.tui";
     .bar.layout.left = ((.bar.layout.left // []) | map(select(is_kvn | not)))
     | .bar.layout.center = ((.bar.layout.center // []) | map(select(is_kvn | not)))
     | .bar.layout.right = ((.bar.layout.right // []) | map(select(is_kvn | not)))
@@ -59,7 +59,7 @@ if [ -f "$shell_config" ] && command -v jq >/dev/null 2>&1; then
   else
     chmod --reference="$shell_config" "$tmp"
     mv -f -- "$tmp" "$shell_config"
-    echo "Removed omakvn from $shell_config."
+    echo "Removed yarikov.omakvn from $shell_config."
   fi
 fi
 
