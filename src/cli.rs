@@ -416,11 +416,11 @@ version:)
   ;;
 plugin:add)
   [[ ${3:-} == --help ]] && exit 0
-  target="$HOME/.config/omarchy/plugins/kvn.tui"
+  target="$HOME/.config/omarchy/plugins/omakvn"
   mkdir -p "$target"
   git -C "$target" init -q
   git -C "$target" remote add origin "${3:-}"
-  printf '%s\n' '{"schemaVersion":1,"id":"kvn.tui","name":"kvn-tui VPN","version":"1.0.0","kinds":["bar-widget"],"entryPoints":{"barWidget":"Widget.qml"}}' >"$target/manifest.json"
+  printf '%s\n' '{"schemaVersion":1,"id":"omakvn","name":"kvn-tui VPN","version":"1.0.0","kinds":["bar-widget"],"entryPoints":{"barWidget":"Widget.qml"}}' >"$target/manifest.json"
   printf '%s\n' 'import QtQuick' >"$target/Widget.qml"
   printf '%s\n' 'import QtQuick' >"$target/KvnService.qml"
   ;;
@@ -758,10 +758,7 @@ esac
             serde_json::from_slice(&fs::read(omarchy.join("shell.json")).unwrap()).unwrap();
         let right = shell["bar"]["layout"]["right"].as_array().unwrap();
         assert_eq!(
-            right
-                .iter()
-                .filter(|entry| entry["id"] == "kvn.tui")
-                .count(),
+            right.iter().filter(|entry| entry["id"] == "omakvn").count(),
             1
         );
         // The legacy command-module entry must be gone.
@@ -774,7 +771,7 @@ esac
         );
         let kvn_index = right
             .iter()
-            .position(|entry| entry["id"] == "kvn.tui")
+            .position(|entry| entry["id"] == "omakvn")
             .unwrap();
         let bluetooth_index = right
             .iter()
@@ -786,12 +783,12 @@ esac
         assert!(right[kvn_index].get("type").is_none());
 
         // Plugin files are installed.
-        let plugin = home.join(".config/omarchy/plugins/kvn.tui");
+        let plugin = home.join(".config/omarchy/plugins/omakvn");
         for file in ["manifest.json", "Widget.qml", "KvnService.qml"] {
             assert!(plugin.join(file).is_file(), "missing {file}");
         }
         let manifest = fs::read_to_string(plugin.join("manifest.json")).unwrap();
-        assert!(manifest.contains("\"kvn.tui\""));
+        assert!(manifest.contains("\"omakvn\""));
 
         let bindings = fs::read_to_string(hypr.join("bindings.lua")).unwrap();
         assert_eq!(bindings.matches("-- kvn-tui keybinding: begin").count(), 1);
@@ -839,7 +836,7 @@ esac
             .find(|entry| entry["id"] == "kvn-tui")
             .expect("legacy command module entry");
         assert_eq!(entry["exec"], "kvn-tui --waybar-status");
-        assert!(!home.join(".config/omarchy/plugins/kvn.tui").exists());
+        assert!(!home.join(".config/omarchy/plugins/omakvn").exists());
     }
 
     #[test]
@@ -869,7 +866,7 @@ esac
             .iter()
             .map(|e| e["id"].as_str().unwrap())
             .collect();
-        assert_eq!(ids.iter().filter(|id| **id == "kvn.tui").count(), 1);
+        assert_eq!(ids.iter().filter(|id| **id == "omakvn").count(), 1);
         assert!(!ids.contains(&"kvn-tui"));
     }
 
@@ -877,13 +874,15 @@ esac
     fn omarchy_v4_installer_migrates_embedded_plugin_to_git_checkout() {
         let (root, home) = installer_fixture(4);
         write_omarchy_v4_config(&home);
-        let plugin = home.join(".config/omarchy/plugins/kvn.tui");
-        fs::create_dir_all(&plugin).unwrap();
-        fs::write(plugin.join("manifest.json"), r#"{"id":"kvn.tui"}"#).unwrap();
-        fs::write(plugin.join("Widget.qml"), "legacy").unwrap();
+        let legacy_plugin = home.join(".config/omarchy/plugins/kvn.tui");
+        fs::create_dir_all(&legacy_plugin).unwrap();
+        fs::write(legacy_plugin.join("manifest.json"), r#"{"id":"kvn.tui"}"#).unwrap();
+        fs::write(legacy_plugin.join("Widget.qml"), "legacy").unwrap();
 
         assert_success(&run_installer(&root, &home, "\n"));
 
+        let plugin = home.join(".config/omarchy/plugins/omakvn");
+        assert!(!legacy_plugin.exists());
         assert!(plugin.join(".git").is_dir());
         assert_eq!(
             ProcessCommand::new("git")
@@ -931,7 +930,7 @@ esac
     fn omarchy_v4_installer_refuses_conflicting_git_origin() {
         let (root, home) = installer_fixture(4);
         write_omarchy_v4_config(&home);
-        let plugin = home.join(".config/omarchy/plugins/kvn.tui");
+        let plugin = home.join(".config/omarchy/plugins/omakvn");
         fs::create_dir_all(&plugin).unwrap();
         assert_success(
             &ProcessCommand::new("git")
@@ -1008,13 +1007,20 @@ esac
         fs::write(&legacy, "legacy").unwrap();
         fs::write(&timestamped, "timestamped").unwrap();
         fs::write(&unrelated, "keep").unwrap();
-        let plugin = omarchy.join("plugins/kvn.tui");
+        let plugin = omarchy.join("plugins/omakvn");
         fs::create_dir_all(&plugin).unwrap();
         fs::write(plugin.join("manifest.json"), "{}").unwrap();
+        let legacy_plugin = omarchy.join("plugins/kvn.tui");
+        fs::create_dir_all(&legacy_plugin).unwrap();
+        fs::write(legacy_plugin.join("manifest.json"), "{}").unwrap();
 
         let shell_config = omarchy.join("shell.json");
         let mut shell: serde_json::Value =
             serde_json::from_slice(&fs::read(&shell_config).unwrap()).unwrap();
+        shell["bar"]["layout"]["right"]
+            .as_array_mut()
+            .unwrap()
+            .insert(0, serde_json::json!({"id": "omakvn"}));
         shell["bar"]["layout"]["right"]
             .as_array_mut()
             .unwrap()
@@ -1027,6 +1033,10 @@ esac
         assert!(!timestamped.exists());
         assert!(unrelated.exists());
         assert!(!plugin.exists(), "bar plugin directory should be removed");
+        assert!(
+            !legacy_plugin.exists(),
+            "legacy bar plugin directory should be removed"
+        );
         let shell: serde_json::Value =
             serde_json::from_slice(&fs::read(shell_config).unwrap()).unwrap();
         assert!(
@@ -1034,7 +1044,7 @@ esac
                 .as_array()
                 .unwrap()
                 .iter()
-                .any(|entry| entry["id"] == "kvn.tui")
+                .any(|entry| entry["id"] == "omakvn" || entry["id"] == "kvn.tui")
         );
     }
 
