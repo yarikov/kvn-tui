@@ -61,6 +61,10 @@ pub fn save_config_at(path: &Path, config: &Config) -> Result<()> {
 /// automatically follows the system theme instead of always starting on
 /// `tokyo-night`. Existing configs are left untouched — the user's stored
 /// theme choice always wins.
+///
+/// Also generates the installation HWID once (UUID v4) and persists it
+/// immediately through the atomic config write path, so every later start —
+/// and every subscription server — sees the same identifier.
 pub fn load_config() -> Result<Config> {
     let path = crate::paths::profiles_path().context("Failed to determine profiles path")?;
     let is_first_launch = !path.exists();
@@ -68,7 +72,28 @@ pub fn load_config() -> Result<Config> {
     if is_first_launch && crate::omarchy::detect_omarchy_theme().is_some() {
         config.settings.theme = profile::OMARCHY_THEME_SENTINEL.to_string();
     }
+    ensure_hwid(&mut config, &path)?;
     Ok(config)
+}
+
+/// Generate the installation HWID once and persist it immediately through the
+/// existing atomic config write path. Idempotent: an existing non-empty
+/// `settings.hwid` is never regenerated.
+fn ensure_hwid(config: &mut Config, path: &Path) -> Result<()> {
+    if !config.settings.hwid.is_empty() {
+        return Ok(());
+    }
+    config.settings.hwid = subscription::generate_hwid();
+
+    // Validation errors belong to the caller's existing config-validation
+    // path. Do not turn an unrelated invalid profile into an HWID persistence
+    // error merely because this load also generated the missing identifier.
+    if config.validate().is_err() {
+        return Ok(());
+    }
+
+    tracing::info!("Generated installation HWID");
+    save_config_at(path, config).context("Failed to persist generated HWID")
 }
 
 /// Save configuration to disk atomically.
@@ -143,6 +168,8 @@ mod tests {
             last_updated: None,
             next_auto_update: None,
             retry_state: None,
+            send_hwid: false,
+            hwid: None,
         });
         config.settings.geo_routing.auto_update = profile::GeoAutoUpdate::Every12h;
         save_config_at(file.path(), &config).unwrap();
@@ -228,6 +255,104 @@ mod tests {
 
         let loaded = load_config().unwrap();
         assert_eq!(loaded.settings.theme, "tokyo-night");
+    }
+
+    #[test]
+    fn load_config_generates_hwid_once_and_persists_it() {
+        let _guard = crate::test_helpers::ENV_LOCK.lock().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        unsafe { std::env::set_var("XDG_CONFIG_HOME", dir.path()) };
+        let _ = std::fs::remove_file(crate::paths::profiles_path().unwrap());
+
+        let config = load_config().unwrap();
+        let hwid = config.settings.hwid.clone();
+        assert!(hwid.starts_with("lnx-"));
+        assert_eq!(hwid.len(), "lnx-".len() + 32);
+
+        // The generated HWID is immediately written through the atomic path.
+        let persisted = std::fs::read_to_string(crate::paths::profiles_path().unwrap()).unwrap();
+        assert!(persisted.contains(&hwid));
+
+        // A second load retains the same installation HWID.
+        let reloaded = load_config().unwrap();
+        assert_eq!(reloaded.settings.hwid, hwid);
+    }
+
+    #[test]
+    fn ensure_hwid_propagates_persistence_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let parent_file = dir.path().join("not-a-directory");
+        std::fs::write(&parent_file, "occupied").unwrap();
+        let path = parent_file.join("profiles.json");
+        let mut config = Config::default();
+
+        let error = ensure_hwid(&mut config, &path).unwrap_err();
+
+        assert!(
+            format!("{error:#}").contains("Failed to persist generated HWID"),
+            "got: {error:#}"
+        );
+    }
+
+    #[test]
+    fn hwid_survives_save_and_load_roundtrip() {
+        let file = NamedTempFile::new().unwrap();
+        let path = file.path().to_path_buf();
+
+        let mut config = Config::default();
+        config.settings.hwid = "lnx-d415f1264a264924aa76e7f55380b0c7".to_string();
+        save_config_at(&path, &config).unwrap();
+
+        let loaded = load_config_at(&path).unwrap();
+        assert_eq!(loaded.settings.hwid, "lnx-d415f1264a264924aa76e7f55380b0c7");
+    }
+
+    #[test]
+    fn settings_and_subscriptions_without_hwid_fields_are_backward_compatible() {
+        // Pre-HWID config shape: no `settings.hwid`, no `send_hwid`/`hwid` on
+        // subscriptions — and no legacy `subscription_headers` either.
+        let legacy = r#"{
+            "schema_version": 3,
+            "profiles": [],
+            "subscriptions": [
+                {
+                    "id": "3f2504e0-4f89-11d3-9a0c-0305e82c3301",
+                    "name": "Regular subscription",
+                    "url": "https://example.com/regular"
+                }
+            ],
+            "settings": {
+                "tun_interface": "tun0",
+                "dns_strategy": "prefer_ipv4",
+                "theme": "tokyo-night",
+                "log_level": "info"
+            }
+        }"#;
+        let mut file = NamedTempFile::new().unwrap();
+        write!(file, "{legacy}").unwrap();
+
+        let config = load_config_at(file.path()).unwrap();
+        assert_eq!(config.settings.hwid, "");
+        assert!(!config.subscriptions[0].send_hwid);
+        assert_eq!(config.subscriptions[0].hwid, None);
+    }
+
+    #[test]
+    fn subscription_send_hwid_fields_roundtrip_through_json() {
+        let json = r#"{
+            "id": "3f2504e0-4f89-11d3-9a0c-0305e82c3301",
+            "name": "HWID subscription",
+            "url": "https://example.com/hwid",
+            "send_hwid": true,
+            "hwid": "provider-registered-device-id"
+        }"#;
+        let sub: profile::Subscription = serde_json::from_str(json).unwrap();
+        assert!(sub.send_hwid);
+        assert_eq!(sub.hwid.as_deref(), Some("provider-registered-device-id"));
+
+        let serialized = serde_json::to_string(&sub).unwrap();
+        let back: profile::Subscription = serde_json::from_str(&serialized).unwrap();
+        assert_eq!(back, sub);
     }
 
     #[test]

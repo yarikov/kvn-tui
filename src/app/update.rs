@@ -1019,6 +1019,8 @@ fn add_and_fetch_subscription(model: &mut Model, url: &str) -> Vec<Effect> {
         last_updated: None,
         next_auto_update: None,
         retry_state: None,
+        send_hwid: false,
+        hwid: None,
     };
     model.config.subscriptions.push(sub);
     model.selected = crate::app::model::row_for_subscription_header(
@@ -1499,6 +1501,8 @@ mod tests {
             last_updated: None,
             next_auto_update: None,
             retry_state: None,
+            send_hwid: false,
+            hwid: None,
         });
         model.selected = 0; // subscription header
         let effects = handle_sources(&mut model, KeyEvent::from(KeyCode::Enter));
@@ -1521,6 +1525,8 @@ mod tests {
             last_updated: None,
             next_auto_update: None,
             retry_state: None,
+            send_hwid: false,
+            hwid: None,
         });
         model.selected = 0; // subscription header
         let effects = handle_sources(&mut model, KeyEvent::from(KeyCode::Enter));
@@ -3820,6 +3826,8 @@ mod tests {
             last_updated: None,
             next_auto_update: None,
             retry_state: None,
+            send_hwid: false,
+            hwid: None,
         });
 
         let new_sub_id = Uuid::new_v4();
@@ -3831,6 +3839,8 @@ mod tests {
             last_updated: None,
             next_auto_update: None,
             retry_state: None,
+            send_hwid: false,
+            hwid: None,
         });
 
         let fetched = Profile::new_vless(
@@ -3872,6 +3882,8 @@ mod tests {
             last_updated: None,
             next_auto_update: None,
             retry_state: None,
+            send_hwid: false,
+            hwid: None,
         });
 
         let mut fetched = Profile::new_vless(
@@ -3933,6 +3945,8 @@ mod tests {
             last_updated: Some(last_updated),
             next_auto_update: None,
             retry_state: None,
+            send_hwid: false,
+            hwid: None,
         });
         model.automatic_subscription_updates.insert(sub_id);
 
@@ -4007,6 +4021,8 @@ mod tests {
             last_updated: None,
             next_auto_update: None,
             retry_state: None,
+            send_hwid: false,
+            hwid: None,
         });
         model.config.subscriptions[0].record_fetch_failure(Local::now());
         model.automatic_subscription_updates.insert(sub_id);
@@ -4062,6 +4078,8 @@ mod tests {
             last_updated: None,
             next_auto_update: None,
             retry_state: None,
+            send_hwid: false,
+            hwid: None,
         });
         // Start with cursor on the subscription header.
         model.selected = crate::app::model::row_for_subscription_header(&model.config, 0);
@@ -4137,6 +4155,8 @@ mod tests {
             last_updated: None,
             next_auto_update: None,
             retry_state: None,
+            send_hwid: false,
+            hwid: None,
         });
         model.connection = ConnectionState::Connected;
         model.active_profile_id = Some(old_profile_id);
@@ -4177,6 +4197,8 @@ mod tests {
             last_updated: None,
             next_auto_update: None,
             retry_state: None,
+            send_hwid: false,
+            hwid: None,
         });
         assert!(queue_connect(&mut model, profile_id));
         model.connection = ConnectionState::ConnectPending;
@@ -4226,6 +4248,8 @@ mod tests {
             last_updated: None,
             next_auto_update: None,
             retry_state: None,
+            send_hwid: false,
+            hwid: None,
         });
         model.selected = 0;
 
@@ -4258,6 +4282,8 @@ mod tests {
             last_updated: None,
             next_auto_update: None,
             retry_state: None,
+            send_hwid: false,
+            hwid: None,
         });
         model.selected = 0;
         model.config.subscriptions[0].record_fetch_failure(Local::now());
@@ -4282,6 +4308,8 @@ mod tests {
             last_updated: None,
             next_auto_update: None,
             retry_state: None,
+            send_hwid: false,
+            hwid: None,
         });
         model.selected = 0;
 
@@ -4326,6 +4354,8 @@ mod tests {
             last_updated: None,
             next_auto_update: None,
             retry_state: None,
+            send_hwid: false,
+            hwid: None,
         });
         // source_rows: [SubscriptionHeader(0), SubscriptionProfile { sub_idx: 0, profile_idx: 0 }]
         model.selected = 0;
@@ -4358,6 +4388,8 @@ mod tests {
             last_updated: Some(now - chrono::Duration::try_hours(25).unwrap()),
             next_auto_update: None,
             retry_state: None,
+            send_hwid: false,
+            hwid: None,
         });
 
         let effects = check_due_subscriptions_at(&mut model, now);
@@ -4379,6 +4411,8 @@ mod tests {
             last_updated: Some(now - chrono::Duration::hours(2)),
             next_auto_update: None,
             retry_state: None,
+            send_hwid: false,
+            hwid: None,
         };
         sub.record_fetch_failure(now);
         model.config.subscriptions.push(sub);
@@ -4412,6 +4446,8 @@ mod tests {
                 retry_at: today,
                 attempt_date: Some(today.date_naive()),
             }),
+            send_hwid: false,
+            hwid: None,
         });
 
         assert!(check_due_subscriptions_at(&mut model, today).is_empty());
@@ -4442,6 +4478,8 @@ mod tests {
             last_updated: None,
             next_auto_update: Some(now.date_naive()),
             retry_state: Some(retry.clone()),
+            send_hwid: false,
+            hwid: None,
         });
 
         handle_subscription_result_at(&mut model, id, Ok(Vec::new()), now);
@@ -4465,6 +4503,8 @@ mod tests {
             last_updated: None,
             next_auto_update: None,
             retry_state: None,
+            send_hwid: false,
+            hwid: None,
         };
         sub.record_fetch_failure(Local::now());
         model.config.subscriptions.push(sub);
@@ -4488,6 +4528,8 @@ mod tests {
             last_updated: None,
             next_auto_update: None,
             retry_state: None,
+            send_hwid: false,
+            hwid: None,
         });
         model.config.settings.kill_switch = true;
         let now = after_update_window();
@@ -4521,6 +4563,8 @@ mod tests {
             last_updated: Some(now),
             next_auto_update: None,
             retry_state: None,
+            send_hwid: false,
+            hwid: None,
         });
 
         let effects = check_due_subscriptions_at(&mut model, now);
@@ -4542,6 +4586,8 @@ mod tests {
             last_updated: None,
             next_auto_update: None,
             retry_state: None,
+            send_hwid: false,
+            hwid: None,
         };
         sub.record_fetch_failure(now - chrono::Duration::hours(1));
         model.config.subscriptions.push(sub);

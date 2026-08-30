@@ -620,10 +620,11 @@ fn execute_daemon_effect(
         }
         Effect::UpdateSubscription { id } => {
             if let Some(sub) = model.config.subscriptions.iter().find(|s| s.id == id) {
-                let url = sub.url.clone();
+                let sub = sub.clone();
+                let settings = model.config.settings.clone();
                 let tx = tx.clone();
                 thread::spawn(move || {
-                    let result = crate::config::subscription::fetch_subscription(&url)
+                    let result = crate::config::subscription::fetch_subscription(&sub, &settings)
                         .map_err(crate::app::msg::IpcError::from);
                     let _ = tx.send(Msg::SubscriptionFetched { id, result });
                 });

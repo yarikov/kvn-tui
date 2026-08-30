@@ -413,6 +413,8 @@ mod tests {
                     last_updated: None,
                     next_auto_update: None,
                     retry_state: None,
+                    send_hwid: false,
+                    hwid: None,
                 },
                 Subscription {
                     id: Uuid::new_v4(),
@@ -422,6 +424,8 @@ mod tests {
                     last_updated: None,
                     next_auto_update: None,
                     retry_state: None,
+                    send_hwid: false,
+                    hwid: None,
                 },
             ],
             ..Default::default()

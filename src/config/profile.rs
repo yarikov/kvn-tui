@@ -923,6 +923,10 @@ impl SubscriptionAutoUpdate {
 }
 
 /// A subscription URL that can be refreshed to import a set of profiles.
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct Subscription {
@@ -938,6 +942,16 @@ pub struct Subscription {
     pub next_auto_update: Option<NaiveDate>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub retry_state: Option<SubscriptionRetryState>,
+    /// When true, HWID identification headers are sent with subscription
+    /// requests (see [`Subscription::effective_hwid`]). Default false: raw
+    /// identifiers must not reach unrelated hosts.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub send_hwid: bool,
+    /// Per-subscription HWID override; requires `send_hwid` to take effect.
+    /// When absent, `settings.hwid` is used. Its presence alone never enables
+    /// sending.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hwid: Option<String>,
 }
 
 /// Persisted retry metadata for an auto-updating subscription.
@@ -951,6 +965,22 @@ pub struct SubscriptionRetryState {
 }
 
 impl Subscription {
+    /// Resolve the HWID to send for this subscription.
+    ///
+    /// Resolution rules:
+    /// - `send_hwid` absent or false → `None` (no device headers are sent);
+    /// - `send_hwid: true` with a per-subscription `hwid` override → the
+    ///   override;
+    /// - otherwise → fall back to `settings.hwid`.
+    ///
+    /// The presence of `self.hwid` alone never enables sending.
+    pub fn effective_hwid<'a>(&'a self, settings: &'a Settings) -> Option<&'a str> {
+        if !self.send_hwid {
+            return None;
+        }
+        self.hwid.as_deref().or(Some(settings.hwid.as_str()))
+    }
+
     /// Record a failed fetch and schedule the next retry using the bounded
     /// 1/5/15/60-minute backoff sequence.
     pub fn record_fetch_failure(&mut self, now: DateTime<Local>) {
@@ -1047,6 +1077,8 @@ fn subscription_retry_backoff_is_bounded_and_serializable() {
         last_updated: None,
         next_auto_update: None,
         retry_state: None,
+        send_hwid: false,
+        hwid: None,
     };
 
     for (failures, delay) in [(1, 1), (2, 5), (3, 15), (4, 60)] {
@@ -1356,6 +1388,13 @@ pub struct Settings {
     /// Pre-v4 compatibility field migrated into `logs.level` on load.
     #[serde(default, rename = "log_level", skip_serializing)]
     pub(crate) legacy_log_level: Option<String>,
+    /// Stable installation identifier (`lnx-` + UUID v4), generated once on
+    /// first launch and persisted via the atomic config write path. Sent as
+    /// `X-Hwid` only by subscriptions with `send_hwid: true` — never derived
+    /// from the subscription URL so rotating a token or changing a domain
+    /// does not make the provider see a new device.
+    #[serde(default)]
+    pub hwid: String,
 }
 
 /// Accept `address` if it parses as a bare IPv4/IPv6 literal or as a hostname.
@@ -1508,6 +1547,7 @@ impl Default for Settings {
             theme: default_theme(),
             logs: LogsConfig::default(),
             legacy_log_level: None,
+            hwid: String::new(),
         }
     }
 }
@@ -1573,6 +1613,23 @@ impl Config {
             }
             if let Err(e) = profile.validate_semantic() {
                 anyhow::bail!("Profile {num}: {e}");
+            }
+        }
+
+        for (idx, subscription) in self.subscriptions.iter().enumerate() {
+            if !subscription.send_hwid {
+                continue;
+            }
+
+            let hwid = subscription
+                .effective_hwid(&self.settings)
+                .unwrap_or_default();
+            if let Err(error) = validate_hwid(hwid) {
+                anyhow::bail!(
+                    "Subscription {} ({:?}): invalid HWID: {error}",
+                    idx + 1,
+                    subscription.name
+                );
             }
         }
 
@@ -1679,9 +1736,179 @@ impl Config {
     }
 }
 
+const MAX_HWID_LEN: usize = 256;
+
+fn validate_hwid(hwid: &str) -> anyhow::Result<()> {
+    if hwid.trim().is_empty() {
+        anyhow::bail!("must not be empty when send_hwid is enabled");
+    }
+    if hwid.len() > MAX_HWID_LEN {
+        anyhow::bail!("must not exceed {MAX_HWID_LEN} bytes");
+    }
+    hwid.parse::<ureq::http::HeaderValue>()
+        .map_err(|_| anyhow::anyhow!("must be a valid HTTP header value"))?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn settings_with_hwid() -> Settings {
+        Settings {
+            hwid: "lnx-installation-hwid".to_string(),
+            ..Default::default()
+        }
+    }
+
+    fn subscription_with_hwid(send_hwid: bool, hwid: Option<&str>) -> Subscription {
+        Subscription {
+            id: Uuid::new_v4(),
+            name: "Test subscription".to_string(),
+            url: "https://example.com/subscription".to_string(),
+            auto_update: SubscriptionAutoUpdate::Off,
+            last_updated: None,
+            next_auto_update: None,
+            retry_state: None,
+            send_hwid,
+            hwid: hwid.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn config_validate_accepts_effective_subscription_hwid() {
+        let mut config = Config::default();
+        config.settings.hwid = "lnx-installation-hwid".to_string();
+        config
+            .subscriptions
+            .push(subscription_with_hwid(true, None));
+        config.validate().unwrap();
+    }
+
+    #[test]
+    fn config_validate_rejects_empty_effective_subscription_hwid() {
+        let mut config = Config::default();
+        config
+            .subscriptions
+            .push(subscription_with_hwid(true, None));
+        let error = config.validate().unwrap_err().to_string();
+        assert!(error.contains("Subscription 1"), "got: {error}");
+        assert!(error.contains("must not be empty"), "got: {error}");
+    }
+
+    #[test]
+    fn config_validate_rejects_empty_subscription_hwid_override() {
+        let mut config = Config::default();
+        config.settings.hwid = "lnx-installation-hwid".to_string();
+        config
+            .subscriptions
+            .push(subscription_with_hwid(true, Some("")));
+        let error = config.validate().unwrap_err().to_string();
+        assert!(error.contains("must not be empty"), "got: {error}");
+    }
+
+    #[test]
+    fn config_validate_rejects_invalid_http_hwid_value() {
+        let mut config = Config::default();
+        config
+            .subscriptions
+            .push(subscription_with_hwid(true, Some("device\r\ninjected")));
+        let error = config.validate().unwrap_err().to_string();
+        assert!(error.contains("HTTP header value"), "got: {error}");
+    }
+
+    #[test]
+    fn config_validate_rejects_overlong_hwid() {
+        let mut config = Config::default();
+        let hwid = "a".repeat(MAX_HWID_LEN + 1);
+        config
+            .subscriptions
+            .push(subscription_with_hwid(true, Some(&hwid)));
+        let error = config.validate().unwrap_err().to_string();
+        assert!(error.contains("must not exceed"), "got: {error}");
+    }
+
+    #[test]
+    fn config_validate_ignores_unused_hwid() {
+        let mut config = Config::default();
+        config
+            .subscriptions
+            .push(subscription_with_hwid(false, Some("device\r\ninjected")));
+        config.validate().unwrap();
+    }
+
+    #[test]
+    fn effective_hwid_absent_send_hwid_sends_nothing() {
+        // Backward compat: `send_hwid` missing from JSON defaults to false.
+        let sub: Subscription =
+            serde_json::from_str(r#"{"name":"S","url":"https://e.com/s"}"#).unwrap();
+        assert!(!sub.send_hwid);
+        assert_eq!(sub.hwid, None);
+        assert_eq!(sub.effective_hwid(&settings_with_hwid()), None);
+    }
+
+    #[test]
+    fn subscription_serialization_omits_disabled_hwid_fields() {
+        let sub = subscription_with_hwid(false, None);
+        let json = serde_json::to_value(sub).unwrap();
+
+        assert!(json.get("send_hwid").is_none());
+        assert!(json.get("hwid").is_none());
+    }
+
+    #[test]
+    fn subscription_serialization_keeps_enabled_hwid_flag() {
+        let sub = subscription_with_hwid(true, None);
+        let json = serde_json::to_value(sub).unwrap();
+
+        assert_eq!(json.get("send_hwid"), Some(&serde_json::Value::Bool(true)));
+        assert!(json.get("hwid").is_none());
+    }
+
+    #[test]
+    fn effective_hwid_false_sends_nothing_even_with_override() {
+        let sub: Subscription = serde_json::from_str(
+            r#"{"name":"S","url":"https://e.com/s","send_hwid":false,"hwid":"custom"}"#,
+        )
+        .unwrap();
+        // The presence of `hwid` alone must not enable sending.
+        assert_eq!(sub.effective_hwid(&settings_with_hwid()), None);
+    }
+
+    #[test]
+    fn effective_hwid_true_falls_back_to_settings_hwid() {
+        let sub: Subscription =
+            serde_json::from_str(r#"{"name":"S","url":"https://e.com/s","send_hwid":true}"#)
+                .unwrap();
+        assert_eq!(
+            sub.effective_hwid(&settings_with_hwid()),
+            Some("lnx-installation-hwid"),
+        );
+    }
+
+    #[test]
+    fn effective_hwid_override_wins_over_settings() {
+        let sub: Subscription = serde_json::from_str(
+            r#"{"name":"S","url":"https://e.com/s","send_hwid":true,"hwid":"provider-registered-device-id"}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            sub.effective_hwid(&settings_with_hwid()),
+            Some("provider-registered-device-id"),
+        );
+    }
+
+    #[test]
+    fn effective_hwid_is_never_derived_from_url() {
+        let sub: Subscription = serde_json::from_str(
+            r#"{"name":"S","url":"https://e.com/token-rotated","send_hwid":true}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            sub.effective_hwid(&settings_with_hwid()),
+            Some("lnx-installation-hwid"),
+        );
+    }
 
     #[test]
     fn protocol_display() {
@@ -3496,6 +3723,8 @@ mod tests {
             last_updated: None,
             next_auto_update: None,
             retry_state: None,
+            send_hwid: false,
+            hwid: None,
         });
         cfg.settings.geo_routing.auto_update = GeoAutoUpdate::Every12h;
 

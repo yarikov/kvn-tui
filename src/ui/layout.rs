@@ -1370,6 +1370,8 @@ mod tests {
             last_updated: None,
             next_auto_update: None,
             retry_state: None,
+            send_hwid: false,
+            hwid: None,
         });
         model
     }
@@ -2171,6 +2173,8 @@ mod tests {
             last_updated: None,
             next_auto_update: None,
             retry_state: None,
+            send_hwid: false,
+            hwid: None,
         });
         model.selected = 0;
         insta::assert_snapshot!(snapshot_terminal(&model, 80, 20));
@@ -2444,6 +2448,8 @@ mod tests {
             last_updated: Some(last_updated),
             next_auto_update: None,
             retry_state: None,
+            send_hwid: false,
+            hwid: None,
         });
         model.selected = 0;
         insta::assert_snapshot!(snapshot_terminal(&model, 80, 20));
