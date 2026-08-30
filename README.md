@@ -155,7 +155,7 @@ kvn-tui setup --omarchy
 ```
 
 On **Omarchy 4 (Quattro)** this installs the standalone
-[omakvn](https://github.com/yarikov/omakvn) Quickshell bar plugin (`kvn.tui`):
+[omakvn](https://github.com/yarikov/omakvn) Quickshell bar plugin (`omakvn`):
 a shield icon with live connection state, a popup for picking profiles and
 toggling routing mode, geo region, kill switch, and auto-connect, plus a
 one-click VPN toggle. Left click opens the panel, right click toggles the VPN,
@@ -179,7 +179,7 @@ editing user configuration. Remove those backups after verification with:
 kvn-tui clean --omarchy
 ```
 
-This removes the backups, the `kvn.tui` plugin checkout, and its bar entry. It
+This removes the backups, the `omakvn` plugin checkout, and its bar entry. It
 does not remove the launcher, keybinding, window rule, or Omarchy 3 integration.
 
 ### Scripting and status bars

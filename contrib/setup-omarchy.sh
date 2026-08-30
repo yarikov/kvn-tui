@@ -227,12 +227,14 @@ append_marker_block() {
 
 plugin_dir_created=0
 legacy_plugin_staged=0
+legacy_plugin_target=""
 
 # Install or update the standalone Git-managed Quickshell plugin. Legacy
 # releases copied the QML files directly; stage that copy until the remote
 # install succeeds so a network failure cannot leave the user without it.
 install_omarchy_v4_plugin() {
-  local dir="$HOME/.config/omarchy/plugins/kvn.tui"
+  local dir="$HOME/.config/omarchy/plugins/omakvn"
+  local legacy_dir="$HOME/.config/omarchy/plugins/kvn.tui"
   local origin=""
 
   omarchy plugin add --help >/dev/null 2>&1 || {
@@ -245,12 +247,12 @@ install_omarchy_v4_plugin() {
     origin=$(git -C "$dir" remote get-url origin 2>/dev/null || true)
     case "$origin" in
     https://github.com/yarikov/omakvn | https://github.com/yarikov/omakvn.git | git@github.com:yarikov/omakvn.git)
-      echo "Updating the kvn.tui bar plugin from $OMAKVN_REPO..."
-      omarchy plugin update kvn.tui --yes
+      echo "Updating the omakvn bar plugin from $OMAKVN_REPO..."
+      omarchy plugin update omakvn --yes
       return 0
       ;;
     *)
-      echo "Error: kvn.tui is managed by a different Git repository: ${origin:-<unknown>}" >&2
+      echo "Error: omakvn is managed by a different Git repository: ${origin:-<unknown>}" >&2
       echo "Refusing to overwrite $dir." >&2
       return 2
       ;;
@@ -258,18 +260,29 @@ install_omarchy_v4_plugin() {
   fi
 
   if [[ -e $dir ]]; then
-    if ! jq -e '.id == "kvn.tui"' "$dir/manifest.json" >/dev/null 2>&1; then
+    if ! jq -e '.id == "omakvn"' "$dir/manifest.json" >/dev/null 2>&1; then
       echo "Error: refusing to replace unrecognized plugin directory: $dir" >&2
       return 2
     fi
-    echo "Migrating the embedded kvn.tui plugin to its standalone repository..."
+    echo "Migrating the embedded omakvn plugin to its standalone repository..."
     mv -- "$dir" "$V4_TRANSACTION_DIR/legacy-kvn.tui"
     legacy_plugin_staged=1
+    legacy_plugin_target=$dir
+  elif [[ -e $legacy_dir ]]; then
+    if ! jq -e '.id == "kvn.tui"' "$legacy_dir/manifest.json" >/dev/null 2>&1; then
+      echo "Error: refusing to replace unrecognized plugin directory: $legacy_dir" >&2
+      return 2
+    fi
+    echo "Migrating the kvn.tui plugin to the new omakvn ID..."
+    mv -- "$legacy_dir" "$V4_TRANSACTION_DIR/legacy-kvn.tui"
+    legacy_plugin_staged=1
+    legacy_plugin_target=$legacy_dir
+    plugin_dir_created=1
   else
     plugin_dir_created=1
   fi
 
-  echo "Installing the kvn.tui bar plugin from $OMAKVN_REPO..."
+  echo "Installing the omakvn bar plugin from $OMAKVN_REPO..."
   if omarchy plugin add "$OMAKVN_REPO" --yes; then
     return 0
   fi
@@ -284,10 +297,10 @@ install_omarchy_v4_plugin() {
 
   rm -rf -- "$dir"
   if (( legacy_plugin_staged )); then
-    mv -- "$V4_TRANSACTION_DIR/legacy-kvn.tui" "$dir"
+    mv -- "$V4_TRANSACTION_DIR/legacy-kvn.tui" "$legacy_plugin_target"
     legacy_plugin_staged=0
     plugin_dir_created=0
-    echo "Warning: remote plugin install failed; restored the existing kvn.tui plugin." >&2
+    echo "Warning: remote plugin install failed; restored the existing plugin." >&2
     return 0
   fi
 
@@ -333,11 +346,11 @@ $V4_TRANSACTION_DIR/bindings.lua $V4_HYPR_BINDINGS
 $V4_TRANSACTION_DIR/hyprland.lua $V4_HYPR_MAIN
 EOF
     if (( plugin_dir_created )); then
-      rm -rf -- "$HOME/.config/omarchy/plugins/kvn.tui"
+      rm -rf -- "$HOME/.config/omarchy/plugins/omakvn"
     fi
     if (( legacy_plugin_staged )) && [[ -d $V4_TRANSACTION_DIR/legacy-kvn.tui ]]; then
-      rm -rf -- "$HOME/.config/omarchy/plugins/kvn.tui"
-      mv -- "$V4_TRANSACTION_DIR/legacy-kvn.tui" "$HOME/.config/omarchy/plugins/kvn.tui"
+      rm -rf -- "$HOME/.config/omarchy/plugins/omakvn"
+      mv -- "$V4_TRANSACTION_DIR/legacy-kvn.tui" "$legacy_plugin_target"
     fi
     hyprctl reload >/dev/null 2>&1 || true
   }
@@ -360,7 +373,7 @@ EOF
   install_omarchy_v4_plugin || plugin_status=$?
   if (( plugin_status == 0 )); then
     plugin_installed=1
-    module='{"id":"kvn.tui"}'
+    module='{"id":"omakvn"}'
   elif (( plugin_status == 2 )); then
     return 1
   else
@@ -369,7 +382,7 @@ EOF
   tmp=$(mktemp "${shell_config}.tmp.XXXXXX")
   jq --argjson module "$module" '
     def entry_id: if type == "object" then (.id // "") else tostring end;
-    def kvn_entry: entry_id == "kvn-tui" or entry_id == "kvn.tui";
+    def kvn_entry: entry_id == "kvn-tui" or entry_id == "kvn.tui" or entry_id == "omakvn";
     .bar.layout.left = (.bar.layout.left // [])
     | .bar.layout.center = (.bar.layout.center // [])
     | .bar.layout.right = (.bar.layout.right // [])
@@ -396,10 +409,10 @@ EOF
   # no-op when the watcher already applied the shell.json change above.
   if (( plugin_installed )) && command -v omarchy-shell >/dev/null 2>&1; then
     timeout 15 omarchy-shell shell rescanPlugins >/dev/null 2>&1 || true
-    if timeout 15 omarchy bar put kvn.tui --before omarchy.bluetooth >/dev/null 2>&1; then
-      echo "Placed kvn.tui on the bar."
+    if timeout 15 omarchy bar put omakvn --before omarchy.bluetooth >/dev/null 2>&1; then
+      echo "Placed omakvn on the bar."
     else
-      echo "Note: omarchy-shell is not running; kvn.tui appears on the bar at next login."
+      echo "Note: omarchy-shell is not running; omakvn appears on the bar at next login."
     fi
   fi
 

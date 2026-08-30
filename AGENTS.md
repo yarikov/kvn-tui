@@ -40,7 +40,7 @@ The app does **not** implement VPN protocols itself. It is a configuration gener
 | `clipboard` | `src/tui_client/clipboard.rs` | System clipboard integration; auto-detects Wayland (`wl-paste` / `wl-copy`) or X11 (`xclip`, falls back to `xsel`); reads clipboard content and passes it to `parse_share_link` or the subscription fetcher |
 | `editor` | `src/tui_client/editor.rs` | Launch `$EDITOR` / `$VISUAL` on `profiles.json`, temporarily restore terminal |
 | `theme_watch` | `src/tui_client/theme_watch.rs` | Resolves `settings.theme` slug to a `Theme` (with `"omarchy"` sentinel falling back to `tokyo-night`); watches Omarchy 4's XDG state current-theme directory or the Omarchy 3 XDG config fallback and emits `Msg::ThemeChanged`; no-op when Omarchy isn't installed |
-| `omarchy plugin` | `https://github.com/yarikov/omakvn` | Standalone Quickshell bar plugin (`kvn.tui`) for Omarchy 4. `setup --omarchy` installs or updates its Git checkout in `~/.config/omarchy/plugins/kvn.tui/`; the main project owns the semantic IPC API and retains the legacy command-module fallback. |
+| `omarchy plugin` | `https://github.com/yarikov/omakvn` | Standalone Quickshell bar plugin (`omakvn`) for Omarchy 4. `setup --omarchy` installs or updates its Git checkout in `~/.config/omarchy/plugins/omakvn/`; the main project owns the semantic IPC API and retains the legacy command-module fallback. |
 
 ---
 

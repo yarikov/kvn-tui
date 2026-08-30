@@ -160,7 +160,7 @@ backup if the restart fails.
 
 The installer updates:
 
-- `~/.config/omarchy/plugins/kvn.tui/` — a Git-managed checkout of the
+- `~/.config/omarchy/plugins/omakvn/` — a Git-managed checkout of the
   standalone [omakvn](https://github.com/yarikov/omakvn) Quickshell plugin,
   installed when the shell plugin registry is available. The widget connects
   to the daemon's Unix socket (`$XDG_RUNTIME_DIR/kvn-tui.sock`) and exchanges
@@ -169,13 +169,13 @@ The installer updates:
   Existing embedded copies are migrated automatically. Without the plugin
   registry or when a fresh remote install fails, the installer falls back to
   a `command` bar module running `kvn-tui --waybar-status`;
-- `~/.config/omarchy/shell.json` — the `kvn.tui` bar entry (or the legacy
+- `~/.config/omarchy/shell.json` — the `omakvn` bar entry (or the legacy
   `kvn-tui` command module on fallback), inserted before `omarchy.bluetooth`;
 - `~/.config/hypr/bindings.lua` — optional launcher binding;
 - `~/.config/hypr/hyprland.lua` — floating-window rule.
 
 When `omarchy-shell` is running, the installer also triggers a plugin rescan
-and an idempotent `omarchy bar put kvn.tui` so the widget appears without a
+and an idempotent `omarchy bar put omakvn` so the widget appears without a
 re-login. Upgrades from the command-module integration replace the old entry.
 
 The selected shortcut is explicitly unbound before being assigned to kvn-tui.
@@ -206,6 +206,6 @@ only the backups created by kvn-tui with:
 kvn-tui clean --omarchy
 ```
 
-`clean --omarchy` also removes the `kvn.tui` checkout and its Omarchy 4 bar
+`clean --omarchy` also removes the `omakvn` checkout and its Omarchy 4 bar
 entry. It does not remove the launcher, keybinding, window rule, or undo the
 Omarchy 3 Waybar integration.
