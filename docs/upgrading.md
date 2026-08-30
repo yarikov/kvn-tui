@@ -3,6 +3,12 @@
 Upgrade kvn-tui through your usual package source. Review the applicable
 migration guides below when crossing a version that requires additional steps.
 
+## v0.27.0 on Omarchy 4
+
+Omarchy 4 users upgrading from an earlier kvn-tui release should follow the
+[v0.27.0 migration guide](migrations/v0.27.0.md) to install the standalone
+`yarikov.omakvn` bar plugin.
+
 ## v0.22.0 on Omarchy
 
 Omarchy users upgrading from an earlier kvn-tui release should follow the
