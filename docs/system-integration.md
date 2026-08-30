@@ -160,14 +160,15 @@ backup if the restart fails.
 
 The installer updates:
 
-- `~/.config/omarchy/plugins/kvn.tui/` — Quickshell bar module
-  (`manifest.json`, `Widget.qml`, `KvnService.qml`), installed when the shell
-  plugin registry is available. The widget connects to the daemon's Unix
-  socket (`$XDG_RUNTIME_DIR/kvn-tui.sock`) and exchanges NDJSON: snapshots
-  in, semantic commands (`ConnectProfile`, `Disconnect`, `SetRoutingMode`,
-  `SetGeoRegion`, `SetKillSwitch`, `SetAutoConnect`) out. Without the plugin
-  registry the installer falls back to a `command` bar module running
-  `kvn-tui --waybar-status`;
+- `~/.config/omarchy/plugins/kvn.tui/` — a Git-managed checkout of the
+  standalone [omakvn](https://github.com/yarikov/omakvn) Quickshell plugin,
+  installed when the shell plugin registry is available. The widget connects
+  to the daemon's Unix socket (`$XDG_RUNTIME_DIR/kvn-tui.sock`) and exchanges
+  NDJSON: snapshots in, semantic commands (`ConnectProfile`, `Disconnect`,
+  `SetRoutingMode`, `SetGeoRegion`, `SetKillSwitch`, `SetAutoConnect`) out.
+  Existing embedded copies are migrated automatically. Without the plugin
+  registry or when a fresh remote install fails, the installer falls back to
+  a `command` bar module running `kvn-tui --waybar-status`;
 - `~/.config/omarchy/shell.json` — the `kvn.tui` bar entry (or the legacy
   `kvn-tui` command module on fallback), inserted before `omarchy.bluetooth`;
 - `~/.config/hypr/bindings.lua` — optional launcher binding;
@@ -205,5 +206,6 @@ only the backups created by kvn-tui with:
 kvn-tui clean --omarchy
 ```
 
-`clean --omarchy` also removes the `kvn.tui` plugin directory. It does not
-remove the launcher or undo active Shell, Waybar, or Hyprland configuration.
+`clean --omarchy` also removes the `kvn.tui` checkout and its Omarchy 4 bar
+entry. It does not remove the launcher, keybinding, window rule, or undo the
+Omarchy 3 Waybar integration.

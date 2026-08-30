@@ -3,6 +3,7 @@ set -euo pipefail
 
 BACKUP_SUFFIX=".bak.before-kvn-tui"
 BACKUP_LIMIT=5
+OMAKVN_REPO="https://github.com/yarikov/omakvn.git"
 declare -A RUN_BACKUPS=()
 
 backup_file() {
@@ -225,43 +226,73 @@ append_marker_block() {
 }
 
 plugin_dir_created=0
+legacy_plugin_staged=0
 
-# Install the Quickshell bar plugin (Omarchy 4 "Quattro" with the shell
-# plugin registry). Plugin files come from KVN_TUI_PLUGIN_DIR (set by the
-# Rust installer, which embeds them) or from a sibling `omarchy-plugin/`
-# directory when the script runs straight from a git checkout. Returns
-# non-zero when the files or the plugin registry are unavailable — the
-# caller then falls back to the plain command bar module.
+# Install or update the standalone Git-managed Quickshell plugin. Legacy
+# releases copied the QML files directly; stage that copy until the remote
+# install succeeds so a network failure cannot leave the user without it.
 install_omarchy_v4_plugin() {
-  local script_dir source_dir name dir tmp
-  script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
-  source_dir="${KVN_TUI_PLUGIN_DIR:-$script_dir/../omarchy-plugin}"
-  for name in manifest.json Widget.qml KvnService.qml; do
-    [[ -f $source_dir/$name ]] || {
-      echo "Bar plugin files not found in $source_dir;" >&2
-      echo "falling back to the command bar module." >&2
-      return 1
-    }
-  done
+  local dir="$HOME/.config/omarchy/plugins/kvn.tui"
+  local origin=""
 
-  omarchy plugin list >/dev/null 2>&1 || {
+  omarchy plugin add --help >/dev/null 2>&1 || {
     echo "This Omarchy build lacks the shell plugin registry;" >&2
     echo "falling back to the command bar module." >&2
     return 1
   }
 
-  dir="$HOME/.config/omarchy/plugins/kvn.tui"
-  [[ -d $dir ]] || plugin_dir_created=1
-  echo "Installing the kvn.tui bar plugin to $dir..."
-  mkdir -p "$dir"
-  for name in manifest.json Widget.qml KvnService.qml; do
-    tmp=$(mktemp "${dir}/${name}.tmp.XXXXXX")
-    cp -- "$source_dir/$name" "$tmp"
-    chmod 0644 "$tmp"
-    mv -f -- "$tmp" "$dir/$name"
-  done
+  if [[ -d $dir/.git ]]; then
+    origin=$(git -C "$dir" remote get-url origin 2>/dev/null || true)
+    case "$origin" in
+    https://github.com/yarikov/omakvn | https://github.com/yarikov/omakvn.git | git@github.com:yarikov/omakvn.git)
+      echo "Updating the kvn.tui bar plugin from $OMAKVN_REPO..."
+      omarchy plugin update kvn.tui --yes
+      return 0
+      ;;
+    *)
+      echo "Error: kvn.tui is managed by a different Git repository: ${origin:-<unknown>}" >&2
+      echo "Refusing to overwrite $dir." >&2
+      return 2
+      ;;
+    esac
+  fi
 
-  return 0
+  if [[ -e $dir ]]; then
+    if ! jq -e '.id == "kvn.tui"' "$dir/manifest.json" >/dev/null 2>&1; then
+      echo "Error: refusing to replace unrecognized plugin directory: $dir" >&2
+      return 2
+    fi
+    echo "Migrating the embedded kvn.tui plugin to its standalone repository..."
+    mv -- "$dir" "$V4_TRANSACTION_DIR/legacy-kvn.tui"
+    legacy_plugin_staged=1
+  else
+    plugin_dir_created=1
+  fi
+
+  echo "Installing the kvn.tui bar plugin from $OMAKVN_REPO..."
+  if omarchy plugin add "$OMAKVN_REPO" --yes; then
+    return 0
+  fi
+
+  # `omarchy plugin add` may finish cloning and then fail only because no live
+  # shell is available for its final rescan. A valid checkout is installed and
+  # will be discovered on the next login, so accept that state.
+  if [[ -d $dir/.git ]] && omarchy plugin validate "$dir" >/dev/null 2>&1; then
+    echo "Plugin installed; Omarchy Shell will discover it at next login."
+    return 0
+  fi
+
+  rm -rf -- "$dir"
+  if (( legacy_plugin_staged )); then
+    mv -- "$V4_TRANSACTION_DIR/legacy-kvn.tui" "$dir"
+    legacy_plugin_staged=0
+    plugin_dir_created=0
+    echo "Warning: remote plugin install failed; restored the existing kvn.tui plugin." >&2
+    return 0
+  fi
+
+  echo "Remote plugin install failed; falling back to the command bar module." >&2
+  return 1
 }
 
 
@@ -304,6 +335,10 @@ EOF
     if (( plugin_dir_created )); then
       rm -rf -- "$HOME/.config/omarchy/plugins/kvn.tui"
     fi
+    if (( legacy_plugin_staged )) && [[ -d $V4_TRANSACTION_DIR/legacy-kvn.tui ]]; then
+      rm -rf -- "$HOME/.config/omarchy/plugins/kvn.tui"
+      mv -- "$V4_TRANSACTION_DIR/legacy-kvn.tui" "$HOME/.config/omarchy/plugins/kvn.tui"
+    fi
     hyprctl reload >/dev/null 2>&1 || true
   }
 
@@ -320,13 +355,15 @@ EOF
   trap cleanup_v4 EXIT
 
   echo "Adding kvn-tui module to Omarchy Shell..."
-  local module module_id plugin_installed=0 tmp
-  if install_omarchy_v4_plugin; then
+  local module plugin_installed=0 tmp
+  local plugin_status=0
+  install_omarchy_v4_plugin || plugin_status=$?
+  if (( plugin_status == 0 )); then
     plugin_installed=1
-    module_id="kvn.tui"
     module='{"id":"kvn.tui"}'
+  elif (( plugin_status == 2 )); then
+    return 1
   else
-    module_id="kvn-tui"
     module='{"id":"kvn-tui","type":"command","exec":"kvn-tui --waybar-status","interval":5,"tooltip":"kvn-tui VPN client","onClick":"omarchy-launch-kvn-tui"}'
   fi
   tmp=$(mktemp "${shell_config}.tmp.XXXXXX")
