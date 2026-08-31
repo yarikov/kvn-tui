@@ -78,15 +78,24 @@ append_atomic() {
 install_launcher() {
   local generation="$1"
   local launcher="$HOME/.local/bin/omarchy-launch-kvn-tui"
-  [[ -f $launcher ]] && { echo "Launcher script already present."; return; }
+  if (( generation < 4 )) && [[ -f $launcher ]]; then
+    echo "Launcher script already present."
+    return
+  fi
 
-  echo "Installing launcher script..."
+  echo "Installing or updating launcher script..."
   mkdir -p "$(dirname "$launcher")"
   local tmp
   tmp=$(mktemp "${launcher}.tmp.XXXXXX")
   if (( generation >= 4 )); then
     cat >"$tmp" <<'EOF'
 #!/bin/bash
+plugin_dir="${XDG_CONFIG_HOME:-$HOME/.config}/omarchy/plugins/yarikov.omakvn"
+if [[ -f "$plugin_dir/manifest.json" ]] && command -v omarchy-shell >/dev/null 2>&1; then
+  if [[ $(omarchy-shell shell summon yarikov.omakvn '{}' 2>/dev/null) == "ok" ]]; then
+    exit 0
+  fi
+fi
 exec omarchy-launch-or-focus-tui --app-id=org.omarchy.kvn-tui kvn-tui
 EOF
   else
@@ -97,7 +106,7 @@ exec omarchy-launch-or-focus "org.omarchy.kvn-tui" \
 EOF
   fi
   chmod 0755 "$tmp"
-  atomic_replace "$tmp" "$launcher"
+  replace_if_changed "$tmp" "$launcher"
 }
 
 detect_omarchy_major() {

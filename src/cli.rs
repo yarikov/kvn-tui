@@ -808,6 +808,9 @@ esac
         assert!(rules.contains(r#"o.window("^org\\.omarchy\\.kvn-tui$""#));
 
         let launcher = fs::read_to_string(home.join(".local/bin/omarchy-launch-kvn-tui")).unwrap();
+        assert!(launcher.contains("omarchy/plugins/yarikov.omakvn"));
+        assert!(launcher.contains("$plugin_dir/manifest.json"));
+        assert!(launcher.contains("omarchy-shell shell summon yarikov.omakvn '{}'"));
         assert!(launcher.contains("omarchy-launch-or-focus-tui"));
         assert!(launcher.contains("--app-id=org.omarchy.kvn-tui"));
         let shell_backups = backup_files(&omarchy.join("shell.json"));
@@ -846,6 +849,25 @@ esac
             .expect("legacy command module entry");
         assert_eq!(entry["exec"], "kvn-tui --waybar-status");
         assert!(!home.join(".config/omarchy/plugins/yarikov.omakvn").exists());
+    }
+
+    #[test]
+    fn omarchy_v4_installer_upgrades_existing_tui_launcher() {
+        let (root, home) = installer_fixture(4);
+        write_omarchy_v4_config(&home);
+        let launcher = home.join(".local/bin/omarchy-launch-kvn-tui");
+        fs::create_dir_all(launcher.parent().unwrap()).unwrap();
+        fs::write(
+            &launcher,
+            "#!/bin/bash\nexec omarchy-launch-or-focus-tui --app-id=org.omarchy.kvn-tui kvn-tui\n",
+        )
+        .unwrap();
+
+        assert_success(&run_installer(&root, &home, "n\n"));
+
+        let contents = fs::read_to_string(&launcher).unwrap();
+        assert!(contents.contains("omarchy-shell shell summon yarikov.omakvn '{}'"));
+        assert_eq!(backup_files(&launcher).len(), 1);
     }
 
     #[test]
