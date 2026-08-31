@@ -17,26 +17,23 @@ use crate::app::msg::{IpcCommand, Msg, StateSnapshot};
 const BROADCAST_WRITE_TIMEOUT: Duration = Duration::from_millis(200);
 
 /// Return the path to the Unix domain socket used for IPC.
-pub fn socket_path() -> std::path::PathBuf {
-    if let Some(dir) = std::env::var_os("XDG_RUNTIME_DIR") {
-        std::path::PathBuf::from(dir).join("kvn-tui.sock")
-    } else {
-        // getuid is async-signal-safe and has no preconditions; the unsafe is
-        // a libc-binding artefact, not a real invariant.
-        #[allow(unsafe_code)]
-        let uid = unsafe { libc::getuid() };
-        std::path::PathBuf::from("/tmp").join(format!("kvn-tui-{}.sock", uid))
-    }
+pub fn socket_path() -> anyhow::Result<std::path::PathBuf> {
+    let dir = dirs::runtime_dir().ok_or_else(|| {
+        anyhow::anyhow!("XDG_RUNTIME_DIR is not set; kvn-tui requires a desktop user session")
+    })?;
+    Ok(dir.join("kvn-tui.sock"))
 }
 
 /// Remove the socket file.
 pub fn cleanup_socket() {
-    let _ = std::fs::remove_file(socket_path());
+    if let Ok(path) = socket_path() {
+        let _ = std::fs::remove_file(path);
+    }
 }
 
 /// Check whether the daemon socket is accepting connections.
 pub fn is_daemon_running() -> bool {
-    UnixStream::connect(socket_path()).is_ok()
+    socket_path().is_ok_and(|path| UnixStream::connect(path).is_ok())
 }
 
 /// Poll for daemon readiness with exponential backoff (10ms → 320ms cap),
@@ -64,7 +61,7 @@ pub struct IpcServer {
 
 impl IpcServer {
     pub fn bind(tx: Sender<Msg>) -> anyhow::Result<Self> {
-        let path = socket_path();
+        let path = socket_path()?;
         if path.exists() {
             if UnixStream::connect(&path).is_ok() {
                 anyhow::bail!("kvn-tui daemon is already running at {}", path.display());
@@ -73,9 +70,7 @@ impl IpcServer {
                 .with_context(|| format!("Failed to remove stale socket {}", path.display()))?;
         }
         let listener = UnixListener::bind(&path)?;
-        // 0600: any local user knowing the socket path could otherwise send
-        // IpcCommand (Quit / Key / Paste). XDG_RUNTIME_DIR is typically 0700
-        // already, but the /tmp/kvn-tui-<uid>.sock fallback path is not.
+        // Defense in depth on top of the private 0700 runtime directory.
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))
             .context("Failed to chmod IPC socket")?;
         let clients: Arc<Mutex<Vec<UnixStream>>> = Arc::new(Mutex::new(Vec::new()));
@@ -166,7 +161,7 @@ pub struct IpcClient {
 
 impl IpcClient {
     pub fn connect() -> anyhow::Result<Self> {
-        let stream = UnixStream::connect(socket_path())?;
+        let stream = UnixStream::connect(socket_path()?)?;
         stream.set_nonblocking(false)?;
         Ok(Self { stream })
     }
@@ -329,7 +324,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let prev = std::env::var_os("XDG_RUNTIME_DIR");
         unsafe { std::env::set_var("XDG_RUNTIME_DIR", tmp.path()) };
-        let p = socket_path();
+        let p = socket_path().unwrap();
         assert!(p.starts_with(tmp.path()));
         assert_eq!(p.file_name().unwrap(), "kvn-tui.sock");
         unsafe {
@@ -341,20 +336,15 @@ mod tests {
     }
 
     #[test]
-    fn socket_path_falls_back_to_tmp_with_uid_when_no_xdg() {
+    fn socket_path_requires_xdg_runtime_dir() {
         let _guard = crate::test_helpers::ENV_LOCK.lock().unwrap();
-        let prev = std::env::var_os("XDG_RUNTIME_DIR");
-        unsafe { std::env::remove_var("XDG_RUNTIME_DIR") };
-        let p = socket_path();
-        assert!(p.starts_with("/tmp"));
-        let name = p.file_name().unwrap().to_string_lossy();
-        assert!(name.starts_with("kvn-tui-"));
-        assert!(name.ends_with(".sock"));
-        unsafe {
-            if let Some(v) = prev {
-                std::env::set_var("XDG_RUNTIME_DIR", v);
-            }
-        }
+        let _runtime = crate::test_helpers::EnvVarGuard::remove("XDG_RUNTIME_DIR");
+        let error = socket_path().unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("requires a desktop user session")
+        );
     }
 
     #[test]
@@ -366,7 +356,7 @@ mod tests {
 
         let (server_tx, _server_rx) = channel::<Msg>();
         let _server = IpcServer::bind(server_tx).expect("server bind");
-        let mode = std::fs::metadata(socket_path())
+        let mode = std::fs::metadata(socket_path().unwrap())
             .unwrap()
             .permissions()
             .mode()
@@ -393,7 +383,7 @@ mod tests {
         };
 
         assert!(err.to_string().contains("already running"));
-        assert!(UnixStream::connect(socket_path()).is_ok());
+        assert!(UnixStream::connect(socket_path().unwrap()).is_ok());
 
         cleanup_socket();
         unsafe { std::env::remove_var("XDG_RUNTIME_DIR") };
@@ -404,12 +394,13 @@ mod tests {
         let _guard = crate::test_helpers::ENV_LOCK.lock().unwrap();
         let tmp = tempfile::tempdir().unwrap();
         unsafe { std::env::set_var("XDG_RUNTIME_DIR", tmp.path()) };
-        std::fs::write(socket_path(), b"stale").unwrap();
+        crate::paths::ensure_runtime_dir().unwrap();
+        std::fs::write(socket_path().unwrap(), b"stale").unwrap();
 
         let (server_tx, _server_rx) = channel::<Msg>();
         let _server = IpcServer::bind(server_tx).expect("replace stale socket");
 
-        assert!(UnixStream::connect(socket_path()).is_ok());
+        assert!(UnixStream::connect(socket_path().unwrap()).is_ok());
 
         cleanup_socket();
         unsafe { std::env::remove_var("XDG_RUNTIME_DIR") };
@@ -458,7 +449,7 @@ mod tests {
         let (server_tx, server_rx) = channel::<Msg>();
         let _server = IpcServer::bind(server_tx).expect("server bind");
 
-        let mut stream = UnixStream::connect(socket_path()).expect("client connect");
+        let mut stream = UnixStream::connect(socket_path().unwrap()).expect("client connect");
         stream
             .write_all(b"this is not json\n")
             .expect("write garbage");

@@ -1,5 +1,38 @@
 use std::path::PathBuf;
 
+/// Return the private directory used for secret runtime files.
+pub fn runtime_dir() -> anyhow::Result<PathBuf> {
+    let base = dirs::runtime_dir().ok_or_else(|| {
+        anyhow::anyhow!("XDG_RUNTIME_DIR is not set; kvn-tui requires a desktop user session")
+    })?;
+    Ok(base.join("kvn-tui"))
+}
+
+/// Create and validate the private runtime directory with owner-only access.
+pub fn ensure_runtime_dir() -> anyhow::Result<PathBuf> {
+    use anyhow::{Context, ensure};
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+
+    let dir = runtime_dir()?;
+    std::fs::create_dir_all(&dir)
+        .with_context(|| format!("Failed to create runtime directory {:?}", dir))?;
+    let metadata = std::fs::symlink_metadata(&dir)
+        .with_context(|| format!("Failed to inspect runtime directory {:?}", dir))?;
+    ensure!(
+        metadata.file_type().is_dir(),
+        "Runtime path is not a directory"
+    );
+    #[allow(unsafe_code)]
+    let uid = unsafe { libc::getuid() };
+    ensure!(
+        metadata.uid() == uid,
+        "Runtime directory is not owned by the current user"
+    );
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700))
+        .with_context(|| format!("Failed to protect runtime directory {:?}", dir))?;
+    Ok(dir)
+}
+
 /// Return the application configuration directory (`~/.config/kvn-tui`).
 ///
 /// When running under `sudo` the calling user's home directory is used
@@ -29,25 +62,15 @@ pub fn app_log_path() -> PathBuf {
 }
 
 /// Return the path to the temporary sing-box JSON configuration.
-pub fn temp_singbox_config_path() -> PathBuf {
-    if let Some(dir) = dirs::runtime_dir() {
-        dir.join("kvn-tui-singbox.json")
-    } else if let Some(dir) = dirs::cache_dir() {
-        dir.join("kvn-tui/singbox.json")
-    } else {
-        PathBuf::from("/tmp/kvn-tui-singbox.json")
-    }
+pub fn temp_singbox_config_path() -> anyhow::Result<PathBuf> {
+    Ok(runtime_dir()?.join("singbox.json"))
 }
 
 /// Return the path to a temporary sing-box config used for profile latency
 /// tests. Each test gets its own file keyed by profile UUID so concurrent
 /// tests don't collide.
-pub fn temp_test_config_path(id: &uuid::Uuid) -> PathBuf {
-    if let Some(dir) = dirs::runtime_dir() {
-        dir.join(format!("kvn-test-{id}.json"))
-    } else {
-        PathBuf::from(format!("/tmp/kvn-test-{id}.json"))
-    }
+pub fn temp_test_config_path(id: &uuid::Uuid) -> anyhow::Result<PathBuf> {
+    Ok(runtime_dir()?.join(format!("test-{id}.json")))
 }
 
 /// Return the directory for geo rule-set databases.
@@ -80,6 +103,7 @@ pub fn ensure_config_dirs() -> anyhow::Result<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::os::unix::fs::PermissionsExt;
 
     #[test]
     fn singbox_log_path_is_not_empty() {
@@ -97,8 +121,52 @@ mod tests {
 
     #[test]
     fn temp_singbox_config_path_is_not_empty() {
-        let path = temp_singbox_config_path();
+        let _guard = crate::test_helpers::ENV_LOCK.lock().unwrap();
+        let root = tempfile::tempdir().unwrap();
+        let _runtime = crate::test_helpers::EnvVarGuard::set("XDG_RUNTIME_DIR", root.path());
+        let path = temp_singbox_config_path().unwrap();
         assert!(!path.as_os_str().is_empty());
+    }
+
+    #[test]
+    fn runtime_directory_requires_xdg_runtime_dir() {
+        let _guard = crate::test_helpers::ENV_LOCK.lock().unwrap();
+        let _runtime = crate::test_helpers::EnvVarGuard::remove("XDG_RUNTIME_DIR");
+
+        let error = runtime_dir().unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("requires a desktop user session")
+        );
+    }
+
+    #[test]
+    fn runtime_directory_is_private() {
+        let _guard = crate::test_helpers::ENV_LOCK.lock().unwrap();
+        let root = tempfile::tempdir().unwrap();
+        let _runtime = crate::test_helpers::EnvVarGuard::set("XDG_RUNTIME_DIR", root.path());
+        let expected = root.path().join("kvn-tui");
+        std::fs::create_dir(&expected).unwrap();
+        std::fs::set_permissions(&expected, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let dir = ensure_runtime_dir().unwrap();
+
+        assert_eq!(dir, expected);
+        assert_eq!(
+            std::fs::metadata(dir).unwrap().permissions().mode() & 0o777,
+            0o700
+        );
+    }
+
+    #[test]
+    fn runtime_directory_rejects_symlink() {
+        let _guard = crate::test_helpers::ENV_LOCK.lock().unwrap();
+        let root = tempfile::tempdir().unwrap();
+        let target = tempfile::tempdir().unwrap();
+        let _runtime = crate::test_helpers::EnvVarGuard::set("XDG_RUNTIME_DIR", root.path());
+        std::os::unix::fs::symlink(target.path(), root.path().join("kvn-tui")).unwrap();
+
+        assert!(ensure_runtime_dir().is_err());
     }
 
     #[test]

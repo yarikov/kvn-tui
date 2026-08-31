@@ -275,16 +275,19 @@ fn check_daemon() -> Vec<Check> {
         )),
     }
 
-    if crate::ipc::is_daemon_running() {
-        checks.push(Check::pass(format!(
+    match crate::ipc::socket_path() {
+        Err(error) => checks.push(Check::failure(
+            format!("daemon IPC path is unavailable: {error}"),
+            "Run kvn-tui from a desktop user session with XDG_RUNTIME_DIR set.",
+        )),
+        Ok(path) if crate::ipc::is_daemon_running() => checks.push(Check::pass(format!(
             "daemon IPC socket is reachable: {}",
-            crate::ipc::socket_path().display()
-        )));
-    } else {
-        checks.push(Check::warning(
+            path.display()
+        ))),
+        Ok(_) => checks.push(Check::warning(
             "daemon IPC socket is not reachable",
             "Start it with `systemctl --user start kvn-tui.service`; kvn-tui can also start it on demand.",
-        ));
+        )),
     }
     checks
 }

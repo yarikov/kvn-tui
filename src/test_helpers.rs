@@ -44,6 +44,12 @@ impl EnvVarGuard {
         unsafe { std::env::set_var(key, value) };
         Self { key, previous }
     }
+
+    pub fn remove(key: &'static str) -> Self {
+        let previous = std::env::var_os(key);
+        unsafe { std::env::remove_var(key) };
+        Self { key, previous }
+    }
 }
 
 impl Drop for EnvVarGuard {

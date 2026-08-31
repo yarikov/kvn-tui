@@ -182,7 +182,7 @@ The **TUI client** (`tui_client.rs`) additionally spawns:
 
 ### sing-box Config Generation
 - `singbox::config::generate_config` builds a complete sing-box 1.12+ JSON object from a `Profile` and `Settings`.
-- The config is written to a temp file (`/tmp/kvn-tui-singbox.json` or `$XDG_RUNTIME_DIR`), validated with `sing-box check`, and only then is `sing-box run` spawned.
+- The config is written atomically with mode `0600` to `$XDG_RUNTIME_DIR/kvn-tui/singbox.json`, validated with `sing-box check`, and only then is `sing-box run` spawned. The private `kvn-tui/` runtime directory has mode `0700`; a desktop user session with `XDG_RUNTIME_DIR` is required.
 - If the process exits immediately, stderr is captured and surfaced to the user.
 - `build_outbound(profile)` dispatches to a per-protocol builder and returns `Vec<serde_json::Value>` (most protocols return one outbound; ShadowTLS returns two — a `shadowtls` wrapper tagged `shadowtls-wrap` plus a `shadowsocks` detour tagged `proxy`).
 - Shared helpers: `build_tls_block` (TLS + ECH + REALITY), `build_transport_block` (WebSocket / gRPC / HTTP upgrade). No deprecated sing-box fields (no `obfs_password`, no `aes-128-cfb`, no top-level `dns.fakeip`, no WireGuard outbound).
@@ -294,9 +294,9 @@ If you need to add a new side effect from `update`, add a new `Effect` variant a
 | Profiles & settings | `~/.config/kvn-tui/profiles.json` |
 | Geo rule-sets | `~/.config/kvn-tui/geo/` |
 | sing-box logs | `~/.config/kvn-tui/logs/sing-box.log` |
-| Temp sing-box config | `$XDG_RUNTIME_DIR/kvn-tui-singbox.json` or `/tmp/kvn-tui-singbox.json` |
+| Temp sing-box config | `$XDG_RUNTIME_DIR/kvn-tui/singbox.json` |
 | Runtime state (waybar) | `~/.config/kvn-tui/state.json` |
-| IPC socket (daemon ↔ TUI) | `~/.config/kvn-tui/kvn-tui.sock` or `$XDG_RUNTIME_DIR/kvn-tui.sock` |
+| IPC socket (daemon ↔ TUI) | `$XDG_RUNTIME_DIR/kvn-tui.sock` |
 
 ---
 

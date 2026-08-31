@@ -765,7 +765,8 @@ fn write_test_config(
     socks_port: u16,
 ) -> anyhow::Result<std::path::PathBuf> {
     let config = crate::singbox::config::generate_test_config(profile, socks_port)?;
-    let path = crate::paths::temp_test_config_path(&id);
+    crate::paths::ensure_runtime_dir()?;
+    let path = crate::paths::temp_test_config_path(&id)?;
     crate::atomic_write::write(&path, serde_json::to_string(&config)?.as_bytes())?;
     Ok(path)
 }

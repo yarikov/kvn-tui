@@ -195,5 +195,11 @@ upgrade kvn-tui instead of downgrading the version manually.
 | Application log | `~/.config/kvn-tui/logs/app.log` |
 | sing-box log | `~/.config/kvn-tui/logs/sing-box.log` |
 | Waybar and recovery state | `~/.config/kvn-tui/state.json` |
-| IPC socket | `$XDG_RUNTIME_DIR/kvn-tui.sock` or `/tmp/kvn-tui-<uid>.sock` |
-| Generated sing-box config | `$XDG_RUNTIME_DIR/kvn-tui-singbox.json`, `$XDG_CACHE_HOME/kvn-tui/singbox.json`, or `/tmp/kvn-tui-singbox.json` |
+| IPC socket | `$XDG_RUNTIME_DIR/kvn-tui.sock` |
+| Generated sing-box config | `$XDG_RUNTIME_DIR/kvn-tui/singbox.json` |
+
+The application-owned runtime directory is created with mode `0700`; generated
+sing-box configs and the IPC socket use mode `0600`. No secret-bearing config is
+written directly into the shared `/tmp` namespace. `XDG_RUNTIME_DIR` is required;
+kvn-tui fails with a clear error outside a desktop user session instead of
+falling back to a shared or persistent location.
