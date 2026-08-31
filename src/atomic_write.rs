@@ -1,6 +1,6 @@
 use std::fs;
 use std::io::Write;
-use std::os::unix::fs::PermissionsExt;
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::Path;
 
 use anyhow::{Context, Result};
@@ -22,12 +22,16 @@ pub fn write(dest: &Path, data: &[u8]) -> Result<()> {
     let temp = dir.join(format!("{}.tmp", name.to_string_lossy()));
 
     {
-        let mut file = fs::File::create(&temp)
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(&temp)
             .with_context(|| format!("Failed to create temp file {:?}", temp))?;
-        // 0600 on the temp file so the rename preserves owner-only access on
-        // the destination — `profiles.json` carries credentials (VLESS UUIDs,
-        // Trojan/SS passwords, REALITY public keys) that must not be readable
-        // by other local users.
+        // `mode` applies at creation time, avoiding a window where a new
+        // secret-bearing file has umask-derived permissions. chmod as well so
+        // a pre-existing temp file from an interrupted write is tightened.
         file.set_permissions(fs::Permissions::from_mode(0o600))
             .with_context(|| format!("Failed to chmod temp file {:?}", temp))?;
         file.write_all(data)

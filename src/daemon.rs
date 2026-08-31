@@ -718,9 +718,7 @@ fn run_test(profile: &crate::config::profile::Profile, id: uuid::Uuid) -> anyhow
         listener.local_addr()?.port()
     };
 
-    let config = crate::singbox::config::generate_test_config(profile, socks_port)?;
-    let config_path = crate::paths::temp_test_config_path(&id);
-    std::fs::write(&config_path, serde_json::to_string(&config)?)?;
+    let config_path = write_test_config(profile, id, socks_port)?;
 
     let singbox_bin = std::env::var("SING_BOX_PATH").unwrap_or_else(|_| "sing-box".to_string());
     let mut child = Command::new(&singbox_bin)
@@ -759,6 +757,17 @@ fn run_test(profile: &crate::config::profile::Profile, id: uuid::Uuid) -> anyhow
     let result = socks5_connect_latency(&addr);
     cleanup(&mut child);
     result
+}
+
+fn write_test_config(
+    profile: &crate::config::profile::Profile,
+    id: uuid::Uuid,
+    socks_port: u16,
+) -> anyhow::Result<std::path::PathBuf> {
+    let config = crate::singbox::config::generate_test_config(profile, socks_port)?;
+    let path = crate::paths::temp_test_config_path(&id);
+    crate::atomic_write::write(&path, serde_json::to_string(&config)?.as_bytes())?;
+    Ok(path)
 }
 
 /// Tunnel through the SOCKS5 proxy at `addr` to `connectivitycheck.gstatic.com:80`,
@@ -1213,13 +1222,33 @@ fn spawn_signal_handler(tx: Sender<Msg>) -> Result<()> {
 mod tests {
     use super::{
         ProcessSlot, ServiceRefreshResult, finalize_geo_result, handshake_protocols,
-        lock_process_slot, log_prune_due, poll_process_exit,
+        lock_process_slot, log_prune_due, poll_process_exit, write_test_config,
     };
     use crate::app::msg::{GeoResult, Msg};
     use crate::config::profile::Protocol;
     use crate::singbox::process_handle::ProcessHandle;
+    use std::os::unix::fs::PermissionsExt;
     use std::sync::{Arc, Mutex};
     use std::time::{Duration, Instant};
+
+    #[test]
+    fn latency_test_config_is_private() {
+        let _guard = crate::test_helpers::ENV_LOCK.lock().unwrap();
+        let runtime = tempfile::tempdir().unwrap();
+        let _runtime = crate::test_helpers::EnvVarGuard::set("XDG_RUNTIME_DIR", runtime.path());
+        let profile = crate::config::profile::Profile::new_vless(
+            "Test".into(),
+            "1.2.3.4".into(),
+            443,
+            "secret-uuid".into(),
+        );
+        let path = write_test_config(&profile, uuid::Uuid::new_v4(), 1080).unwrap();
+
+        assert_eq!(
+            std::fs::metadata(path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+    }
 
     #[test]
     fn log_prune_is_due_initially_and_after_twenty_four_hours() {
