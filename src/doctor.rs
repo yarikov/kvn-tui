@@ -10,7 +10,11 @@ use anyhow::Result;
 const MIN_SINGBOX_VERSION: (u64, u64, u64) = (1, 12, 0);
 const USER_UNIT: &str = "kvn-tui.service";
 const KILLSWITCH_HELPER: &str = "/usr/lib/kvn-tui/killswitch-helper.sh";
-const POLKIT_DNS_ACTION: &str = "org.freedesktop.resolve1.set-dns-servers";
+const POLKIT_DNS_ACTIONS: [&str; 3] = [
+    "org.freedesktop.resolve1.set-dns-servers",
+    "org.freedesktop.resolve1.set-domains",
+    "org.freedesktop.resolve1.set-default-route",
+];
 const OMAKVN_PLUGIN_ID: &str = "yarikov.omakvn";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -330,10 +334,45 @@ fn check_clipboard() -> Check {
 }
 
 fn check_killswitch() -> Check {
-    if Path::new(KILLSWITCH_HELPER).is_file() {
-        Check::pass("kill switch helper is installed")
-    } else {
-        Check::optional("kill switch is not installed (optional)")
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+
+    let path = Path::new(KILLSWITCH_HELPER);
+    if !path.is_file() {
+        return Check::optional("kill switch is not installed (optional)");
+    }
+    let Ok(metadata) = path.metadata() else {
+        return Check::warning(
+            "kill switch helper metadata could not be read",
+            "Reinstall it with `sudo kvn-tui setup --killswitch`.",
+        );
+    };
+    let mode = metadata.permissions().mode() & 0o777;
+    if metadata.uid() != 0 || mode & 0o022 != 0 {
+        return Check::warning(
+            format!(
+                "kill switch helper has unsafe ownership or mode (uid {}, {:03o})",
+                metadata.uid(),
+                mode
+            ),
+            "Reinstall it with `sudo kvn-tui setup --killswitch`.",
+        );
+    }
+
+    match Command::new("sudo")
+        .args(["-n", KILLSWITCH_HELPER, "check"])
+        .output()
+    {
+        Ok(output) if output.status.success() => {
+            Check::pass("kill switch helper and passwordless authorization are active")
+        }
+        Ok(_) => Check::warning(
+            "kill switch helper is installed but passwordless authorization is unavailable",
+            "Run `sudo kvn-tui setup --killswitch`, then log out and back in.",
+        ),
+        Err(_) => Check::warning(
+            "kill switch helper is installed but `sudo` could not be executed",
+            "Install sudo and run `sudo kvn-tui setup --killswitch`.",
+        ),
     }
 }
 
@@ -344,35 +383,40 @@ fn check_polkit() -> Check {
             "Run `kvn-tui doctor` again or inspect polkit with `sudo kvn-tui setup --polkit`.",
         );
     };
-    let output = Command::new("pkcheck")
-        .args(["--action-id", POLKIT_DNS_ACTION, "--process", &identity])
-        .output();
-    let Ok(output) = output else {
-        return Check::warning(
-            "`pkcheck` is unavailable, so polkit authorization could not be checked",
-            "Install the `polkit` package and run `kvn-tui doctor` again.",
-        );
-    };
+    for action in POLKIT_DNS_ACTIONS {
+        let output = Command::new("pkcheck")
+            .args(["--action-id", action, "--process", &identity])
+            .output();
+        let Ok(output) = output else {
+            return Check::warning(
+                "`pkcheck` is unavailable, so polkit authorization could not be checked",
+                "Install the `polkit` package and run `kvn-tui doctor` again.",
+            );
+        };
 
-    match output.status.code() {
-        Some(0) => Check::pass("polkit authorization for DNS changes is active"),
-        // 1 means denied. 2 means authorization would require interaction;
-        // doctor deliberately never opens an authentication prompt.
-        Some(1 | 2) => Check::warning(
-            "passwordless polkit authorization for DNS changes is not active (recommended)",
-            "Run `sudo kvn-tui setup --polkit`.",
-        ),
-        _ => {
-            let error = String::from_utf8_lossy(&output.stderr);
-            Check::warning(
-                format!(
-                    "polkit authorization could not be checked: {}",
-                    error.trim()
-                ),
-                "Verify that polkit is running, then run `kvn-tui doctor` again.",
-            )
+        match output.status.code() {
+            Some(0) => {}
+            // 1 means denied. 2 means authorization would require interaction;
+            // doctor deliberately never opens an authentication prompt.
+            Some(1 | 2) => {
+                return Check::warning(
+                    format!("passwordless polkit authorization is missing for {action}"),
+                    "Run `sudo kvn-tui setup --polkit`, then log out and back in.",
+                );
+            }
+            _ => {
+                let error = String::from_utf8_lossy(&output.stderr);
+                return Check::warning(
+                    format!(
+                        "polkit authorization for {action} could not be checked: {}",
+                        error.trim()
+                    ),
+                    "Verify that polkit is running, then run `kvn-tui doctor` again.",
+                );
+            }
         }
     }
+    Check::pass("all required polkit DNS authorizations are active")
 }
 
 /// Build the non-racy `PID,START_TIME,UID` identity recommended by pkcheck.
@@ -674,7 +718,7 @@ mod tests {
         assert_eq!(check.level, Level::Warning);
         assert_eq!(
             check.remedy.as_deref(),
-            Some("Run `sudo kvn-tui setup --polkit`.")
+            Some("Run `sudo kvn-tui setup --polkit`, then log out and back in.")
         );
         executable(dir.path(), "pkcheck", "echo unavailable >&2; exit 127");
         assert_eq!(check_polkit().level, Level::Warning);

@@ -3,7 +3,7 @@
 //! (`kvn-tui-killswitch.service`) that runs a wrapped `nft -f` at boot. This
 //! module shells out to a helper script installed at
 //! `/usr/lib/kvn-tui/killswitch-helper.sh` (via `sudo -n`, NOPASSWD for the
-//! `network` group) to enable/disable the unit and to add/remove handshake
+//! dedicated `kvn-tui` group) to enable/disable the unit and add/remove handshake
 //! exceptions while sing-box is establishing the VPN tunnel.
 //!
 //! See `contrib/setup-killswitch.sh` for the one-time setup that the user
