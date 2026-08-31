@@ -1,4 +1,3 @@
-use std::fs;
 use std::io::{BufRead, BufReader, Read};
 use std::path::PathBuf;
 use std::process::{ChildStderr, Command, Stdio};
@@ -27,11 +26,8 @@ fn singbox_binary() -> &'static str {
 fn write_config(profile: &Profile, settings: &Settings, geo: &GeoAvailability) -> Result<PathBuf> {
     let config =
         generate_config(profile, settings, geo).context("Failed to generate sing-box config")?;
-    let path = crate::paths::temp_singbox_config_path();
-
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
-    }
+    crate::paths::ensure_runtime_dir()?;
+    let path = crate::paths::temp_singbox_config_path()?;
 
     crate::atomic_write::write(&path, serde_json::to_string_pretty(&config)?.as_bytes())
         .with_context(|| format!("Failed to write config to {:?}", path))?;
@@ -159,6 +155,7 @@ fn spawn_stderr_drain(stderr: ChildStderr) {
 mod tests {
     use super::*;
     use crate::config::profile::Profile;
+    use std::fs;
     use std::os::unix::fs::PermissionsExt;
 
     #[test]
