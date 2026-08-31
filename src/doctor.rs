@@ -11,6 +11,7 @@ const MIN_SINGBOX_VERSION: (u64, u64, u64) = (1, 12, 0);
 const USER_UNIT: &str = "kvn-tui.service";
 const KILLSWITCH_HELPER: &str = "/usr/lib/kvn-tui/killswitch-helper.sh";
 const POLKIT_DNS_ACTION: &str = "org.freedesktop.resolve1.set-dns-servers";
+const OMAKVN_PLUGIN_ID: &str = "yarikov.omakvn";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Level {
@@ -391,9 +392,35 @@ fn proc_start_time(stat: &str) -> Option<&str> {
 
 fn check_omarchy() -> Check {
     match crate::omarchy::detect_omarchy_theme() {
+        Some(_) if omarchy_v4_detected() && !omakvn_plugin_installed() => Check::warning(
+            format!("Omarchy 4 detected; {OMAKVN_PLUGIN_ID} plugin is not installed"),
+            "Run `kvn-tui setup --omarchy` to install the Omarchy Shell plugin.",
+        ),
         Some(theme) => Check::pass(format!("Omarchy detected; active theme: {theme}")),
         None => Check::optional("Omarchy was not detected (optional)"),
     }
+}
+
+fn omarchy_v4_detected() -> bool {
+    dirs::state_dir().is_some_and(|state| state.join("omarchy/current/theme.name").is_file())
+}
+
+fn omakvn_plugin_installed() -> bool {
+    let Some(manifest) = dirs::config_dir().map(|config| {
+        config
+            .join("omarchy/plugins")
+            .join(OMAKVN_PLUGIN_ID)
+            .join("manifest.json")
+    }) else {
+        return false;
+    };
+    let Ok(raw) = std::fs::read_to_string(manifest) else {
+        return false;
+    };
+    serde_json::from_str::<serde_json::Value>(&raw)
+        .ok()
+        .and_then(|manifest| manifest.get("id")?.as_str().map(str::to_owned))
+        .is_some_and(|id| id == OMAKVN_PLUGIN_ID)
 }
 
 #[cfg(test)]
@@ -597,6 +624,38 @@ mod tests {
         executable(dir.path(), "wl-paste", "exit 0");
         executable(dir.path(), "wl-copy", "exit 0");
         assert_eq!(check_clipboard().level, Level::Pass);
+    }
+
+    #[test]
+    fn omarchy_four_check_requires_omakvn_plugin() {
+        let _lock = crate::test_helpers::ENV_LOCK.lock().unwrap();
+        let state = tempfile::tempdir().unwrap();
+        let config = tempfile::tempdir().unwrap();
+        let _state = EnvGuard::set("XDG_STATE_HOME", state.path());
+        let _config = EnvGuard::set("XDG_CONFIG_HOME", config.path());
+        let current = state.path().join("omarchy/current");
+        std::fs::create_dir_all(&current).unwrap();
+        std::fs::write(current.join("theme.name"), "tokyo-night\n").unwrap();
+
+        let missing = check_omarchy();
+        assert_eq!(missing.level, Level::Warning);
+        assert!(missing.message.contains(OMAKVN_PLUGIN_ID));
+        assert_eq!(
+            missing.remedy.as_deref(),
+            Some("Run `kvn-tui setup --omarchy` to install the Omarchy Shell plugin.")
+        );
+
+        let plugin = config.path().join("omarchy/plugins").join(OMAKVN_PLUGIN_ID);
+        std::fs::create_dir_all(&plugin).unwrap();
+        std::fs::write(
+            plugin.join("manifest.json"),
+            format!(r#"{{"id":"{OMAKVN_PLUGIN_ID}"}}"#),
+        )
+        .unwrap();
+
+        let installed = check_omarchy();
+        assert_eq!(installed.level, Level::Pass);
+        assert!(installed.message.contains("active theme: tokyo-night"));
     }
 
     #[test]
