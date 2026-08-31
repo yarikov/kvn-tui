@@ -81,74 +81,90 @@ enum Command {
         ArgGroup::new("targets")
             .required(true)
             .multiple(true)
-            .args(["omarchy"])
+            .args(["omarchy", "polkit", "killswitch"])
     ))]
     Clean {
         /// Remove backup files created by `setup --omarchy`.
-        #[arg(long)]
+        #[arg(long, conflicts_with_all = ["polkit", "killswitch"])]
         omarchy: bool,
+
+        /// Remove the optional passwordless DNS polkit rule.
+        #[arg(long)]
+        polkit: bool,
+
+        /// Disable and remove the nftables-based kill switch.
+        #[arg(long)]
+        killswitch: bool,
     },
+}
+
+/// Run a trusted, compile-time embedded shell script without materializing it
+/// in a predictable temporary file. `bash -c` preserves the caller's stdin,
+/// which the interactive Omarchy installer needs for its prompts.
+fn run_embedded_script(name: &str, script: &str, args: &[&str]) -> Result<()> {
+    let status = std::process::Command::new("bash")
+        .arg("-c")
+        .arg(script)
+        .arg(name)
+        .args(args)
+        .status()
+        .with_context(|| format!("failed to run {name}"))?;
+    if !status.success() {
+        anyhow::bail!("{name} exited with status {status}");
+    }
+    Ok(())
 }
 
 /// Run the embedded Omarchy integration installer script.
 fn install_omarchy() -> Result<()> {
-    let script = include_str!("../contrib/setup-omarchy.sh");
-    let tmp = std::env::temp_dir().join("kvn-tui-setup-omarchy.sh");
-    std::fs::write(&tmp, script)?;
-    let status = std::process::Command::new("bash").arg(&tmp).status()?;
-    std::fs::remove_file(&tmp).ok();
-    if !status.success() {
-        anyhow::bail!("setup-omarchy.sh exited with status {}", status);
-    }
-    Ok(())
+    run_embedded_script(
+        "setup-omarchy.sh",
+        include_str!("../contrib/setup-omarchy.sh"),
+        &[],
+    )
 }
 
 /// Run the embedded Omarchy integration cleanup script.
 fn clean_omarchy() -> Result<()> {
-    let script = include_str!("../contrib/clean-omarchy.sh");
-    let tmp = std::env::temp_dir().join("kvn-tui-clean-omarchy.sh");
-    std::fs::write(&tmp, script)?;
-    let status = std::process::Command::new("bash")
-        .arg(&tmp)
-        .status()
-        .context("failed to run clean-omarchy.sh")?;
-    std::fs::remove_file(&tmp).ok();
-    if !status.success() {
-        anyhow::bail!("clean-omarchy.sh exited with status {}", status);
-    }
-    Ok(())
+    run_embedded_script(
+        "clean-omarchy.sh",
+        include_str!("../contrib/clean-omarchy.sh"),
+        &[],
+    )
 }
 
 /// Run the embedded polkit rule installer script.
 fn install_polkit() -> Result<()> {
-    let script = include_str!("../contrib/setup-polkit.sh");
-    let tmp = std::env::temp_dir().join("kvn-tui-setup-polkit.sh");
-    std::fs::write(&tmp, script)?;
-    let status = std::process::Command::new("bash")
-        .arg(&tmp)
-        .status()
-        .context("failed to run setup-polkit.sh")?;
-    std::fs::remove_file(&tmp).ok();
-    if !status.success() {
-        anyhow::bail!("setup-polkit.sh exited with status {}", status);
-    }
-    Ok(())
+    run_embedded_script(
+        "setup-polkit.sh",
+        include_str!("../contrib/setup-polkit.sh"),
+        &[],
+    )
 }
 
 /// Run the embedded kill switch installer script.
 fn install_killswitch() -> Result<()> {
-    let script = include_str!("../contrib/setup-killswitch.sh");
-    let tmp = std::env::temp_dir().join("kvn-tui-setup-killswitch.sh");
-    std::fs::write(&tmp, script)?;
-    let status = std::process::Command::new("bash")
-        .arg(&tmp)
-        .status()
-        .context("failed to run setup-killswitch.sh")?;
-    std::fs::remove_file(&tmp).ok();
-    if !status.success() {
-        anyhow::bail!("setup-killswitch.sh exited with status {}", status);
-    }
-    Ok(())
+    run_embedded_script(
+        "setup-killswitch.sh",
+        include_str!("../contrib/setup-killswitch.sh"),
+        &[include_str!("../contrib/killswitch-helper.sh")],
+    )
+}
+
+fn clean_polkit() -> Result<()> {
+    run_embedded_script(
+        "clean-polkit.sh",
+        include_str!("../contrib/clean-polkit.sh"),
+        &[],
+    )
+}
+
+fn clean_killswitch() -> Result<()> {
+    run_embedded_script(
+        "clean-killswitch.sh",
+        include_str!("../contrib/clean-killswitch.sh"),
+        &[],
+    )
 }
 
 // ---- one-shot IPC clients (CLI + Omarchy bar module backends) ----
@@ -367,10 +383,22 @@ pub fn try_run_from_parsed(cli: &Cli) -> Option<Result<()>> {
             })();
             return Some(result);
         }
-        Some(Command::Clean { omarchy }) => {
+        Some(Command::Clean {
+            omarchy,
+            polkit,
+            killswitch,
+        }) => {
             let result = (|| {
                 if *omarchy {
                     clean_omarchy()?;
+                }
+                // Stop and remove the firewall before removing the shared
+                // group's remaining polkit authorization.
+                if *killswitch {
+                    clean_killswitch()?;
+                }
+                if *polkit {
+                    clean_polkit()?;
                 }
                 Ok(())
             })();
@@ -600,13 +628,168 @@ esac
         let cli = Cli::parse_from(["kvn-tui", "clean", "--omarchy"]);
         assert!(matches!(
             cli.command,
-            Some(Command::Clean { omarchy: true })
+            Some(Command::Clean {
+                omarchy: true,
+                polkit: false,
+                killswitch: false,
+            })
         ));
+    }
+
+    #[test]
+    fn clean_system_options_can_be_combined() {
+        let cli = Cli::parse_from(["kvn-tui", "clean", "--polkit", "--killswitch"]);
+        assert!(matches!(
+            cli.command,
+            Some(Command::Clean {
+                omarchy: false,
+                polkit: true,
+                killswitch: true,
+            })
+        ));
+    }
+
+    #[test]
+    fn clean_omarchy_conflicts_with_system_cleanup() {
+        assert!(Cli::try_parse_from(["kvn-tui", "clean", "--omarchy", "--polkit"]).is_err());
+        assert!(Cli::try_parse_from(["kvn-tui", "clean", "--omarchy", "--killswitch"]).is_err());
     }
 
     #[test]
     fn clean_requires_at_least_one_option() {
         assert!(Cli::try_parse_from(["kvn-tui", "clean"]).is_err());
+    }
+
+    #[test]
+    fn embedded_system_scripts_have_valid_bash_syntax() {
+        let _lock = crate::test_helpers::ENV_LOCK.lock().unwrap();
+        for (name, script) in [
+            ("setup-polkit", include_str!("../contrib/setup-polkit.sh")),
+            (
+                "setup-killswitch",
+                include_str!("../contrib/setup-killswitch.sh"),
+            ),
+            ("clean-polkit", include_str!("../contrib/clean-polkit.sh")),
+            (
+                "clean-killswitch",
+                include_str!("../contrib/clean-killswitch.sh"),
+            ),
+            (
+                "killswitch-helper",
+                include_str!("../contrib/killswitch-helper.sh"),
+            ),
+        ] {
+            let status = ProcessCommand::new("bash")
+                .args(["-n", "-c", script])
+                .status()
+                .unwrap();
+            assert!(status.success(), "invalid bash syntax in {name}");
+        }
+    }
+
+    #[test]
+    fn polkit_rule_is_narrow_and_uses_dedicated_group() {
+        let script = include_str!("../contrib/setup-polkit.sh");
+        for action in [
+            "org.freedesktop.resolve1.set-dns-servers",
+            "org.freedesktop.resolve1.set-domains",
+            "org.freedesktop.resolve1.set-default-route",
+        ] {
+            assert!(script.contains(action));
+        }
+        assert!(script.contains("subject.isInGroup(\"kvn-tui\")"));
+        assert!(!script.contains("org.freedesktop.NetworkManager"));
+        assert!(!script.contains("subject.isInGroup(\"network\")"));
+    }
+
+    #[test]
+    fn killswitch_sudoers_uses_dedicated_group() {
+        let script = include_str!("../contrib/setup-killswitch.sh");
+        assert!(script.contains("%kvn-tui ALL=(root) NOPASSWD:"));
+        assert!(!script.contains("%network ALL=(root) NOPASSWD:"));
+    }
+
+    fn helper_accepts_allow_args(args: &[&str]) -> bool {
+        let _lock = crate::test_helpers::ENV_LOCK.lock().unwrap();
+        ProcessCommand::new("bash")
+            .args([
+                "-c",
+                "source \"$1\"; shift; validate_allow_args \"$@\"",
+                "helper-test",
+                concat!(env!("CARGO_MANIFEST_DIR"), "/contrib/killswitch-helper.sh"),
+            ])
+            .args(args)
+            .status()
+            .unwrap()
+            .success()
+    }
+
+    fn helper_accepts_command_args(args: &[&str]) -> bool {
+        let _lock = crate::test_helpers::ENV_LOCK.lock().unwrap();
+        ProcessCommand::new("bash")
+            .args([
+                "-c",
+                "source \"$1\"; shift; validate_command_args \"$@\"",
+                "helper-test",
+                concat!(env!("CARGO_MANIFEST_DIR"), "/contrib/killswitch-helper.sh"),
+            ])
+            .args(args)
+            .status()
+            .unwrap()
+            .success()
+    }
+
+    #[test]
+    fn killswitch_helper_enforces_the_command_surface() {
+        for args in [
+            &["check"][..],
+            &["enable"][..],
+            &["disable"][..],
+            &["revoke"][..],
+            &["allow", "192.0.2.1", "tcp", "443"][..],
+        ] {
+            assert!(helper_accepts_command_args(args), "rejected {args:?}");
+        }
+        for args in [
+            &[][..],
+            &["unknown"][..],
+            &["check", "extra"][..],
+            &["enable", "extra"][..],
+            &["disable", "extra"][..],
+            &["revoke", "extra"][..],
+            &["allow", "192.0.2.1", "tcp", "443", "extra"][..],
+        ] {
+            assert!(!helper_accepts_command_args(args), "accepted {args:?}");
+        }
+    }
+
+    #[test]
+    fn killswitch_helper_validates_allow_arguments() {
+        for args in [
+            &["192.0.2.1", "tcp", "443"][..],
+            &["255.255.255.255", "udp", "65535"][..],
+            &["2001:db8::1", "tcp", "1"][..],
+            &["::1", "udp", "53"][..],
+        ] {
+            assert!(helper_accepts_allow_args(args), "rejected {args:?}");
+        }
+
+        for args in [
+            &[][..],
+            &["192.0.2.1", "tcp"][..],
+            &["192.0.2.1", "tcp", "443", "extra"][..],
+            &["256.1.1.1", "tcp", "443"][..],
+            &["::::", "tcp", "443"][..],
+            &["example.com", "tcp", "443"][..],
+            &["192.0.2.1;id", "tcp", "443"][..],
+            &["192.0.2.1", "sctp", "443"][..],
+            &["192.0.2.1", "tcp", "0"][..],
+            &["192.0.2.1", "tcp", "65536"][..],
+            &["192.0.2.1", "tcp", "$(id)"][..],
+            &["192.0.2.1\n127.0.0.1", "tcp", "443"][..],
+        ] {
+            assert!(!helper_accepts_allow_args(args), "accepted {args:?}");
+        }
     }
 
     #[test]

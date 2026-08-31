@@ -21,7 +21,7 @@
 - [First Connection](#first-connection)
 - [Installation (Arch Linux)](#installation-arch-linux)
   - [AUR](#aur-recommended)
-  - [Polkit setup](#polkit-setup-recommended)
+  - [Polkit setup](#polkit-setup-optional-recommended-for-unattended-reconnects)
   - [Kill switch setup](#kill-switch-setup-optional)
   - [Omarchy integration](#omarchy-integration-optional)
   - [Build from source](#build-from-source)
@@ -113,18 +113,23 @@ systemctl --user enable --now kvn-tui.service
 available after login. The package also restores the TUN capabilities on
 `/usr/bin/sing-box` automatically after pacman upgrades it.
 
-### Polkit setup (recommended)
+### Polkit setup (optional, recommended for unattended reconnects)
 
 Install the polkit rule to avoid repeated authentication prompts when sing-box
-changes DNS settings or routes:
+configures per-link DNS through systemd-resolved. The rule grants only the
+three required resolved actions to members of the dedicated `kvn-tui` group;
+it does not grant NetworkManager permissions:
 
 ```bash
 sudo pacman -S --needed polkit
 sudo kvn-tui setup --polkit
 ```
 
-If setup adds you to the `network` group, run `newgrp network` or log out and
-back in.
+If setup adds you to the `kvn-tui` group, log out and back in, then restart the
+user daemon. Because authorization is group-wide, every process running as an
+enrolled user can request those three DNS operations. Skip this setup if you
+prefer interactive polkit authorization and do not need unattended auto-connect
+or resume reconnects.
 
 ### Kill switch setup (optional)
 
@@ -136,8 +141,9 @@ sudo pacman -S --needed nftables
 sudo kvn-tui setup --killswitch
 ```
 
-If setup adds you to the `network` group, run `newgrp network` or log out and
-back in.
+The kill-switch sudoers rule uses the same dedicated `kvn-tui` group and allows
+only the validating helper installed at `/usr/lib/kvn-tui/killswitch-helper.sh`.
+Log out and back in if setup newly adds you to the group.
 
 Toggle it with `K`; the status bar shows `[KS]` while it is enabled. Polkit and
 the kill switch can also be installed together:
@@ -145,6 +151,16 @@ the kill switch can also be installed together:
 ```bash
 sudo kvn-tui setup --polkit --killswitch
 ```
+
+Remove either system integration with:
+
+```bash
+sudo kvn-tui clean --polkit
+sudo kvn-tui clean --killswitch
+```
+
+Cleanup deliberately preserves the `kvn-tui` group and user membership because
+the other integration may still need them.
 
 ### Omarchy integration (optional)
 

@@ -49,32 +49,31 @@ sudo kvn-tui setup --polkit
 
 The command:
 
-- adds the invoking user to the `network` group if necessary;
+- creates the dedicated system group `kvn-tui` and adds the invoking user if
+  necessary;
 - writes `/etc/polkit-1/rules.d/49-kvn-tui.rules` with mode `0644`;
-- restarts polkit when its service is active.
+- leaves polkit to reload the changed rule automatically.
 
-The rule allows every member of `network` to perform these actions without an
+The rule allows every member of `kvn-tui` to perform these actions without an
 authentication prompt:
 
 - `org.freedesktop.resolve1.set-dns-servers`
 - `org.freedesktop.resolve1.set-domains`
 - `org.freedesktop.resolve1.set-default-route`
-- `org.freedesktop.NetworkManager.network-control`
-- `org.freedesktop.NetworkManager.settings.modify.system`
-
-This authorization is group-wide and is not restricted to the kvn-tui process.
-After being added to `network`, log out and back in or run `newgrp network`.
+No NetworkManager actions are granted. This authorization is group-wide and is
+not restricted to the kvn-tui process. After being added to `kvn-tui`, log out
+and back in and restart `kvn-tui.service`.
 
 To remove the rule:
 
 ```bash
-sudo rm /etc/polkit-1/rules.d/49-kvn-tui.rules
-sudo systemctl try-restart polkit
+sudo kvn-tui clean --polkit
 ```
 
-The setup command does not provide an uninstall action. Do not remove yourself
-from `network` without checking whether NetworkManager or other tools use that
-membership.
+Cleanup preserves the group and membership because the kill switch may still
+use them. Existing membership in the legacy `network` group is also never
+removed automatically; verify that no other software needs it before changing
+it manually.
 
 ## Kill switch setup
 
@@ -82,8 +81,8 @@ membership.
 sudo kvn-tui setup --killswitch
 ```
 
-The command requires `nftables`, adds the invoking user to `network` when
-needed, and installs:
+The command requires `nftables`, adds the invoking user to the dedicated
+`kvn-tui` group when needed, and installs:
 
 | Path | Owner / mode | Purpose |
 |------|--------------|---------|
@@ -92,10 +91,11 @@ needed, and installs:
 | `/etc/systemd/system/kvn-tui-killswitch.service` | `root`, `0644` | System kill-switch unit |
 | `/etc/sudoers.d/kvn-tui-killswitch` | `root:root`, `0440` | Restricted NOPASSWD rule |
 
-The sudoers rule permits members of `network` to invoke only the fixed helper
+The sudoers rule permits members of `kvn-tui` to invoke only the fixed helper
 path without a password. The root-owned helper rejects unknown operations and
 accepts only:
 
+- `check` (read-only authorization/installation probe)
 - `enable`
 - `disable`
 - `revoke`
@@ -115,18 +115,24 @@ Toggling the kill switch with `K` runs `systemctl enable --now` or
 
 ### Remove the kill switch
 
-Stop the unit before deleting any files:
+Use the cleanup command, which stops the active unit before deleting any files:
 
 ```bash
-sudo systemctl disable --now kvn-tui-killswitch.service
-sudo rm /etc/kvn-tui/killswitch.nft
-sudo rm /usr/lib/kvn-tui/killswitch-helper.sh
-sudo rm /etc/systemd/system/kvn-tui-killswitch.service
-sudo rm /etc/sudoers.d/kvn-tui-killswitch
-sudo systemctl daemon-reload
+sudo kvn-tui clean --killswitch
 ```
 
-These commands leave the shared `network` group membership unchanged.
+If the active unit cannot be stopped, cleanup aborts before removing its files.
+The command leaves the `kvn-tui` group and membership unchanged and asks you to
+restart the user daemon so persisted state is reconciled.
+
+After removing both polkit and kill-switch integration, the now-unused group can
+optionally be removed after confirming its membership:
+
+```bash
+getent group kvn-tui
+sudo gpasswd -d "$USER" kvn-tui
+sudo groupdel kvn-tui
+```
 
 ## Omarchy setup
 

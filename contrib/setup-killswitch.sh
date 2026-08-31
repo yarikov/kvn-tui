@@ -3,9 +3,9 @@
 #   - /etc/kvn-tui/killswitch.nft           (nftables ruleset)
 #   - /usr/lib/kvn-tui/killswitch-helper.sh (privileged helper)
 #   - /etc/systemd/system/kvn-tui-killswitch.service
-#   - /etc/sudoers.d/kvn-tui-killswitch     (NOPASSWD for group `network`)
+#   - /etc/sudoers.d/kvn-tui-killswitch     (NOPASSWD for group `kvn-tui`)
 #
-# After install, members of the `network` group can toggle the kill switch
+# After install, members of the `kvn-tui` group can toggle the kill switch
 # from kvn-tui without a password prompt.
 set -euo pipefail
 
@@ -15,12 +15,19 @@ if [[ $EUID -ne 0 ]]; then
 fi
 
 USER_NAME="${SUDO_USER:-${USER:-}}"
-if [[ -z "$USER_NAME" || "$USER_NAME" == "root" ]]; then
-    echo "Could not detect invoking user — set SUDO_USER or run via sudo." >&2
+if [[ -z "$USER_NAME" || "$USER_NAME" == "root" ]] || ! id "$USER_NAME" >/dev/null 2>&1; then
+    echo "Could not identify a non-root invoking user; run this command via sudo." >&2
     exit 1
 fi
+HELPER_SOURCE="${1:?missing embedded kill-switch helper source}"
+GROUP_NAME="kvn-tui"
 
 echo "Installing kvn-tui kill switch for user '$USER_NAME'…"
+
+if ! getent group "$GROUP_NAME" >/dev/null; then
+    groupadd --system "$GROUP_NAME"
+    echo "Created system group '$GROUP_NAME'."
+fi
 
 # ── 1. nftables ruleset ────────────────────────────────────────────────
 install -dm755 /etc/kvn-tui
@@ -93,56 +100,12 @@ fi
 
 # ── 2. Helper script ───────────────────────────────────────────────────
 install -dm755 /usr/lib/kvn-tui
-cat > /usr/lib/kvn-tui/killswitch-helper.sh <<'HELPER_EOF'
-#!/bin/bash
-# kvn-tui kill switch privileged helper.
-# Invoked via sudo from the kvn-tui daemon. Validates input strictly.
-set -euo pipefail
-
-if [[ "$(stat -c %u "$0")" != "0" ]]; then
-    echo "kvn-tui killswitch helper is not root-owned; refusing to run" >&2
-    exit 1
-fi
-
-UNIT="kvn-tui-killswitch.service"
-
-case "${1:-}" in
-    enable)
-        exec systemctl enable --now "$UNIT"
-        ;;
-    disable)
-        exec systemctl disable --now "$UNIT"
-        ;;
-    revoke)
-        nft flush set inet kvn_tui_killswitch handshake_v4 2>/dev/null || true
-        nft flush set inet kvn_tui_killswitch handshake_v6 2>/dev/null || true
-        ;;
-    allow)
-        ip="${2:?missing ip}"
-        proto="${3:?missing proto}"
-        port="${4:?missing port}"
-        [[ "$proto" =~ ^(tcp|udp)$ ]] || { echo "bad proto: $proto" >&2; exit 2; }
-        [[ "$port" =~ ^[0-9]{1,5}$ ]] || { echo "bad port: $port" >&2; exit 2; }
-        if (( port < 1 || port > 65535 )); then
-            echo "port out of range: $port" >&2; exit 2
-        fi
-        if [[ "$ip" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]]; then
-            exec nft add element inet kvn_tui_killswitch handshake_v4 "{ $ip . $proto . $port }"
-        elif [[ "$ip" =~ ^[0-9a-fA-F:]+$ ]]; then
-            exec nft add element inet kvn_tui_killswitch handshake_v6 "{ $ip . $proto . $port }"
-        else
-            echo "bad ip: $ip" >&2
-            exit 2
-        fi
-        ;;
-    *)
-        echo "usage: $0 {enable|disable|revoke|allow <ip> <tcp|udp> <port>}" >&2
-        exit 2
-        ;;
-esac
-HELPER_EOF
-chown root:root /usr/lib/kvn-tui/killswitch-helper.sh
-chmod 755 /usr/lib/kvn-tui/killswitch-helper.sh
+HELPER_TMP="$(mktemp)"
+SUDOERS_TMP=""
+trap 'rm -f "$HELPER_TMP" "$SUDOERS_TMP"' EXIT
+printf '%s\n' "$HELPER_SOURCE" >"$HELPER_TMP"
+bash -n "$HELPER_TMP"
+install -m 0755 -o root -g root "$HELPER_TMP" /usr/lib/kvn-tui/killswitch-helper.sh
 
 # ── 3. systemd unit ────────────────────────────────────────────────────
 cat > /etc/systemd/system/kvn-tui-killswitch.service <<'UNIT_EOF'
@@ -169,13 +132,12 @@ chmod 644 /etc/systemd/system/kvn-tui-killswitch.service
 
 # ── 4. sudoers fragment (validated before installing) ──────────────────
 SUDOERS_TMP="$(mktemp)"
-trap 'rm -f "$SUDOERS_TMP"' EXIT
 cat > "$SUDOERS_TMP" <<'SUDOERS_EOF'
-# Allow group `network` to invoke the kvn-tui kill switch helper without a
+# Allow group `kvn-tui` to invoke the kvn-tui kill-switch helper without a
 # password. The helper itself validates its arguments; nothing else is
 # whitelisted, and the helper path is fixed.
 Defaults!/usr/lib/kvn-tui/killswitch-helper.sh env_reset, secure_path="/usr/sbin:/usr/bin"
-%network ALL=(root) NOPASSWD: /usr/lib/kvn-tui/killswitch-helper.sh
+%kvn-tui ALL=(root) NOPASSWD: /usr/lib/kvn-tui/killswitch-helper.sh
 SUDOERS_EOF
 if ! visudo -cf "$SUDOERS_TMP" >/dev/null; then
     echo "FATAL: sudoers fragment failed validation" >&2
@@ -183,10 +145,10 @@ if ! visudo -cf "$SUDOERS_TMP" >/dev/null; then
 fi
 install -m 0440 -o root -g root "$SUDOERS_TMP" /etc/sudoers.d/kvn-tui-killswitch
 
-# ── 5. Ensure user is in network group ─────────────────────────────────
-if ! id -nG "$USER_NAME" | tr ' ' '\n' | grep -qx network; then
-    echo "Adding user '$USER_NAME' to the 'network' group…"
-    usermod -aG network "$USER_NAME"
+# ── 5. Ensure user is in the dedicated group ──────────────────────────
+if ! id -nG "$USER_NAME" | tr ' ' '\n' | grep -Fxq "$GROUP_NAME"; then
+    echo "Adding user '$USER_NAME' to the '$GROUP_NAME' group…"
+    usermod -aG "$GROUP_NAME" "$USER_NAME"
     NEW_GROUP=1
 else
     NEW_GROUP=0
@@ -211,6 +173,11 @@ echo "  /etc/sudoers.d/kvn-tui-killswitch"
 echo
 echo "Toggle the kill switch from the TUI with Shift+K."
 if [[ "$NEW_GROUP" == "1" ]]; then
-    echo "User '$USER_NAME' was added to the 'network' group — log out and back"
-    echo "in (or run 'newgrp network') before toggling from the TUI."
+    echo "User '$USER_NAME' was added to '$GROUP_NAME' — log out and back in,"
+    echo "then restart kvn-tui.service before toggling from the TUI."
+fi
+if id -nG "$USER_NAME" | tr ' ' '\n' | grep -Fxq network; then
+    echo
+    echo "Note: kvn-tui no longer uses the 'network' group. Existing membership"
+    echo "was preserved because another application may rely on it."
 fi
