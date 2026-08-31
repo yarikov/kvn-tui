@@ -1009,6 +1009,16 @@ fn handle_clipboard_text(model: &mut Model, text: &str) -> Vec<Effect> {
 }
 
 fn add_and_fetch_subscription(model: &mut Model, url: &str) -> Vec<Effect> {
+    if let Err(error) = crate::config::subscription::validate_subscription_url(url) {
+        let mut effects = Vec::new();
+        push_status(
+            &mut effects,
+            model,
+            crate::app::model::AppStatus::Error(error.to_string()),
+        );
+        return effects;
+    }
+
     let name = derive_subscription_name(url);
     let id = Uuid::new_v4();
     let sub = Subscription {
@@ -3695,7 +3705,7 @@ mod tests {
     #[test]
     fn paste_subscription_url_creates_subscription_and_fetches() {
         let mut model = model_with_profiles(vec![]);
-        let url = "http://31.58.134.29:2096/sub/xrkjeq2mhwes0i8f";
+        let url = "https://192.0.2.10:2096/sub/test-token";
 
         let effects = handle_clipboard_text(&mut model, url);
 
@@ -3718,8 +3728,24 @@ mod tests {
                 Effect::UpdateSubscription {
                     id: model.config.subscriptions[0].id
                 },
-                app_log_info("Added subscription '31.58.134.29' and fetching profiles…")
+                app_log_info("Added subscription '192.0.2.10' and fetching profiles…")
             ]
+        );
+    }
+
+    #[test]
+    fn paste_http_subscription_is_rejected_before_save() {
+        let mut model = model_with_profiles(vec![]);
+
+        let effects = handle_clipboard_text(&mut model, "http://example.com/secret-token");
+
+        assert!(model.config.subscriptions.is_empty());
+        assert!(!model.subscription_fetching);
+        assert_eq!(
+            effects,
+            vec![app_log_error(
+                "Insecure HTTP subscriptions are blocked; use HTTPS"
+            )]
         );
     }
 
