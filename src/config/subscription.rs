@@ -175,6 +175,7 @@ fn fetch_response(
     url: &str,
     headers: &HashMap<String, String>,
 ) -> Result<(String, HashMap<String, String>)> {
+    let redacted_url = crate::redaction::redact_url_for_log(url);
     let agent = ureq::Agent::config_builder()
         .http_status_as_error(false)
         .build()
@@ -192,7 +193,11 @@ fn fetch_response(
         }
     }
 
-    let resp = req.call().with_context(|| format!("GET {} failed", url))?;
+    // Do not retain ureq's error as a source: its Display output may contain
+    // the complete request URL, including subscription credentials.
+    let resp = req
+        .call()
+        .map_err(|_| anyhow::anyhow!("GET {redacted_url} failed"))?;
 
     let mut resp_headers = HashMap::new();
     for (name, value) in resp.headers() {
@@ -211,9 +216,9 @@ fn fetch_response(
         // Remnawave reports HWID problems on non-200 responses too.
         let hwid_sent = headers.contains_key("X-Hwid");
         if let Some(message) = hwid_response_error(&resp_headers, hwid_sent) {
-            anyhow::bail!("{} (HTTP {} for {})", message, resp.status(), url);
+            anyhow::bail!("{} (HTTP {} for {})", message, resp.status(), redacted_url);
         }
-        anyhow::bail!("HTTP {} for {}", resp.status(), url);
+        anyhow::bail!("HTTP {} for {}", resp.status(), redacted_url);
     }
 
     let body = resp
