@@ -14,6 +14,7 @@ mod geo;
 mod ipc;
 mod omarchy;
 mod paths;
+mod redaction;
 mod services;
 mod singbox;
 mod tui_client;
