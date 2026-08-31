@@ -90,6 +90,10 @@ Choose a regional routing preset on first launch, then:
 Clipboard import requires `wl-clipboard` on Wayland or `xclip` / `xsel` on X11.
 Press `?` at any time to see the full key map.
 
+Subscription URLs must use HTTPS. Plain HTTP subscriptions are rejected because
+their access tokens and returned VPN credentials would otherwise cross the
+network without transport encryption.
+
 ---
 
 ## Installation (Arch Linux)

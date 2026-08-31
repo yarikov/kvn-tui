@@ -10,6 +10,17 @@ use crate::config::profile::{
 
 const KVN_TUI_USER_AGENT: &str = concat!("kvn-tui/", env!("CARGO_PKG_VERSION"));
 
+/// Validate that a subscription URL uses encrypted transport.
+pub fn validate_subscription_url(input: &str) -> Result<()> {
+    let url = url::Url::parse(input).map_err(|_| anyhow::anyhow!("Invalid subscription URL"))?;
+    match url.scheme() {
+        "https" if url.host_str().is_some() => Ok(()),
+        "https" => anyhow::bail!("Invalid subscription URL: missing host"),
+        "http" => anyhow::bail!("Insecure HTTP subscriptions are blocked; use HTTPS"),
+        scheme => anyhow::bail!("Unsupported subscription URL scheme: {scheme}"),
+    }
+}
+
 /// Generate a stable installation identifier once: `lnx-` + UUID v4.
 /// Never derived from the subscription URL — rotating a token or changing a
 /// domain must not make the provider treat the same installation as a new
@@ -222,6 +233,16 @@ fn fetch_response(
 /// rejection reasons surface directly instead of failing deep inside body
 /// parsing.
 pub fn fetch_subscription(sub: &Subscription, settings: &Settings) -> Result<Vec<Profile>> {
+    validate_subscription_url(&sub.url)?;
+    fetch_subscription_after_validation(sub, settings)
+}
+
+/// Perform the request after the caller has enforced the subscription URL
+/// policy. Request-level tests call this directly to use a local HTTP fixture.
+fn fetch_subscription_after_validation(
+    sub: &Subscription,
+    settings: &Settings,
+) -> Result<Vec<Profile>> {
     let hwid_sent = sub.effective_hwid(settings).is_some();
     let env = DeviceEnv::detect();
     let headers = build_request_headers(sub, settings, &env);
@@ -624,6 +645,30 @@ mod tests {
     }
 
     #[test]
+    fn subscription_url_policy_accepts_https() {
+        assert!(validate_subscription_url("https://example.com/sub").is_ok());
+    }
+
+    #[test]
+    fn subscription_url_policy_rejects_http() {
+        let error = validate_subscription_url("http://example.com/sub").unwrap_err();
+        assert!(error.to_string().contains("HTTP subscriptions are blocked"));
+    }
+
+    #[test]
+    fn fetch_rejects_http_before_request() {
+        let sub = sub_with("http://example.invalid/secret-token".into(), false, None);
+        let error = fetch_subscription(&sub, &settings_with_hwid()).unwrap_err();
+        assert!(error.to_string().contains("HTTP subscriptions are blocked"));
+    }
+
+    #[test]
+    fn subscription_url_policy_rejects_unsupported_and_invalid_urls() {
+        assert!(validate_subscription_url("ftp://example.com/sub").is_err());
+        assert!(validate_subscription_url("not a URL").is_err());
+    }
+
+    #[test]
     fn build_request_headers_send_hwid_false_sends_no_device_headers() {
         let env = DeviceEnv {
             kernel_version: "6.12.0-arch1-1".into(),
@@ -905,7 +950,7 @@ mod tests {
         let _guard = crate::test_helpers::ENV_LOCK.lock().unwrap();
         let (url, rx) = spawn_http_server("HTTP/1.1 200 OK", &[], sample_vless());
         let sub = sub_with(url, false, None);
-        fetch_subscription(&sub, &settings_with_hwid()).unwrap();
+        fetch_subscription_after_validation(&sub, &settings_with_hwid()).unwrap();
         let req = captured_request(rx);
         assert_eq!(
             req.get("user-agent").map(String::as_str),
@@ -918,7 +963,7 @@ mod tests {
         let _guard = crate::test_helpers::ENV_LOCK.lock().unwrap();
         let (url, rx) = spawn_http_server("HTTP/1.1 200 OK", &[], sample_vless());
         let sub = sub_with(url, false, Some("provider-registered-device-id"));
-        fetch_subscription(&sub, &settings_with_hwid()).unwrap();
+        fetch_subscription_after_validation(&sub, &settings_with_hwid()).unwrap();
         let req = captured_request(rx);
         assert!(!req.contains_key("x-hwid"));
         assert!(!req.contains_key("x-device-os"));
@@ -930,7 +975,7 @@ mod tests {
         let _guard = crate::test_helpers::ENV_LOCK.lock().unwrap();
         let (url, rx) = spawn_http_server("HTTP/1.1 200 OK", &[], sample_vless());
         let sub = sub_with(url, true, None);
-        fetch_subscription(&sub, &settings_with_hwid()).unwrap();
+        fetch_subscription_after_validation(&sub, &settings_with_hwid()).unwrap();
         let req = captured_request(rx);
         assert_eq!(
             req.get("x-hwid").map(String::as_str),
@@ -950,7 +995,7 @@ mod tests {
         let _guard = crate::test_helpers::ENV_LOCK.lock().unwrap();
         let (url, rx) = spawn_http_server("HTTP/1.1 200 OK", &[], sample_vless());
         let sub = sub_with(url, true, Some("provider-registered-device-id"));
-        fetch_subscription(&sub, &settings_with_hwid()).unwrap();
+        fetch_subscription_after_validation(&sub, &settings_with_hwid()).unwrap();
         let req = captured_request(rx);
         assert_eq!(
             req.get("x-hwid").map(String::as_str),
@@ -966,7 +1011,7 @@ mod tests {
         // Subscription A carries a provider-registered HWID override...
         let (url_a, rx_a) = spawn_http_server("HTTP/1.1 200 OK", &[], sample_vless());
         let sub_a = sub_with(url_a, true, Some("provider-registered-device-id"));
-        fetch_subscription(&sub_a, &settings).unwrap();
+        fetch_subscription_after_validation(&sub_a, &settings).unwrap();
         assert_eq!(
             captured_request(rx_a).get("x-hwid").map(String::as_str),
             Some("provider-registered-device-id"),
@@ -976,7 +1021,7 @@ mod tests {
         // never to A's override.
         let (url_b, rx_b) = spawn_http_server("HTTP/1.1 200 OK", &[], sample_vless());
         let sub_b = sub_with(url_b, true, None);
-        fetch_subscription(&sub_b, &settings).unwrap();
+        fetch_subscription_after_validation(&sub_b, &settings).unwrap();
         assert_eq!(
             captured_request(rx_b).get("x-hwid").map(String::as_str),
             Some("lnx-installation-hwid"),
@@ -985,7 +1030,7 @@ mod tests {
         // ...and subscription C (send_hwid: false) sends no HWID at all.
         let (url_c, rx_c) = spawn_http_server("HTTP/1.1 200 OK", &[], sample_vless());
         let sub_c = sub_with(url_c, false, None);
-        fetch_subscription(&sub_c, &settings).unwrap();
+        fetch_subscription_after_validation(&sub_c, &settings).unwrap();
         assert!(!captured_request(rx_c).contains_key("x-hwid"));
     }
 
@@ -998,7 +1043,7 @@ mod tests {
             sample_vless(),
         );
         let sub = sub_with(url, false, None);
-        let err = fetch_subscription(&sub, &settings_with_hwid()).unwrap_err();
+        let err = fetch_subscription_after_validation(&sub, &settings_with_hwid()).unwrap_err();
         assert!(err.to_string().contains("enable 'send HWID'"), "got: {err}");
     }
 
@@ -1011,7 +1056,7 @@ mod tests {
             sample_vless(),
         );
         let sub = sub_with(url, true, None);
-        let err = fetch_subscription(&sub, &settings_with_hwid()).unwrap_err();
+        let err = fetch_subscription_after_validation(&sub, &settings_with_hwid()).unwrap_err();
         assert!(
             err.to_string().contains("device limit reached"),
             "got: {err}"
@@ -1027,7 +1072,7 @@ mod tests {
             "forbidden",
         );
         let sub = sub_with(url, false, None);
-        let err = fetch_subscription(&sub, &settings_with_hwid()).unwrap_err();
+        let err = fetch_subscription_after_validation(&sub, &settings_with_hwid()).unwrap_err();
         assert!(err.to_string().contains("enable 'send HWID'"), "got: {err}");
         assert!(err.to_string().contains("HTTP 403"), "got: {err}");
     }
