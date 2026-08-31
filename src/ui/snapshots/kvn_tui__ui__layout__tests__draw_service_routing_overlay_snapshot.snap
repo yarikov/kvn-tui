@@ -14,8 +14,8 @@ expression: "snapshot_terminal(&model, 80, 24)"
 │               │            Steam     ‹  Direct  ›            │               │
 │               │          > Telegram  ‹  Proxy   › *          │               │
 │               │                                              │               │
-│               │      j/k select, h/l change, Enter, Esc      │               │
-│               │                                              │               │
+│               │           j/k navigate, h/l change           │               │
+│               │          Enter confirm, q/Esc cancel         │               │
 │               │                                              │               │
 │               │                                              │               │
 │               │                                              │               │
