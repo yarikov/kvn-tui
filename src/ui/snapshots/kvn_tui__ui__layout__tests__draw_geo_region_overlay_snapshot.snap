@@ -15,7 +15,7 @@ expression: "snapshot_terminal(&model, 80, 20)"
 │               │                    🇮🇷  Iran                   │               │
 │               │           🌍  Global (no geo rules)           │               │
 │               │                                              │               │
-│               │    j/k navigate, Enter confirm, Esc cancel   │               │
+│               │          j/k navigate, Enter confirm         │               │
 │               └──────────────────────────────────────────────┘               │
 │                                      ││                                      │
 │                                      ││                                      │

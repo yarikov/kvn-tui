@@ -751,7 +751,7 @@ fn draw_confirm_delete(frame: &mut Frame, model: &Model, area: Rect) {
         vec![
             Line::from(Span::styled(message, theme.error())),
             Line::from(""),
-            Line::from("Press y to confirm, n to cancel"),
+            Line::from("Press y/Enter to confirm, q/Esc to cancel"),
         ],
         POPUP_HEIGHT_PERCENT,
     );
@@ -809,6 +809,7 @@ fn draw_routing_mode(frame: &mut Frame, model: &Model, area: Rect) {
         model.routing_selected,
         active,
         POPUP_HEIGHT_PERCENT,
+        &["j/k navigate, Enter confirm, q/Esc cancel"],
     );
 }
 
@@ -840,6 +841,11 @@ fn draw_geo_region(frame: &mut Frame, model: &Model, area: Rect) {
         model.geo_region_selected,
         active,
         POPUP_HEIGHT_PERCENT,
+        if model.config.settings.geo_routing.current_region.is_some() {
+            &["j/k navigate, Enter confirm, q/Esc cancel"]
+        } else {
+            &["j/k navigate, Enter confirm"]
+        },
     );
 }
 
@@ -886,6 +892,7 @@ fn draw_dns_settings(frame: &mut Frame, model: &Model, area: Rect) {
         model.dns_selected,
         current_dns_preset_index(dns),
         POPUP_HEIGHT_PERCENT,
+        &["j/k navigate, h/l change", "Enter confirm, q/Esc cancel"],
     );
 }
 
@@ -947,7 +954,8 @@ fn draw_service_routing(frame: &mut Frame, model: &Model, area: Rect) {
     }
 
     lines.push(Line::from(""));
-    lines.push(Line::from("j/k select, h/l change, Enter, Esc").centered());
+    lines.push(Line::from("j/k navigate, h/l change").centered());
+    lines.push(Line::from("Enter confirm, q/Esc cancel").centered());
 
     frame.render_widget(Paragraph::new(lines), inner);
 }
@@ -971,6 +979,7 @@ fn draw_theme_settings(frame: &mut Frame, model: &Model, area: Rect) {
         model.theme_selected,
         active,
         POPUP_HEIGHT_PERCENT_TALL,
+        &["j/k navigate, Enter confirm, q/Esc cancel"],
     );
 }
 
@@ -1019,9 +1028,11 @@ fn draw_selection_modal(
     selected: usize,
     active: Option<usize>,
     height_percent: u16,
+    footer: &[&str],
 ) {
     let popup_area = centered_rect(POPUP_WIDTH_PERCENT, height_percent, area);
-    let max_visible_items = popup_area.height.saturating_sub(6) as usize;
+    let footer_height = footer.len() as u16;
+    let max_visible_items = popup_area.height.saturating_sub(5 + footer_height) as usize;
     let visible_count = items.len().min(max_visible_items);
     let window_start = if items.len() > visible_count {
         selected
@@ -1052,7 +1063,7 @@ fn draw_selection_modal(
         )));
     }
     lines.push(Line::from(""));
-    lines.push(Line::from("j/k navigate, Enter confirm, Esc cancel"));
+    lines.extend(footer.iter().map(|text| Line::from(*text)));
     draw_modal(frame, theme, area, modal_title, lines, height_percent);
 }
 
@@ -1996,6 +2007,24 @@ mod tests {
     }
 
     #[test]
+    fn geo_region_footer_only_offers_cancel_after_initial_selection() {
+        let mut model = model_with_profiles(vec![]);
+        model.overlay = Overlay::GeoRegions;
+
+        let required = snapshot_terminal(&model, 80, 20);
+        assert!(required.contains("j/k navigate, Enter confirm"));
+        assert!(!required.contains("q/Esc cancel"));
+
+        model
+            .config
+            .settings
+            .geo_routing
+            .set_region(crate::config::profile::GeoRegion::Ru);
+        let optional = snapshot_terminal(&model, 80, 20);
+        assert!(optional.contains("j/k navigate, Enter confirm, q/Esc cancel"));
+    }
+
+    #[test]
     fn draw_dns_settings_overlay_snapshot() {
         let mut model = model_with_profiles(vec![]);
         model.geo_last_updated = Some("2026-05-31 13:41".to_string());
@@ -2099,7 +2128,7 @@ mod tests {
 
         let rendered = snapshot_terminal(&model, 80, 24);
         assert!(rendered.contains("> white"));
-        assert!(rendered.contains("j/k navigate, Enter confirm, Esc cancel"));
+        assert!(rendered.contains("j/k navigate, Enter confirm, q/Esc cancel"));
         assert!(!rendered.contains("catppuccin-latte"));
     }
 

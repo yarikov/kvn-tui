@@ -30,7 +30,7 @@ expression: "snapshot_terminal(&model, 80, 32)"
 │               │                  vantablack                  │               │
 │               │                     white                    │               │
 │               │                                              │               │
-│               │    j/k navigate, Enter confirm, Esc cancel   │               │
+│               │   j/k navigate, Enter confirm, q/Esc cancel  │               │
 │               └──────────────────────────────────────────────┘               │
 └──────────────────────────────────────┘└──────────────────────────────────────┘
 [DISCONNECTED] [DNS: DoH] [Global] [Geo: 2026-05-31 13:41]

@@ -416,7 +416,7 @@ pub(super) fn handle_confirm_delete(model: &mut Model, key: KeyEvent) -> Vec<Eff
                 _ => {}
             }
         }
-        KeyCode::Char('n') | KeyCode::Esc => {
+        KeyCode::Char('n') | KeyCode::Char('q') | KeyCode::Esc => {
             model.overlay = Overlay::None;
         }
         _ => {}
@@ -764,7 +764,11 @@ pub(super) fn handle_dns_settings(model: &mut Model, key: KeyEvent) -> Vec<Effec
             let Some(item) = DnsSettingsItem::from_index(model.dns_selected) else {
                 return vec![];
             };
-            return apply_dns_item(model, item);
+            let effects = apply_dns_item(model, item);
+            model.overlay = Overlay::None;
+            model.dns_strategy_draft = None;
+            model.dns_fakeip_draft = None;
+            return effects;
         }
         KeyCode::Char('q') | KeyCode::Esc => {
             model.overlay = Overlay::None;
@@ -1222,6 +1226,7 @@ mod tests {
         let effects = handle_dns_settings(&mut model, enter());
         assert!(effects.is_empty());
         assert_eq!(model.config.settings.dns.strategy, before);
+        assert_eq!(model.overlay, Overlay::None);
     }
 
     #[test]
@@ -1232,12 +1237,15 @@ mod tests {
             .position(|i| *i == DnsSettingsItem::CycleStrategy)
             .unwrap();
         model.dns_strategy_draft = Some(DnsStrategy::OnlyIpv4);
+        model.dns_fakeip_draft = Some(true);
         let effects = handle_dns_settings(&mut model, enter());
         assert_eq!(model.config.settings.dns.strategy, DnsStrategy::OnlyIpv4);
         assert_eq!(model.config.settings.dns_strategy, DnsStrategy::OnlyIpv4);
         assert!(effects.contains(&Effect::SaveConfig));
         assert!(effects.contains(&Effect::BroadcastState));
         assert!(model.dns_strategy_draft.is_none());
+        assert!(model.dns_fakeip_draft.is_none());
+        assert_eq!(model.overlay, Overlay::None);
     }
 
     #[test]
@@ -1254,6 +1262,7 @@ mod tests {
         assert!(effects.is_empty());
         assert!(model.dns_strategy_draft.is_none());
         assert_eq!(model.config.settings.dns.strategy, same);
+        assert_eq!(model.overlay, Overlay::None);
     }
 
     #[test]
@@ -1263,6 +1272,7 @@ mod tests {
         let effects = handle_dns_settings(&mut model, enter());
         assert!(effects.contains(&Effect::SaveConfig));
         assert!(effects.contains(&Effect::BroadcastState));
+        assert_eq!(model.overlay, Overlay::None);
         assert!(final_server_is(&model, |s| matches!(
             s,
             DnsServer::Https { server, .. } if server == "1.1.1.1"
@@ -1659,6 +1669,23 @@ mod tests {
         )]);
         model.overlay = Overlay::ConfirmDelete;
         let effects = handle_confirm_delete(&mut model, esc());
+        assert_eq!(model.config.profiles.len(), 1);
+        assert_eq!(model.overlay, Overlay::None);
+        assert!(effects.is_empty());
+    }
+
+    #[test]
+    fn confirm_delete_q_cancels() {
+        let mut model = model_with_profiles(vec![Profile::new_vless(
+            "A".into(),
+            "1.1.1.1".into(),
+            443,
+            "u".into(),
+        )]);
+        model.overlay = Overlay::ConfirmDelete;
+
+        let effects = handle_confirm_delete(&mut model, key('q'));
+
         assert_eq!(model.config.profiles.len(), 1);
         assert_eq!(model.overlay, Overlay::None);
         assert!(effects.is_empty());

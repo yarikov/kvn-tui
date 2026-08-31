@@ -11,14 +11,14 @@ expression: "snapshot_terminal(&model, 80, 24)"
 │               ┌ DNS ─────────────────────────────────────────┐               │
 │               │                 DNS settings                 │               │
 │               │                                              │               │
-│               │       Preset: Cloudflare DoH (1.1.1.1)       │               │
 │               │         Preset: Google DoT (8.8.8.8)         │               │
 │               │          Preset: Quad9 DoH (9.9.9.9)         │               │
 │               │        Preset: System resolver (local)       │               │
 │               │          > Strategy: ‹ prefer_ipv4 ›         │               │
 │               │               Fake-IP: ‹ off ›               │               │
 │               │                                              │               │
-│               │    j/k navigate, Enter confirm, Esc cancel   │               │
+│               │           j/k navigate, h/l change           │               │
+│               │          Enter confirm, q/Esc cancel         │               │
 │               └──────────────────────────────────────────────┘               │
 │                                      ││                                      │
 │                                      ││                                      │
