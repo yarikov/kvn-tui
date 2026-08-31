@@ -109,6 +109,52 @@ EOF
   replace_if_changed "$tmp" "$launcher"
 }
 
+install_desktop_entry() {
+  local desktop_entry="$HOME/.local/share/applications/kvn-tui.desktop"
+
+  echo "Installing or updating Apps launcher..."
+  mkdir -p "$(dirname "$desktop_entry")"
+  local tmp
+  tmp=$(mktemp "${desktop_entry}.tmp.XXXXXX")
+  cat >"$tmp" <<'EOF'
+[Desktop Entry]
+Type=Application
+Name=kvn-tui
+GenericName=VPN Client
+Comment=Terminal VPN client powered by sing-box
+Exec=omarchy-launch-or-focus-tui --app-id=org.omarchy.kvn-tui kvn-tui
+TryExec=kvn-tui
+Terminal=false
+Icon=kvn-tui
+Categories=Network;Utility;
+Keywords=VPN;TUI;Terminal;sing-box;
+StartupNotify=false
+EOF
+  chmod 0644 "$tmp"
+  replace_if_changed "$tmp" "$desktop_entry"
+}
+
+install_app_icon() {
+  local app_icon="$HOME/.local/share/icons/hicolor/scalable/apps/kvn-tui.svg"
+
+  echo "Installing or updating Apps icon..."
+  mkdir -p "$(dirname "$app_icon")"
+  local tmp
+  tmp=$(mktemp "${app_icon}.tmp.XXXXXX")
+  cat >"$tmp" <<'EOF'
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128">
+  <rect width="128" height="128" rx="24" fill="#101010"/>
+  <path d="M64 14 106 30v32c0 26-16 44-42 53C38 106 22 88 22 62V30z" fill="#f5f1e8"/>
+  <rect x="43" y="57" width="42" height="34" rx="8" fill="#101010"/>
+  <path d="M51 58v-7a13 13 0 0 1 26 0v7" fill="none" stroke="#101010" stroke-width="8" stroke-linecap="round"/>
+  <circle cx="64" cy="72" r="5" fill="#f5f1e8"/>
+  <path d="M64 76v7" stroke="#f5f1e8" stroke-width="5" stroke-linecap="round"/>
+</svg>
+EOF
+  chmod 0644 "$tmp"
+  replace_if_changed "$tmp" "$app_icon"
+}
+
 detect_omarchy_major() {
   command -v omarchy >/dev/null 2>&1 || {
     echo "Error: omarchy command not found." >&2
@@ -327,6 +373,8 @@ install_omarchy_v4() {
   local shell_config="$HOME/.config/omarchy/shell.json"
   local hypr_bindings="$HOME/.config/hypr/bindings.lua"
   local hypr_main="$HOME/.config/hypr/hyprland.lua"
+  local desktop_entry="$HOME/.local/share/applications/kvn-tui.desktop"
+  local app_icon="$HOME/.local/share/icons/hicolor/scalable/apps/kvn-tui.svg"
   for file in "$shell_config" "$hypr_bindings" "$hypr_main"; do
     [[ -f $file ]] || {
       echo "Error: required Omarchy 4 config not found: $file" >&2
@@ -337,11 +385,23 @@ install_omarchy_v4() {
   V4_SHELL_CONFIG=$shell_config
   V4_HYPR_BINDINGS=$hypr_bindings
   V4_HYPR_MAIN=$hypr_main
+  V4_DESKTOP_ENTRY=$desktop_entry
+  V4_DESKTOP_ENTRY_EXISTED=0
+  V4_APP_ICON=$app_icon
+  V4_APP_ICON_EXISTED=0
   V4_TRANSACTION_ACTIVE=1
   V4_TRANSACTION_DIR=$(mktemp -d)
   cp -p -- "$shell_config" "$V4_TRANSACTION_DIR/shell.json"
   cp -p -- "$hypr_bindings" "$V4_TRANSACTION_DIR/bindings.lua"
   cp -p -- "$hypr_main" "$V4_TRANSACTION_DIR/hyprland.lua"
+  if [[ -f $desktop_entry ]]; then
+    cp -p -- "$desktop_entry" "$V4_TRANSACTION_DIR/kvn-tui.desktop"
+    V4_DESKTOP_ENTRY_EXISTED=1
+  fi
+  if [[ -f $app_icon ]]; then
+    cp -p -- "$app_icon" "$V4_TRANSACTION_DIR/kvn-tui.svg"
+    V4_APP_ICON_EXISTED=1
+  fi
 
   rollback_v4() {
     local snapshot target tmp
@@ -354,6 +414,20 @@ $V4_TRANSACTION_DIR/shell.json $V4_SHELL_CONFIG
 $V4_TRANSACTION_DIR/bindings.lua $V4_HYPR_BINDINGS
 $V4_TRANSACTION_DIR/hyprland.lua $V4_HYPR_MAIN
 EOF
+    if (( V4_DESKTOP_ENTRY_EXISTED )); then
+      tmp=$(mktemp "${V4_DESKTOP_ENTRY}.tmp.XXXXXX")
+      cp -p -- "$V4_TRANSACTION_DIR/kvn-tui.desktop" "$tmp"
+      atomic_replace "$tmp" "$V4_DESKTOP_ENTRY"
+    else
+      rm -f -- "$V4_DESKTOP_ENTRY"
+    fi
+    if (( V4_APP_ICON_EXISTED )); then
+      tmp=$(mktemp "${V4_APP_ICON}.tmp.XXXXXX")
+      cp -p -- "$V4_TRANSACTION_DIR/kvn-tui.svg" "$tmp"
+      atomic_replace "$tmp" "$V4_APP_ICON"
+    else
+      rm -f -- "$V4_APP_ICON"
+    fi
     if (( plugin_dir_created )); then
       rm -rf -- "$HOME/.config/omarchy/plugins/yarikov.omakvn"
     fi
@@ -426,6 +500,8 @@ EOF
   fi
 
   install_launcher 4
+  install_app_icon
+  install_desktop_entry
 
   if grep -Fq -- "-- kvn-tui keybinding: begin" "$hypr_bindings" ||
     grep -Fq "omarchy-launch-kvn-tui" "$hypr_bindings"; then
