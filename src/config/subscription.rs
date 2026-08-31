@@ -1,6 +1,6 @@
 use std::{collections::HashMap, env, process::Command};
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use base64::Engine;
 use uuid::Uuid;
 
@@ -9,6 +9,17 @@ use crate::config::profile::{
 };
 
 const KVN_TUI_USER_AGENT: &str = concat!("kvn-tui/", env!("CARGO_PKG_VERSION"));
+const MAX_SUBSCRIPTION_BYTES: usize = 2 * 1024 * 1024;
+
+fn ensure_subscription_size(bytes: usize, kind: &str) -> Result<()> {
+    if bytes > MAX_SUBSCRIPTION_BYTES {
+        anyhow::bail!(
+            "Subscription {kind} exceeds the {} MiB limit",
+            MAX_SUBSCRIPTION_BYTES / (1024 * 1024)
+        );
+    }
+    Ok(())
+}
 
 /// Validate that a subscription URL uses encrypted transport.
 pub fn validate_subscription_url(input: &str) -> Result<()> {
@@ -221,10 +232,21 @@ fn fetch_response(
         anyhow::bail!("HTTP {} for {}", resp.status(), redacted_url);
     }
 
+    // Read one byte beyond the application limit so an exact-limit body is
+    // accepted while any larger response is rejected deterministically.
     let body = resp
         .into_body()
+        .into_with_config()
+        .limit((MAX_SUBSCRIPTION_BYTES + 1) as u64)
         .read_to_string()
-        .context("Failed to read subscription body")?;
+        .map_err(|error| match error {
+            ureq::Error::BodyExceedsLimit(_) => anyhow::anyhow!(
+                "Subscription response exceeds the {} MiB limit",
+                MAX_SUBSCRIPTION_BYTES / (1024 * 1024)
+            ),
+            error => anyhow::Error::new(error).context("Failed to read subscription body"),
+        })?;
+    ensure_subscription_size(body.len(), "response")?;
     Ok((body, resp_headers))
 }
 
@@ -475,6 +497,7 @@ fn urlencode(s: &str) -> String {
 /// Parse a subscription body that is either Base64-encoded or plain text.
 /// Each non-empty line is interpreted as a share link in any supported scheme.
 pub fn parse_subscription_body(body: &str) -> Result<Vec<Profile>> {
+    ensure_subscription_size(body.len(), "body")?;
     let trimmed = body.trim();
     if trimmed.is_empty() {
         anyhow::bail!("Subscription body is empty");
@@ -484,7 +507,7 @@ pub fn parse_subscription_body(body: &str) -> Result<Vec<Profile>> {
         return Ok(profiles);
     }
 
-    let decoded = try_decode_base64(trimmed);
+    let decoded = try_decode_base64(trimmed)?;
     let text = decoded.as_deref().unwrap_or(trimmed);
 
     let mut profiles = Vec::new();
@@ -509,18 +532,21 @@ pub fn parse_subscription_body(body: &str) -> Result<Vec<Profile>> {
 /// Attempt to Base64-decode `text`. Returns `Some(decoded)` only when decoding
 /// succeeds and the result looks like a subscription (contains at least one
 /// supported scheme prefix). This prevents treating plain text as binary garbage.
-fn try_decode_base64(text: &str) -> Option<String> {
-    let decoded_bytes = base64::engine::general_purpose::STANDARD
-        .decode(text)
-        .ok()?;
-    let decoded = String::from_utf8(decoded_bytes).ok()?;
+fn try_decode_base64(text: &str) -> Result<Option<String>> {
+    let Some(decoded_bytes) = base64::engine::general_purpose::STANDARD.decode(text).ok() else {
+        return Ok(None);
+    };
+    ensure_subscription_size(decoded_bytes.len(), "decoded body")?;
+    let Some(decoded) = String::from_utf8(decoded_bytes).ok() else {
+        return Ok(None);
+    };
     if decoded.lines().any(|line| {
         let l = line.trim();
         line_has_supported_scheme(l)
     }) {
-        Some(decoded)
+        Ok(Some(decoded))
     } else {
-        None
+        Ok(None)
     }
 }
 
@@ -559,6 +585,21 @@ mod tests {
     #[test]
     fn parse_empty_body_fails() {
         assert!(parse_subscription_body("   ").is_err());
+    }
+
+    #[test]
+    fn subscription_size_limit_accepts_boundary_and_rejects_larger_values() {
+        assert!(ensure_subscription_size(MAX_SUBSCRIPTION_BYTES - 1, "body").is_ok());
+        assert!(ensure_subscription_size(MAX_SUBSCRIPTION_BYTES, "body").is_ok());
+        let error = ensure_subscription_size(MAX_SUBSCRIPTION_BYTES + 1, "body").unwrap_err();
+        assert!(error.to_string().contains("2 MiB limit"));
+    }
+
+    #[test]
+    fn oversized_subscription_body_fails_before_parsing() {
+        let body = "x".repeat(MAX_SUBSCRIPTION_BYTES + 1);
+        let error = parse_subscription_body(&body).unwrap_err();
+        assert!(error.to_string().contains("Subscription body exceeds"));
     }
 
     #[test]
