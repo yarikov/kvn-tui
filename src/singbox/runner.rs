@@ -33,7 +33,7 @@ fn write_config(profile: &Profile, settings: &Settings, geo: &GeoAvailability) -
         fs::create_dir_all(parent)?;
     }
 
-    fs::write(&path, serde_json::to_string_pretty(&config)?)
+    crate::atomic_write::write(&path, serde_json::to_string_pretty(&config)?.as_bytes())
         .with_context(|| format!("Failed to write config to {:?}", path))?;
 
     Ok(path)
@@ -159,6 +159,7 @@ fn spawn_stderr_drain(stderr: ChildStderr) {
 mod tests {
     use super::*;
     use crate::config::profile::Profile;
+    use std::os::unix::fs::PermissionsExt;
 
     #[test]
     fn singbox_binary_resolution() {
@@ -194,6 +195,10 @@ mod tests {
         let json: serde_json::Value = serde_json::from_str(&contents).unwrap();
         assert!(json.get("log").is_some());
         assert!(json.get("outbounds").is_some());
+        assert_eq!(
+            fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
 
         // Clean up
         let _ = fs::remove_file(&path);
