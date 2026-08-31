@@ -157,7 +157,9 @@ kvn-tui setup --omarchy
 On **Omarchy 4 (Quattro)** this installs the standalone
 [omakvn](https://github.com/yarikov/omakvn) Quickshell bar plugin (`yarikov.omakvn`):
 it shows live VPN status and provides profile selection and common VPN controls
-directly from the bar. On Omarchy 3 (or builds without the shell plugin
+directly from the bar. It also adds kvn-tui to the **Apps** menu; search for
+`kvn-tui`, `tui`, or `vpn` to open or focus the terminal client. On Omarchy 3
+(or builds without the shell plugin
 registry), setup falls back to a Waybar status module that opens the TUI on
 click.
 

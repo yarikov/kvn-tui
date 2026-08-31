@@ -11,6 +11,8 @@ FILES=(
   "${HOME}/.config/hypr/autostart.conf"
   "${HOME}/.config/hypr/bindings.conf"
   "${HOME}/.config/hypr/hyprland.conf"
+  "${HOME}/.local/share/applications/kvn-tui.desktop"
+  "${HOME}/.local/share/icons/hicolor/scalable/apps/kvn-tui.svg"
 )
 
 removed=0

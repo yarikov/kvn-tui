@@ -813,6 +813,31 @@ esac
         assert!(launcher.contains("omarchy-shell shell summon yarikov.omakvn '{}'"));
         assert!(launcher.contains("omarchy-launch-or-focus-tui"));
         assert!(launcher.contains("--app-id=org.omarchy.kvn-tui"));
+        let desktop_entry =
+            fs::read_to_string(home.join(".local/share/applications/kvn-tui.desktop")).unwrap();
+        for expected in [
+            "Type=Application",
+            "Name=kvn-tui",
+            "GenericName=VPN Client",
+            "Exec=omarchy-launch-or-focus-tui --app-id=org.omarchy.kvn-tui kvn-tui",
+            "TryExec=kvn-tui",
+            "Terminal=false",
+            "Icon=kvn-tui",
+            "Categories=Network;Utility;",
+            "Keywords=VPN;TUI;Terminal;sing-box;",
+        ] {
+            assert!(desktop_entry.contains(expected), "missing {expected}");
+        }
+        let app_icon =
+            fs::read_to_string(home.join(".local/share/icons/hicolor/scalable/apps/kvn-tui.svg"))
+                .unwrap();
+        for expected in [
+            r#"viewBox="0 0 128 128""#,
+            r##"fill="#101010""##,
+            r##"fill="#f5f1e8""##,
+        ] {
+            assert!(app_icon.contains(expected), "missing {expected}");
+        }
         let shell_backups = backup_files(&omarchy.join("shell.json"));
         assert_eq!(shell_backups.len(), 1);
         assert!(
@@ -868,6 +893,32 @@ esac
         let contents = fs::read_to_string(&launcher).unwrap();
         assert!(contents.contains("omarchy-shell shell summon yarikov.omakvn '{}'"));
         assert_eq!(backup_files(&launcher).len(), 1);
+    }
+
+    #[test]
+    fn omarchy_v4_installer_upgrades_desktop_entry_idempotently() {
+        let (root, home) = installer_fixture(4);
+        write_omarchy_v4_config(&home);
+        let desktop_entry = home.join(".local/share/applications/kvn-tui.desktop");
+        let app_icon = home.join(".local/share/icons/hicolor/scalable/apps/kvn-tui.svg");
+        fs::create_dir_all(desktop_entry.parent().unwrap()).unwrap();
+        fs::create_dir_all(app_icon.parent().unwrap()).unwrap();
+        fs::write(&desktop_entry, "[Desktop Entry]\nName=Old kvn-tui\n").unwrap();
+        fs::write(&app_icon, "<svg>old</svg>\n").unwrap();
+
+        assert_success(&run_installer(&root, &home, "y\n\n"));
+
+        let contents = fs::read_to_string(&desktop_entry).unwrap();
+        assert!(contents.contains("Name=kvn-tui"));
+        assert!(contents.contains("Keywords=VPN;TUI;Terminal;sing-box;"));
+        assert_eq!(backup_files(&desktop_entry).len(), 1);
+        let icon_contents = fs::read_to_string(&app_icon).unwrap();
+        assert!(icon_contents.contains(r##"fill="#f5f1e8""##));
+        assert_eq!(backup_files(&app_icon).len(), 1);
+
+        assert_success(&run_installer(&root, &home, ""));
+        assert_eq!(backup_files(&desktop_entry).len(), 1);
+        assert_eq!(backup_files(&app_icon).len(), 1);
     }
 
     #[test]
@@ -992,6 +1043,48 @@ esac
     }
 
     #[test]
+    fn omarchy_v4_failure_removes_new_desktop_entry() {
+        let (root, home) = installer_fixture(4);
+        write_omarchy_v4_config(&home);
+        write_executable(
+            &root.path().join("bin/hyprctl"),
+            "#!/bin/bash\ncase ${1:-} in\nconfigerrors) marker=$HOME/.hypr-errors-seen; if [[ -e $marker ]]; then echo 'new error'; else touch $marker; fi;;\nreload) exit 0;;\nesac\n",
+        );
+        let desktop_entry = home.join(".local/share/applications/kvn-tui.desktop");
+        let app_icon = home.join(".local/share/icons/hicolor/scalable/apps/kvn-tui.svg");
+
+        let output = run_installer(&root, &home, "n\n");
+
+        assert!(!output.status.success());
+        assert!(!desktop_entry.exists());
+        assert!(!app_icon.exists());
+    }
+
+    #[test]
+    fn omarchy_v4_failure_restores_existing_desktop_entry() {
+        let (root, home) = installer_fixture(4);
+        write_omarchy_v4_config(&home);
+        write_executable(
+            &root.path().join("bin/hyprctl"),
+            "#!/bin/bash\ncase ${1:-} in\nconfigerrors) marker=$HOME/.hypr-errors-seen; if [[ -e $marker ]]; then echo 'new error'; else touch $marker; fi;;\nreload) exit 0;;\nesac\n",
+        );
+        let desktop_entry = home.join(".local/share/applications/kvn-tui.desktop");
+        let app_icon = home.join(".local/share/icons/hicolor/scalable/apps/kvn-tui.svg");
+        fs::create_dir_all(desktop_entry.parent().unwrap()).unwrap();
+        fs::create_dir_all(app_icon.parent().unwrap()).unwrap();
+        let original = "[Desktop Entry]\nName=Personal kvn-tui\n";
+        let original_icon = "<svg>personal</svg>\n";
+        fs::write(&desktop_entry, original).unwrap();
+        fs::write(&app_icon, original_icon).unwrap();
+
+        let output = run_installer(&root, &home, "n\n");
+
+        assert!(!output.status.success());
+        assert_eq!(fs::read_to_string(desktop_entry).unwrap(), original);
+        assert_eq!(fs::read_to_string(app_icon).unwrap(), original_icon);
+    }
+
+    #[test]
     fn omarchy_installer_keeps_only_five_backups_per_changed_file() {
         let (root, home) = installer_fixture(4);
         let shell_config = home.join(".config/omarchy/shell.json");
@@ -1038,6 +1131,17 @@ esac
         fs::write(&legacy, "legacy").unwrap();
         fs::write(&timestamped, "timestamped").unwrap();
         fs::write(&unrelated, "keep").unwrap();
+        let desktop_entry = home.join(".local/share/applications/kvn-tui.desktop");
+        fs::create_dir_all(desktop_entry.parent().unwrap()).unwrap();
+        fs::write(&desktop_entry, "active").unwrap();
+        let desktop_backup =
+            desktop_entry.with_file_name("kvn-tui.desktop.bak.before-kvn-tui.20260821143012");
+        fs::write(&desktop_backup, "backup").unwrap();
+        let app_icon = home.join(".local/share/icons/hicolor/scalable/apps/kvn-tui.svg");
+        fs::create_dir_all(app_icon.parent().unwrap()).unwrap();
+        fs::write(&app_icon, "active").unwrap();
+        let icon_backup = app_icon.with_file_name("kvn-tui.svg.bak.before-kvn-tui.20260821143012");
+        fs::write(&icon_backup, "backup").unwrap();
         let plugin = omarchy.join("plugins/yarikov.omakvn");
         fs::create_dir_all(&plugin).unwrap();
         fs::write(plugin.join("manifest.json"), "{}").unwrap();
@@ -1063,6 +1167,10 @@ esac
         assert!(!legacy.exists());
         assert!(!timestamped.exists());
         assert!(unrelated.exists());
+        assert!(desktop_entry.exists());
+        assert!(!desktop_backup.exists());
+        assert!(app_icon.exists());
+        assert!(!icon_backup.exists());
         assert!(plugin.exists(), "bar plugin directory should be preserved");
         assert!(
             legacy_plugin.exists(),
@@ -1146,6 +1254,16 @@ esac
             fs::read_to_string(hypr.join("hyprland.conf"))
                 .unwrap()
                 .contains("org.omarchy.kvn-tui")
+        );
+        assert!(
+            !home
+                .join(".local/share/applications/kvn-tui.desktop")
+                .exists()
+        );
+        assert!(
+            !home
+                .join(".local/share/icons/hicolor/scalable/apps/kvn-tui.svg")
+                .exists()
         );
     }
 

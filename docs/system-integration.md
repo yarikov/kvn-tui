@@ -173,6 +173,10 @@ The installer updates:
   `kvn-tui` command module on fallback), inserted before `omarchy.bluetooth`;
 - `~/.config/hypr/bindings.lua` — optional launcher binding;
 - `~/.config/hypr/hyprland.lua` — floating-window rule.
+- `~/.local/share/applications/kvn-tui.desktop` — Apps menu entry searchable by
+  `kvn-tui`, `tui`, and `vpn`; it opens or focuses the TUI directly.
+- `~/.local/share/icons/hicolor/scalable/apps/kvn-tui.svg` — high-contrast Apps
+  icon styled like Omarchy's bundled applications for light and dark themes.
 
 When `omarchy-shell` is running, the installer also triggers a plugin rescan
 and an idempotent `omarchy bar put yarikov.omakvn` so the widget appears without a
@@ -203,6 +207,8 @@ and window-rule entries. Remove the launcher separately:
 
 ```bash
 rm ~/.local/bin/omarchy-launch-kvn-tui
+rm ~/.local/share/applications/kvn-tui.desktop
+rm ~/.local/share/icons/hicolor/scalable/apps/kvn-tui.svg
 ```
 
 After confirming the active configuration no longer needs the backups, delete
