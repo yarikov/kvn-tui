@@ -1009,7 +1009,10 @@ fn handle_clipboard_text(model: &mut Model, text: &str) -> Vec<Effect> {
 }
 
 fn add_and_fetch_subscription(model: &mut Model, url: &str) -> Vec<Effect> {
-    if let Err(error) = crate::config::subscription::validate_subscription_url(url) {
+    if let Err(error) = crate::config::subscription::validate_subscription_url(
+        url,
+        model.config.settings.allow_insecure_http_subscriptions,
+    ) {
         let mut effects = Vec::new();
         push_status(
             &mut effects,
@@ -3734,7 +3737,24 @@ mod tests {
     }
 
     #[test]
-    fn paste_http_subscription_is_rejected_before_save() {
+    fn paste_http_subscription_is_allowed_with_compatibility_flag() {
+        let mut model = model_with_profiles(vec![]);
+        model.config.settings.allow_insecure_http_subscriptions = true;
+
+        let effects = handle_clipboard_text(&mut model, "http://example.com/secret-token");
+
+        assert_eq!(model.config.subscriptions.len(), 1);
+        assert!(model.subscription_fetching);
+        assert!(effects.contains(&Effect::SaveConfig));
+        assert!(effects.iter().any(|effect| matches!(
+            effect,
+            Effect::UpdateSubscription { id }
+                if *id == model.config.subscriptions[0].id
+        )));
+    }
+
+    #[test]
+    fn paste_http_subscription_is_rejected_for_new_users() {
         let mut model = model_with_profiles(vec![]);
 
         let effects = handle_clipboard_text(&mut model, "http://example.com/secret-token");
