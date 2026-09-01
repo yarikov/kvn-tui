@@ -15,7 +15,7 @@ expression: "snapshot_terminal(&model, 80, 24)"
 │               │            Telegram  ‹ Disabled ›            │               │
 │               │                                              │               │
 │               │           j/k navigate, h/l change           │               │
-│               │          Enter confirm, q/Esc cancel         │               │
+│               │      Enter confirm, q/Esc cancel, ? help     │               │
 │               │                                              │               │
 │               │                                              │               │
 │               │                                              │               │

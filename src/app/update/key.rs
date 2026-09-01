@@ -9,17 +9,23 @@
 use crossterm::event::KeyEvent;
 
 use crate::app::effect::Effect;
-use crate::app::model::{AppStatus, Model, Overlay};
+use crate::app::model::{
+    AppStatus, HelpContext, HelpMode, HelpState, MainPaneFocus, Model, Overlay,
+};
 
 use super::*;
 
 pub(super) fn handle_key(model: &mut Model, key: KeyEvent) -> Vec<Effect> {
+    if key.code == KeyCode::Char('?') && !matches!(model.overlay, Overlay::Help(_)) {
+        open_help(model);
+        return vec![];
+    }
     match model.overlay {
-        Overlay::None => handle_sources(model, key),
-        Overlay::Help => {
-            model.overlay = Overlay::None;
-            vec![]
+        Overlay::None if model.main_pane_focus == MainPaneFocus::Sources => {
+            handle_sources(model, key)
         }
+        Overlay::None => handle_logs(model, key),
+        Overlay::Help(state) => handle_help(model, state, key),
         Overlay::ConfirmDelete => handle_confirm_delete(model, key),
         Overlay::RoutingMode => handle_routing_mode(model, key),
         Overlay::GeoRegions => handle_geo_region(model, key),
@@ -27,6 +33,69 @@ pub(super) fn handle_key(model: &mut Model, key: KeyEvent) -> Vec<Effect> {
         Overlay::ThemeSettings => handle_theme_picker(model, key),
         Overlay::ServiceRouting => handle_service_routing(model, key),
     }
+}
+
+fn handle_logs(model: &mut Model, key: KeyEvent) -> Vec<Effect> {
+    match key.code {
+        KeyCode::Char('m')
+        | KeyCode::Char('o')
+        | KeyCode::Char('D')
+        | KeyCode::Char('S')
+        | KeyCode::Char('C')
+        | KeyCode::Char('a')
+        | KeyCode::Char('K')
+        | KeyCode::Char('r')
+        | KeyCode::Char('s')
+        | KeyCode::Char('I') => handle_sources(model, key),
+        _ => vec![],
+    }
+}
+
+fn open_help(model: &mut Model) {
+    let context = match model.overlay {
+        Overlay::None => match model.main_pane_focus {
+            MainPaneFocus::Sources => HelpContext::Sources,
+            MainPaneFocus::Logs => HelpContext::Logs,
+        },
+        Overlay::ConfirmDelete => HelpContext::ConfirmDelete,
+        Overlay::RoutingMode => HelpContext::RoutingMode,
+        Overlay::GeoRegions => HelpContext::GeoRegions,
+        Overlay::DnsSettings => HelpContext::DnsSettings,
+        Overlay::ThemeSettings => HelpContext::ThemeSettings,
+        Overlay::ServiceRouting => HelpContext::ServiceRouting,
+        Overlay::Help(_) => return,
+    };
+    model.overlay = Overlay::Help(HelpState {
+        context,
+        mode: HelpMode::Context,
+        selected: 0,
+    });
+}
+
+fn handle_help(model: &mut Model, mut state: HelpState, key: KeyEvent) -> Vec<Effect> {
+    let can_cancel_geo = model.config.settings.geo_routing.current_region.is_some();
+    let row_count = crate::ui::help::rows(state, can_cancel_geo).len();
+    match key.code {
+        KeyCode::Tab => {
+            state.mode = match state.mode {
+                HelpMode::Context => HelpMode::All,
+                HelpMode::All => HelpMode::Context,
+            };
+            state.selected = 0;
+        }
+        KeyCode::Char('j') | KeyCode::Down => {
+            crate::ui::nav::select_next(&mut state.selected, row_count);
+        }
+        KeyCode::Char('k') | KeyCode::Up => crate::ui::nav::select_prev(&mut state.selected),
+        KeyCode::Char('G') => crate::ui::nav::select_last(&mut state.selected, row_count),
+        KeyCode::Char('q') | KeyCode::Esc | KeyCode::Char('?') => {
+            model.overlay = state.context.restore_overlay();
+            return vec![];
+        }
+        _ => {}
+    }
+    model.overlay = Overlay::Help(state);
+    vec![]
 }
 
 /// Build the picker list. First entry is the Auto-follow-Omarchy slot
@@ -262,9 +331,6 @@ pub(super) fn handle_sources(model: &mut Model, key: KeyEvent) -> Vec<Effect> {
             model.theme_draft = None;
             model.overlay = Overlay::ThemeSettings;
         }
-
-        // Help
-        KeyCode::Char('?') => model.overlay = Overlay::Help,
 
         _ => {}
     }
@@ -582,7 +648,11 @@ fn handle_go_first(model: &mut Model) -> Vec<Effect> {
         Overlay::ServiceRouting => {
             crate::ui::nav::select_first(&mut model.service_routing_selected);
         }
-        Overlay::Help | Overlay::ConfirmDelete => {}
+        Overlay::Help(mut state) => {
+            state.selected = 0;
+            model.overlay = Overlay::Help(state);
+        }
+        Overlay::ConfirmDelete => {}
     }
     vec![]
 }
@@ -598,6 +668,8 @@ pub(super) fn rebuild_key_event(
         "Esc" => KeyCode::Esc,
         "Up" => KeyCode::Up,
         "Down" => KeyCode::Down,
+        "Left" => KeyCode::Left,
+        "Right" => KeyCode::Right,
         "Tab" => KeyCode::Tab,
         "BackTab" => KeyCode::BackTab,
         "Char" => KeyCode::Char(ch.unwrap_or(' ')),
@@ -1778,6 +1850,14 @@ mod tests {
             rebuild_key_event("Down", None, false).unwrap().code,
             KeyCode::Down
         );
+        assert_eq!(
+            rebuild_key_event("Left", None, false).unwrap().code,
+            KeyCode::Left
+        );
+        assert_eq!(
+            rebuild_key_event("Right", None, false).unwrap().code,
+            KeyCode::Right
+        );
         let ctrl_c = rebuild_key_event("Char", Some('c'), true).unwrap();
         assert_eq!(ctrl_c.code, KeyCode::Char('c'));
         assert_eq!(ctrl_c.modifiers, KeyModifiers::CONTROL);
@@ -1933,7 +2013,10 @@ mod tests {
     fn ipc_go_first_is_noop_for_non_selectable_overlays() {
         let mut model = model_with_profiles(vec![]);
         model.routing_selected = 2;
-        for overlay in [Overlay::Help, Overlay::ConfirmDelete] {
+        for overlay in [
+            Overlay::Help(crate::app::model::HelpState::default()),
+            Overlay::ConfirmDelete,
+        ] {
             model.overlay = overlay;
             handle_ipc_command(&mut model, crate::app::msg::IpcCommand::GoFirst);
             assert_eq!(model.overlay, overlay);
@@ -2183,5 +2266,81 @@ mod tests {
         );
         assert_eq!(model.connection, ConnectionState::Connected);
         assert_eq!(model.connecting_profile_id, None);
+    }
+
+    #[test]
+    fn help_uses_pane_context_and_blocks_source_actions_in_logs() {
+        let profile = Profile::new_vless("A".into(), "a".into(), 1, "u".into());
+        let profile_id = profile.id;
+        let mut model = model_with_profiles(vec![profile]);
+        model.main_pane_focus = MainPaneFocus::Logs;
+
+        assert!(handle_key(&mut model, enter()).is_empty());
+        assert_eq!(model.connection, ConnectionState::Idle);
+
+        handle_key(&mut model, key('D'));
+        assert_eq!(model.overlay, Overlay::DnsSettings);
+        model.overlay = Overlay::None;
+
+        let effects = handle_key(&mut model, key('a'));
+        assert!(model.config.settings.auto_connect);
+        assert!(effects.contains(&Effect::SaveConfig));
+
+        let effects = handle_key(&mut model, key('K'));
+        assert_eq!(model.kill_switch_pending, Some(true));
+        assert!(effects.contains(&Effect::ApplyKillSwitch { enabled: true }));
+
+        let previous_schedule = model.config.settings.geo_routing.auto_update;
+        let effects = handle_key(&mut model, key('I'));
+        assert_ne!(
+            model.config.settings.geo_routing.auto_update,
+            previous_schedule
+        );
+        assert!(effects.contains(&Effect::SaveConfig));
+
+        model.connection = ConnectionState::Connected;
+        model.active_profile_id = Some(profile_id);
+        handle_key(&mut model, key('r'));
+        assert_eq!(model.connection, ConnectionState::Connecting);
+        assert_eq!(model.connecting_profile_id, Some(profile_id));
+
+        model.connection = ConnectionState::Connected;
+        let effects = handle_key(&mut model, key('s'));
+        assert_eq!(effects, vec![Effect::Disconnect]);
+
+        handle_key(&mut model, key('?'));
+        assert!(matches!(
+            model.overlay,
+            Overlay::Help(HelpState {
+                context: HelpContext::Logs,
+                mode: HelpMode::Context,
+                selected: 0,
+            })
+        ));
+    }
+
+    #[test]
+    fn help_switches_modes_scrolls_and_restores_overlay_draft() {
+        let mut model = model_with_profiles(vec![]);
+        model.overlay = Overlay::DnsSettings;
+        model.dns_selected = 4;
+        model.dns_strategy_draft = Some(DnsStrategy::PreferIpv6);
+
+        handle_key(&mut model, key('?'));
+        handle_key(&mut model, KeyEvent::from(KeyCode::Tab));
+        handle_key(&mut model, key('j'));
+        assert!(matches!(
+            model.overlay,
+            Overlay::Help(HelpState {
+                context: HelpContext::DnsSettings,
+                mode: HelpMode::All,
+                selected: 1,
+            })
+        ));
+
+        handle_key(&mut model, key('?'));
+        assert_eq!(model.overlay, Overlay::DnsSettings);
+        assert_eq!(model.dns_selected, 4);
+        assert_eq!(model.dns_strategy_draft, Some(DnsStrategy::PreferIpv6));
     }
 }

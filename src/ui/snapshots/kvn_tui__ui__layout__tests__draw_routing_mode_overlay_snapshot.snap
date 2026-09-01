@@ -14,8 +14,8 @@ expression: "snapshot_terminal(&model, 80, 20)"
 │               │                   Bypass RU                  │               │
 │               │                   > Only RU                  │               │
 │               │                                              │               │
-│               │   j/k navigate, Enter confirm, q/Esc cancel  │               │
-│               │                                              │               │
+│               │          j/k navigate, Enter confirm         │               │
+│               │             q/Esc cancel, ? help             │               │
 │               └──────────────────────────────────────────────┘               │
 │                                      ││                                      │
 │                                      ││                                      │

@@ -2,11 +2,11 @@ use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::Modifier;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, Paragraph, Row, Table, Wrap};
+use ratatui::widgets::{Block, Borders, Clear, Paragraph, Row, Table, TableState, Wrap};
 use std::time::{Duration, Instant};
 use unicode_width::UnicodeWidthChar;
 
-use crate::app::model::{MainPaneFocus, Model, Overlay, SourceRow};
+use crate::app::model::{HelpMode, MainPaneFocus, Model, Overlay, SourceRow};
 use crate::ui::styles::Theme;
 use crate::ui::widgets::{
     StatusBar, format_bps_field, format_bytes_field, format_connections_field,
@@ -572,9 +572,8 @@ pub(crate) fn draw_with_interaction(
     );
     draw_status_bar(frame, model, status_area);
 
-    let theme = &model.theme;
     match model.overlay {
-        Overlay::Help => draw_help(frame, theme, area),
+        Overlay::Help(state) => draw_help(frame, model, state, area),
         Overlay::ConfirmDelete => draw_confirm_delete(frame, model, area),
         Overlay::RoutingMode => draw_routing_mode(frame, model, area),
         Overlay::GeoRegions => draw_geo_region(frame, model, area),
@@ -681,48 +680,39 @@ fn draw_status_bar(frame: &mut Frame, model: &Model, area: Rect) {
 }
 
 /// Draw the help popup overlay.
-fn draw_help(frame: &mut Frame, theme: &Theme, area: Rect) {
-    let header = Row::new(vec!["Key", "Action"]).style(theme.accent().add_modifier(Modifier::BOLD));
-
-    let rows: Vec<Row> = vec![
-        Row::new(vec!["h / l", "Focus Sources / Logs"]),
-        Row::new(vec!["j / Down", "Move down"]),
-        Row::new(vec!["k / Up", "Move up"]),
-        Row::new(vec!["gg", "Go to first / buffer top"]),
-        Row::new(vec!["G", "Go to last / buffer bottom"]),
-        Row::new(vec!["Enter", "Connect to selected profile"]),
-        Row::new(vec!["p", "Paste from clipboard"]),
-        Row::new(vec!["y", "Yank selected source / log"]),
-        Row::new(vec!["Shift+V", "Select multiple logs"]),
-        Row::new(vec!["d", "Delete selected source"]),
-        Row::new(vec!["m", "Routing mode (popup list)"]),
-        Row::new(vec!["o", "Geo region"]),
-        Row::new(vec!["u", "Update subscription or geo"]),
-        Row::new(vec!["i", "Cycle subscription auto-update"]),
-        Row::new(vec!["I", "Cycle geo auto-update"]),
-        Row::new(vec!["e", "Open profiles.json in $EDITOR"]),
-        Row::new(vec!["a", "Toggle auto-connect"]),
-        Row::new(vec!["K", "Toggle kill switch"]),
-        Row::new(vec!["D", "DNS settings"]),
-        Row::new(vec!["S", "Service routing"]),
-        Row::new(vec!["C", "Theme picker"]),
-        Row::new(vec!["t", "Test selected profile latency"]),
-        Row::new(vec!["T", "Test all profiles (batch)"]),
-        Row::new(vec!["r", "Reconnect"]),
-        Row::new(vec!["s", "Stop / disconnect"]),
-        Row::new(vec!["q / Esc", "Detach TUI"]),
-        Row::new(vec!["Ctrl+C", "Quit"]),
-        Row::new(vec!["?", "Show this help"]),
-    ];
-
-    let needed = rows.len() as u16 + 1 + 2 + 1; // data rows + header + borders + padding
-    let percent = ((needed * 100) / area.height).clamp(50, 90);
-    let popup_area = centered_rect(POPUP_WIDTH_PERCENT, percent, area);
+fn draw_help(
+    frame: &mut Frame,
+    model: &Model,
+    help_state: crate::app::model::HelpState,
+    area: Rect,
+) {
+    let theme = &model.theme;
+    let help_rows = crate::ui::help::rows(
+        help_state,
+        model.config.settings.geo_routing.current_region.is_some(),
+    );
+    let needed = help_rows.len() as u16 + 1 + 2 + 2;
+    let percent = needed
+        .saturating_mul(100)
+        .checked_div(area.height)
+        .unwrap_or(90)
+        .clamp(50, 90);
+    let width_percent = match help_state.mode {
+        HelpMode::Context => 70,
+        HelpMode::All => 80,
+    };
+    let popup_area = centered_rect(width_percent, percent, area);
 
     frame.render_widget(Clear, popup_area);
 
     let block = Block::default()
-        .title(" Help ")
+        .title(format!(
+            " Help — {} ",
+            match help_state.mode {
+                HelpMode::Context => crate::ui::help::title(help_state.context),
+                HelpMode::All => "All",
+            }
+        ))
         .borders(Borders::ALL)
         .border_style(theme.accent())
         .style(theme.popup_bg());
@@ -730,9 +720,61 @@ fn draw_help(frame: &mut Frame, theme: &Theme, area: Rect) {
     let inner = block.inner(popup_area);
     frame.render_widget(block, popup_area);
 
-    let table = Table::new(rows, [Constraint::Length(12), Constraint::Min(1)]).header(header);
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(1), Constraint::Length(2)])
+        .split(inner);
+    let visible_count = chunks[0].height.saturating_sub(1) as usize;
+    let selected = help_state.selected.min(help_rows.len().saturating_sub(1));
+    let window_start = if help_rows.len() > visible_count {
+        selected
+            .saturating_sub(visible_count / 2)
+            .min(help_rows.len() - visible_count)
+    } else {
+        0
+    };
+    let window_end = (window_start + visible_count).min(help_rows.len());
+    let all_mode = help_state.mode == HelpMode::All;
+    let header = if all_mode {
+        Row::new(vec!["Context", "Key", "Action"])
+    } else {
+        Row::new(vec!["Key", "Action"])
+    }
+    .style(theme.accent().add_modifier(Modifier::BOLD));
+    let rows = help_rows[window_start..window_end].iter().map(|row| {
+        if all_mode {
+            Row::new(vec![row.context, row.key, row.action])
+        } else {
+            Row::new(vec![row.key, row.action])
+        }
+    });
+    let widths = if all_mode {
+        vec![
+            Constraint::Length(16),
+            Constraint::Length(18),
+            Constraint::Min(1),
+        ]
+    } else {
+        vec![Constraint::Length(18), Constraint::Min(1)]
+    };
+    let table = Table::new(rows, widths)
+        .header(header)
+        .row_highlight_style(theme.selected())
+        .highlight_symbol("> ");
+    let mut table_state = TableState::default().with_selected(Some(selected - window_start));
+    frame.render_stateful_widget(table, chunks[0], &mut table_state);
 
-    frame.render_widget(table, inner);
+    let mode_hint = match help_state.mode {
+        HelpMode::Context => "Tab: show all commands",
+        HelpMode::All => "Tab: show contextual commands",
+    };
+    frame.render_widget(
+        Paragraph::new(vec![
+            Line::from(mode_hint).centered(),
+            Line::from("j/k scroll · gg/G edges · q/Esc/? back").centered(),
+        ]),
+        chunks[1],
+    );
 }
 
 /// Draw the delete confirmation dialog.
@@ -751,7 +793,7 @@ fn draw_confirm_delete(frame: &mut Frame, model: &Model, area: Rect) {
         vec![
             Line::from(Span::styled(message, theme.error())),
             Line::from(""),
-            Line::from("Press y/Enter to confirm, q/Esc to cancel"),
+            Line::from("y/Enter confirm, q/Esc cancel, ? help"),
         ],
         POPUP_HEIGHT_PERCENT,
     );
@@ -809,7 +851,7 @@ fn draw_routing_mode(frame: &mut Frame, model: &Model, area: Rect) {
         model.routing_selected,
         active,
         POPUP_HEIGHT_PERCENT,
-        &["j/k navigate, Enter confirm, q/Esc cancel"],
+        &["j/k navigate, Enter confirm", "q/Esc cancel, ? help"],
     );
 }
 
@@ -842,9 +884,9 @@ fn draw_geo_region(frame: &mut Frame, model: &Model, area: Rect) {
         active,
         POPUP_HEIGHT_PERCENT,
         if model.config.settings.geo_routing.current_region.is_some() {
-            &["j/k navigate, Enter confirm, q/Esc cancel"]
+            &["j/k navigate, Enter confirm", "q/Esc cancel, ? help"]
         } else {
-            &["j/k navigate, Enter confirm"]
+            &["j/k navigate, Enter confirm, ? help"]
         },
     );
 }
@@ -892,7 +934,10 @@ fn draw_dns_settings(frame: &mut Frame, model: &Model, area: Rect) {
         model.dns_selected,
         current_dns_preset_index(dns),
         POPUP_HEIGHT_PERCENT,
-        &["j/k navigate, h/l change", "Enter confirm, q/Esc cancel"],
+        &[
+            "j/k navigate, h/l change",
+            "Enter confirm, q/Esc cancel, ? help",
+        ],
     );
 }
 
@@ -955,7 +1000,7 @@ fn draw_service_routing(frame: &mut Frame, model: &Model, area: Rect) {
 
     lines.push(Line::from(""));
     lines.push(Line::from("j/k navigate, h/l change").centered());
-    lines.push(Line::from("Enter confirm, q/Esc cancel").centered());
+    lines.push(Line::from("Enter confirm, q/Esc cancel, ? help").centered());
 
     frame.render_widget(Paragraph::new(lines), inner);
 }
@@ -979,7 +1024,7 @@ fn draw_theme_settings(frame: &mut Frame, model: &Model, area: Rect) {
         model.theme_selected,
         active,
         POPUP_HEIGHT_PERCENT_TALL,
-        &["j/k navigate, Enter confirm, q/Esc cancel"],
+        &["j/k navigate, Enter confirm", "q/Esc cancel, ? help"],
     );
 }
 
@@ -1427,7 +1472,7 @@ mod tests {
         assert_eq!(source_hit_test(&model, area, 0, 5), None); // border
         assert_eq!(source_hit_test(&model, area, 50, 5), None); // Logs
         assert_eq!(source_hit_test(&model, Rect::new(0, 0, 80, 5), 2, 4), None);
-        model.overlay = Overlay::Help;
+        model.overlay = Overlay::Help(crate::app::model::HelpState::default());
         assert_eq!(source_hit_test(&model, area, 2, 5), None);
     }
 
@@ -1440,7 +1485,7 @@ mod tests {
         assert!(viewport.contains(41, 4));
         assert!(!viewport.contains(40, 4));
         assert!(!viewport.contains(41, 3));
-        model.overlay = Overlay::Help;
+        model.overlay = Overlay::Help(crate::app::model::HelpState::default());
         assert!(log_viewport(&model, area).is_none());
     }
 
@@ -1780,36 +1825,37 @@ mod tests {
 
         let backend = TestBackend::new(80, 40);
         let mut terminal = Terminal::new(backend).unwrap();
+        let model = model_with_profiles(vec![]);
+        let state = crate::app::model::HelpState::default();
         let frame = terminal
             .draw(|frame| {
                 let area = frame.area();
-                draw_help(frame, &Theme::legacy(), area);
+                draw_help(frame, &model, state, area);
             })
             .unwrap();
 
         let content: String = frame.buffer.content.iter().map(|c| c.symbol()).collect();
         let expected = [
-            ("h / l", "Focus Sources / Logs"),
+            ("h/l / Left/Right", "Focus Sources / Logs"),
             ("j / Down", "Move down"),
             ("k / Up", "Move up"),
-            ("gg", "Go to first / buffer top"),
-            ("G", "Go to last / buffer bottom"),
+            ("gg", "Go to first"),
+            ("G", "Go to last"),
             ("Enter", "Connect to selected profile"),
             ("p", "Paste from clipboard"),
-            ("Shift+V", "Select multiple logs"),
             ("d", "Delete selected source"),
-            ("m", "Routing mode (popup list)"),
+            ("m", "Routing mode"),
             ("u", "Update subscription or geo"),
             ("i", "Cycle subscription auto-update"),
             ("e", "Open profiles.json in $EDITOR"),
             ("C", "Theme picker"),
             ("t", "Test selected profile latency"),
-            ("T", "Test all profiles (batch)"),
+            ("T", "Test all profiles"),
             ("r", "Reconnect"),
-            ("s", "Stop / disconnect"),
+            ("s", "Disconnect"),
             ("q / Esc", "Detach TUI"),
             ("Ctrl+C", "Quit"),
-            ("?", "Show this help"),
+            ("?", "Show help"),
         ];
         for (key, action) in expected {
             assert!(content.contains(key), "help should contain key: {}", key);
@@ -1904,10 +1950,22 @@ mod tests {
         use ratatui::backend::TestBackend;
         use ratatui::style::Color;
 
-        for (overlay, height_percent) in [
-            (Overlay::ConfirmDelete, POPUP_HEIGHT_PERCENT),
-            (Overlay::Help, 90),
-            (Overlay::ServiceRouting, POPUP_HEIGHT_PERCENT),
+        for (overlay, width_percent, height_percent) in [
+            (
+                Overlay::ConfirmDelete,
+                POPUP_WIDTH_PERCENT,
+                POPUP_HEIGHT_PERCENT,
+            ),
+            (
+                Overlay::Help(crate::app::model::HelpState::default()),
+                70,
+                90,
+            ),
+            (
+                Overlay::ServiceRouting,
+                POPUP_WIDTH_PERCENT,
+                POPUP_HEIGHT_PERCENT,
+            ),
         ] {
             let mut model = mouse_model();
             model.overlay = overlay;
@@ -1918,7 +1976,7 @@ mod tests {
                 })
                 .unwrap();
 
-            let popup = centered_rect(POPUP_WIDTH_PERCENT, height_percent, Rect::new(0, 0, 80, 20));
+            let popup = centered_rect(width_percent, height_percent, Rect::new(0, 0, 80, 20));
             let corner =
                 &terminal.backend().buffer().content[popup.y as usize * 80 + popup.x as usize];
             assert_eq!(corner.style().fg, Some(Color::Cyan), "overlay: {overlay:?}");
@@ -1966,8 +2024,19 @@ mod tests {
     fn draw_help_overlay_snapshot() {
         let mut model = model_with_profiles(vec![]);
         model.geo_last_updated = Some("2026-05-31 13:41".to_string());
-        model.overlay = Overlay::Help;
+        model.overlay = Overlay::Help(crate::app::model::HelpState::default());
         insta::assert_snapshot!(snapshot_terminal(&model, 80, 40));
+    }
+
+    #[test]
+    fn draw_all_help_overlay_snapshot() {
+        let mut model = model_with_profiles(vec![]);
+        model.overlay = Overlay::Help(crate::app::model::HelpState {
+            context: crate::app::model::HelpContext::Logs,
+            mode: HelpMode::All,
+            selected: 12,
+        });
+        insta::assert_snapshot!(snapshot_terminal(&model, 100, 24));
     }
 
     #[test]
@@ -2021,7 +2090,8 @@ mod tests {
             .geo_routing
             .set_region(crate::config::profile::GeoRegion::Ru);
         let optional = snapshot_terminal(&model, 80, 20);
-        assert!(optional.contains("j/k navigate, Enter confirm, q/Esc cancel"));
+        assert!(optional.contains("j/k navigate, Enter confirm"));
+        assert!(optional.contains("q/Esc cancel, ? help"));
     }
 
     #[test]
@@ -2128,7 +2198,8 @@ mod tests {
 
         let rendered = snapshot_terminal(&model, 80, 24);
         assert!(rendered.contains("> white"));
-        assert!(rendered.contains("j/k navigate, Enter confirm, q/Esc cancel"));
+        assert!(rendered.contains("j/k navigate, Enter confirm"));
+        assert!(rendered.contains("q/Esc cancel, ? help"));
         assert!(!rendered.contains("catppuccin-latte"));
     }
 

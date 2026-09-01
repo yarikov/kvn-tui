@@ -393,14 +393,18 @@ fn run_loop(
                         std::thread::sleep(Duration::from_millis(300));
                         break;
                     }
-                    KeyCode::Char('h') if model.overlay == crate::app::model::Overlay::None => {
+                    KeyCode::Char('h') | KeyCode::Left
+                        if model.overlay == crate::app::model::Overlay::None =>
+                    {
                         pane_focus = MainPaneFocus::Sources;
                         client.send(&IpcCommand::SetMainPaneFocus {
                             focus: MainPaneFocus::Sources,
                         })?;
                         needs_redraw = true;
                     }
-                    KeyCode::Char('l') if model.overlay == crate::app::model::Overlay::None => {
+                    KeyCode::Char('l') | KeyCode::Right
+                        if model.overlay == crate::app::model::Overlay::None =>
+                    {
                         pane_focus = MainPaneFocus::Logs;
                         client.send(&IpcCommand::SetMainPaneFocus {
                             focus: MainPaneFocus::Logs,
@@ -492,7 +496,10 @@ fn run_loop(
                         }
                         needs_redraw = true;
                     }
-                    KeyCode::Char('p') => {
+                    KeyCode::Char('p')
+                        if model.overlay == crate::app::model::Overlay::None
+                            && pane_focus == MainPaneFocus::Sources =>
+                    {
                         if let Ok(text) = self::clipboard::read_clipboard_text() {
                             client.send(&IpcCommand::Paste { text })?;
                         }
@@ -519,7 +526,10 @@ fn run_loop(
                             })?;
                         }
                     }
-                    KeyCode::Char('e') => {
+                    KeyCode::Char('e')
+                        if model.overlay == crate::app::model::Overlay::None
+                            && pane_focus == MainPaneFocus::Sources =>
+                    {
                         log_selection = None;
                         log_dragging = false;
                         anyhow::ensure!(

@@ -10,7 +10,7 @@ expression: "snapshot_terminal(&model, 80, 20)"
 │└ Alpha        ┌ Confirm ─────────────────────────────────────┐               │
 │               │           Delete selected profile?           │               │
 │               │                                              │               │
-│               │   Press y/Enter to confirm, q/Esc to cancel  │               │
+│               │     y/Enter confirm, q/Esc cancel, ? help    │               │
 │               │                                              │               │
 │               │                                              │               │
 │               │                                              │               │

@@ -15,13 +15,57 @@ use chrono::{DateTime, Local};
 pub enum Overlay {
     #[default]
     None,
-    Help,
+    Help(HelpState),
     ConfirmDelete,
     RoutingMode,
     GeoRegions,
     DnsSettings,
     ThemeSettings,
     ServiceRouting,
+}
+
+/// Screen that was active when contextual help was opened.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum HelpContext {
+    #[default]
+    Sources,
+    Logs,
+    ConfirmDelete,
+    RoutingMode,
+    GeoRegions,
+    DnsSettings,
+    ThemeSettings,
+    ServiceRouting,
+}
+
+impl HelpContext {
+    pub fn restore_overlay(self) -> Overlay {
+        match self {
+            Self::Sources | Self::Logs => Overlay::None,
+            Self::ConfirmDelete => Overlay::ConfirmDelete,
+            Self::RoutingMode => Overlay::RoutingMode,
+            Self::GeoRegions => Overlay::GeoRegions,
+            Self::DnsSettings => Overlay::DnsSettings,
+            Self::ThemeSettings => Overlay::ThemeSettings,
+            Self::ServiceRouting => Overlay::ServiceRouting,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum HelpMode {
+    #[default]
+    Context,
+    All,
+}
+
+/// Interactive state of the help popup.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HelpState {
+    pub context: HelpContext,
+    pub mode: HelpMode,
+    /// Selected help row; rendering keeps it inside the visible viewport.
+    pub selected: usize,
 }
 
 /// Main panel focused by the active daemon session. It is deliberately not

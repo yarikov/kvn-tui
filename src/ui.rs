@@ -1,3 +1,4 @@
+pub(crate) mod help;
 pub mod layout;
 pub mod nav;
 pub mod palette;
