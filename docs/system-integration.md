@@ -70,10 +70,11 @@ To remove the rule:
 sudo kvn-tui clean --polkit
 ```
 
-Cleanup preserves the group and membership because the kill switch may still
-use them. Existing membership in the legacy `network` group is also never
-removed automatically; verify that no other software needs it before changing
-it manually.
+Cleanup preserves the group while the kill switch still uses it. If neither
+integration remains, cleanup removes the now-unused group and its membership
+records automatically. Existing membership in the legacy `network` group is
+never removed automatically; verify that no other software needs it before
+changing it manually.
 
 ## Kill switch setup
 
@@ -122,17 +123,10 @@ sudo kvn-tui clean --killswitch
 ```
 
 If the active unit cannot be stopped, cleanup aborts before removing its files.
-The command leaves the `kvn-tui` group and membership unchanged and asks you to
-restart the user daemon so persisted state is reconciled.
-
-After removing both polkit and kill-switch integration, the now-unused group can
-optionally be removed after confirming its membership:
-
-```bash
-getent group kvn-tui
-sudo gpasswd -d "$USER" kvn-tui
-sudo groupdel kvn-tui
-```
+The command preserves the `kvn-tui` group while the polkit integration still
+uses it. If neither integration remains, cleanup removes the group and its
+membership records automatically. Restart the user daemon afterward so its
+persisted state is reconciled.
 
 ## Omarchy setup
 
