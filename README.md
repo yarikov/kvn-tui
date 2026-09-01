@@ -312,6 +312,9 @@ their physical US key positions regardless of the active keyboard layout.
 
 Configuration is stored in `~/.config/kvn-tui/profiles.json`. Press `e` to edit
 it in `$EDITOR`; invalid configuration is rejected when reloaded.
+Manual latency tests use an HTTPS connectivity endpoint by default. Set
+`settings.connectivity_probe.url` to another HTTP(S) URL, or set
+`settings.connectivity_probe.enabled` to `false` to disable active probing.
 
 See the [configuration guide](docs/configuration.md) for the JSON structure,
 advanced DNS and routing, validation, migrations, and runtime file locations.

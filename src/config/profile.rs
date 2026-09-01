@@ -1355,6 +1355,25 @@ impl Default for LogsConfig {
     }
 }
 
+/// Endpoint used only by manual profile latency tests (`t` / `T`).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ConnectivityProbeConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub url: Option<String>,
+}
+
+impl Default for ConnectivityProbeConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            url: Some("https://connectivitycheck.gstatic.com/generate_204".to_string()),
+        }
+    }
+}
+
 /// Application settings stored alongside profiles.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
@@ -1395,6 +1414,8 @@ pub struct Settings {
     /// does not make the provider see a new device.
     #[serde(default)]
     pub hwid: String,
+    #[serde(default)]
+    pub connectivity_probe: ConnectivityProbeConfig,
 }
 
 /// Accept `address` if it parses as a bare IPv4/IPv6 literal or as a hostname.
@@ -1424,6 +1445,35 @@ fn default_dns_strategy() -> DnsStrategy {
 /// switch to `"omarchy"` via the in-TUI picker to auto-follow the system.
 pub fn default_theme() -> String {
     "tokyo-night".to_string()
+}
+
+/// Parse and validate the endpoint used by manual latency tests.
+pub fn parse_connectivity_probe_url(input: &str) -> anyhow::Result<url::Url> {
+    const MAX_PROBE_URL_LEN: usize = 2_048;
+
+    anyhow::ensure!(
+        input.len() <= MAX_PROBE_URL_LEN,
+        "settings.connectivity_probe.url exceeds {MAX_PROBE_URL_LEN} bytes"
+    );
+    let url = url::Url::parse(input)
+        .map_err(|_| anyhow::anyhow!("settings.connectivity_probe.url is not a valid URL"))?;
+    anyhow::ensure!(
+        matches!(url.scheme(), "http" | "https"),
+        "settings.connectivity_probe.url must use HTTP or HTTPS"
+    );
+    anyhow::ensure!(
+        url.host_str().is_some(),
+        "settings.connectivity_probe.url must include a host"
+    );
+    anyhow::ensure!(
+        url.username().is_empty() && url.password().is_none(),
+        "settings.connectivity_probe.url must not contain credentials"
+    );
+    anyhow::ensure!(
+        url.fragment().is_none(),
+        "settings.connectivity_probe.url must not contain a fragment"
+    );
+    Ok(url)
 }
 
 pub fn default_log_level() -> String {
@@ -1529,6 +1579,15 @@ impl Settings {
             anyhow::bail!("settings.logs.line_retention.singbox must be at least {MIN_LOG_LINES}");
         }
 
+        if self.connectivity_probe.enabled {
+            let url = self.connectivity_probe.url.as_deref().ok_or_else(|| {
+                anyhow::anyhow!(
+                    "settings.connectivity_probe.url is required when connectivity probing is enabled"
+                )
+            })?;
+            parse_connectivity_probe_url(url)?;
+        }
+
         Ok(())
     }
 }
@@ -1548,13 +1607,14 @@ impl Default for Settings {
             logs: LogsConfig::default(),
             legacy_log_level: None,
             hwid: String::new(),
+            connectivity_probe: ConnectivityProbeConfig::default(),
         }
     }
 }
 
 /// Current schema version for `profiles.json`. Bumped on every breaking
 /// change to the persisted shape; new migrations go in `Config::migrate`.
-pub const CURRENT_SCHEMA_VERSION: u32 = 4;
+pub const CURRENT_SCHEMA_VERSION: u32 = 5;
 
 fn default_schema_version() -> u32 {
     // Files written before the version was introduced are treated as v0
@@ -1676,6 +1736,10 @@ impl Config {
             self.migrate_v3_to_v4();
             self.schema_version = 4;
         }
+        if self.schema_version == 4 {
+            self.migrate_v4_to_v5();
+            self.schema_version = 5;
+        }
         debug_assert_eq!(self.schema_version, CURRENT_SCHEMA_VERSION);
         Ok(())
     }
@@ -1733,6 +1797,12 @@ impl Config {
         if let Some(level) = self.settings.legacy_log_level.take() {
             self.settings.logs.level = level;
         }
+    }
+
+    /// v4 → v5: preserve the historical always-on latency probe while moving
+    /// its endpoint into an explicit nested configuration object.
+    fn migrate_v4_to_v5(&mut self) {
+        self.settings.connectivity_probe = ConnectivityProbeConfig::default();
     }
 }
 
@@ -2578,6 +2648,71 @@ mod tests {
     #[test]
     fn settings_validate_default_ok() {
         Settings::default().validate().unwrap();
+    }
+
+    #[test]
+    fn connectivity_probe_defaults_to_https_and_missing_field_is_backward_compatible() {
+        let default = Settings::default();
+        assert!(default.connectivity_probe.enabled);
+        assert_eq!(
+            default.connectivity_probe.url.as_deref(),
+            Some("https://connectivitycheck.gstatic.com/generate_204")
+        );
+
+        let restored: Settings = serde_json::from_str("{}").unwrap();
+        assert_eq!(restored.connectivity_probe, default.connectivity_probe);
+    }
+
+    #[test]
+    fn connectivity_probe_disabled_preserves_url_without_validating_it() {
+        let settings: Settings =
+            serde_json::from_str(r#"{"connectivity_probe":{"enabled":false,"url":"not a URL"}}"#)
+                .unwrap();
+        assert!(!settings.connectivity_probe.enabled);
+        assert_eq!(
+            settings.connectivity_probe.url.as_deref(),
+            Some("not a URL")
+        );
+        settings.validate().unwrap();
+        assert!(
+            serde_json::to_string(&settings)
+                .unwrap()
+                .contains("\"connectivity_probe\":{\"enabled\":false,\"url\":\"not a URL\"}")
+        );
+    }
+
+    #[test]
+    fn connectivity_probe_enabled_requires_url() {
+        let settings: Settings =
+            serde_json::from_str(r#"{"connectivity_probe":{"enabled":true}}"#).unwrap();
+        let error = settings.validate().unwrap_err().to_string();
+        assert!(error.contains("url is required"), "got: {error}");
+    }
+
+    #[test]
+    fn connectivity_probe_validation_accepts_http_and_https() {
+        for endpoint in [
+            "https://example.com/generate_204?source=kvn",
+            "http://127.0.0.1:8080/health",
+            "https://[2001:db8::1]/",
+        ] {
+            parse_connectivity_probe_url(endpoint).unwrap();
+        }
+    }
+
+    #[test]
+    fn connectivity_probe_validation_rejects_unsafe_or_unsupported_urls() {
+        for endpoint in [
+            "ftp://example.com/file",
+            "https://user:password@example.com/",
+            "https://example.com/#fragment",
+            "not a URL",
+        ] {
+            assert!(
+                parse_connectivity_probe_url(endpoint).is_err(),
+                "accepted {endpoint}"
+            );
+        }
     }
 
     #[test]
@@ -3754,6 +3889,27 @@ mod tests {
         assert!(cfg.settings.legacy_log_level.is_none());
         let json = serde_json::to_string(&cfg).unwrap();
         assert!(!json.contains("log_level"));
+    }
+
+    #[test]
+    fn migrate_v4_to_v5_enables_default_connectivity_probe() {
+        let mut cfg = Config {
+            schema_version: 4,
+            ..Config::default()
+        };
+        cfg.settings.connectivity_probe = ConnectivityProbeConfig {
+            enabled: false,
+            url: None,
+        };
+
+        cfg.migrate().unwrap();
+
+        assert_eq!(cfg.schema_version, CURRENT_SCHEMA_VERSION);
+        assert!(cfg.settings.connectivity_probe.enabled);
+        assert_eq!(
+            cfg.settings.connectivity_probe.url.as_deref(),
+            Some("https://connectivitycheck.gstatic.com/generate_204")
+        );
     }
 
     #[test]

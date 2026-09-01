@@ -1255,6 +1255,7 @@ dependencies = [
  "libc",
  "notify",
  "ratatui",
+ "rustls",
  "serde",
  "serde_json",
  "signal-hook 0.4.4",
@@ -1267,6 +1268,7 @@ dependencies = [
  "url",
  "urlencoding",
  "uuid",
+ "webpki-roots",
  "zbus",
 ]
 

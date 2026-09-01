@@ -219,6 +219,16 @@ pub(super) fn handle_sources(model: &mut Model, key: KeyEvent) -> Vec<Effect> {
                 Some(model.config.settings.geo_routing.service_routes.clone());
         }
         KeyCode::Char('t') => {
+            if !model.config.settings.connectivity_probe.enabled {
+                push_status(
+                    &mut effects,
+                    model,
+                    crate::app::model::AppStatus::Info(
+                        "Profile latency testing is disabled in profiles.json".into(),
+                    ),
+                );
+                return effects;
+            }
             if let Some(p) = model.selected_profile() {
                 let id = p.id;
                 if !model.testing_profiles.contains(&id) && !model.pending_tests.contains(&id) {
@@ -227,6 +237,16 @@ pub(super) fn handle_sources(model: &mut Model, key: KeyEvent) -> Vec<Effect> {
             }
         }
         KeyCode::Char('T') => {
+            if !model.config.settings.connectivity_probe.enabled {
+                push_status(
+                    &mut effects,
+                    model,
+                    crate::app::model::AppStatus::Info(
+                        "Profile latency testing is disabled in profiles.json".into(),
+                    ),
+                );
+                return effects;
+            }
             for p in &model.config.profiles {
                 if !model.testing_profiles.contains(&p.id) && !model.pending_tests.contains(&p.id) {
                     model.pending_tests.push_back(p.id);

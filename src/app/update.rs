@@ -5003,6 +5003,24 @@ mod tests {
     }
 
     #[test]
+    fn profile_tests_report_when_connectivity_probe_is_disabled() {
+        let mut model = model_with_profiles(sample_profiles());
+        model.config.settings.connectivity_probe.enabled = false;
+
+        for code in [KeyCode::Char('t'), KeyCode::Char('T')] {
+            let effects = update(
+                &mut model,
+                Msg::Key(KeyEvent::new(code, crossterm::event::KeyModifiers::NONE)),
+            );
+            assert!(model.pending_tests.is_empty());
+            assert!(effects.iter().any(|effect| matches!(
+                effect,
+                Effect::AppendAppLog { message, .. } if message.contains("latency testing is disabled")
+            )));
+        }
+    }
+
+    #[test]
     fn t_key_does_not_duplicate_already_queued_profile() {
         let profiles = sample_profiles();
         let id = profiles[0].id;

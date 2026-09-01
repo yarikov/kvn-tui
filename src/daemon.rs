@@ -686,13 +686,20 @@ fn execute_daemon_effect(
         }
         Effect::TestProfile { id } => {
             let profile = model.config.profiles.iter().find(|p| p.id == id).cloned();
+            let probe = model.config.settings.connectivity_probe.clone();
             let tx = tx.clone();
             thread::spawn(move || {
-                let latency_ms = profile.and_then(|p| match run_test(&p, id) {
-                    Ok(ms) => Some(ms),
-                    Err(e) => {
-                        tracing::warn!("profile test failed: {e:#}");
-                        None
+                let latency_ms = profile.and_then(|p| {
+                    if !probe.enabled {
+                        return None;
+                    }
+                    let probe_url = probe.url.as_deref()?;
+                    match run_test(&p, id, probe_url) {
+                        Ok(ms) => Some(ms),
+                        Err(e) => {
+                            tracing::warn!("profile test failed: {e:#}");
+                            None
+                        }
                     }
                 });
                 let _ = tx.send(Msg::TestResult { id, latency_ms });
@@ -706,10 +713,16 @@ fn execute_daemon_effect(
 ///
 /// Allocates a free loopback port, writes a minimal SOCKS5-inbound config,
 /// spawns sing-box, waits for the port to open, then performs a SOCKS5
-/// CONNECT to `connectivitycheck.gstatic.com:80` through the proxy and
-/// returns the round-trip latency in milliseconds.
-fn run_test(profile: &crate::config::profile::Profile, id: uuid::Uuid) -> anyhow::Result<u64> {
+/// CONNECT to the configured HTTP(S) endpoint through the proxy and returns
+/// the end-to-end request latency in milliseconds.
+fn run_test(
+    profile: &crate::config::profile::Profile,
+    id: uuid::Uuid,
+    probe_url: &str,
+) -> anyhow::Result<u64> {
     use std::process::{Command, Stdio};
+
+    let probe = crate::config::profile::parse_connectivity_probe_url(probe_url)?;
 
     // Find a free loopback port by binding to :0, recording the OS-assigned
     // port, then dropping the listener so sing-box can bind to it.
@@ -753,8 +766,7 @@ fn run_test(profile: &crate::config::profile::Profile, id: uuid::Uuid) -> anyhow
         anyhow::bail!("sing-box did not open SOCKS5 port within 3 s");
     }
 
-    // Perform SOCKS5 CONNECT to a well-known host and measure latency.
-    let result = socks5_connect_latency(&addr);
+    let result = socks5_connect_latency(&addr, &probe);
     cleanup(&mut child);
     result
 }
@@ -771,18 +783,24 @@ fn write_test_config(
     Ok(path)
 }
 
-/// Tunnel through the SOCKS5 proxy at `addr` to `connectivitycheck.gstatic.com:80`,
-/// send a minimal HTTP GET, and return the time from request-send to first
-/// response byte in milliseconds.
+/// Tunnel through the SOCKS5 proxy at `addr`, send a minimal HTTP(S) GET, and
+/// return the time from request/TLS start to the first response byte.
 ///
 /// sing-box replies to SOCKS5 CONNECT before the outbound tunnel is open, so
 /// measuring CONNECT RTT gives ~0 ms. The HTTP round-trip through the actual
 /// VPN tunnel is the meaningful latency number.
-fn socks5_connect_latency(addr: &str) -> anyhow::Result<u64> {
-    const HOST: &[u8] = b"connectivitycheck.gstatic.com";
-    const HOST_STR: &str = "connectivitycheck.gstatic.com";
-    const PORT: u16 = 80;
-
+fn socks5_connect_latency(addr: &str, probe: &url::Url) -> anyhow::Result<u64> {
+    let host = probe
+        .host_str()
+        .context("connectivity probe URL is missing a host")?;
+    let host_bytes = host.as_bytes();
+    anyhow::ensure!(
+        host_bytes.len() <= u8::MAX as usize,
+        "connectivity probe host is too long"
+    );
+    let port = probe
+        .port_or_known_default()
+        .context("connectivity probe URL has no port")?;
     let mut stream = TcpStream::connect(addr)?;
     stream.set_read_timeout(Some(Duration::from_secs(10)))?;
     stream.set_write_timeout(Some(Duration::from_secs(10)))?;
@@ -794,10 +812,10 @@ fn socks5_connect_latency(addr: &str) -> anyhow::Result<u64> {
     anyhow::ensure!(resp == [0x05, 0x00], "SOCKS5 auth negotiation failed");
 
     // SOCKS5 CONNECT to target host (domain ATYP 0x03).
-    let mut req = vec![0x05, 0x01, 0x00, 0x03, HOST.len() as u8];
-    req.extend_from_slice(HOST);
-    req.push((PORT >> 8) as u8);
-    req.push((PORT & 0xff) as u8);
+    let mut req = vec![0x05, 0x01, 0x00, 0x03, host_bytes.len() as u8];
+    req.extend_from_slice(host_bytes);
+    req.push((port >> 8) as u8);
+    req.push((port & 0xff) as u8);
     stream.write_all(&req)?;
 
     // Read and discard CONNECT reply — sing-box answers before the tunnel is
@@ -823,14 +841,43 @@ fn socks5_connect_latency(addr: &str) -> anyhow::Result<u64> {
         _ => anyhow::bail!("unknown SOCKS5 address type"),
     }
 
-    // Now the tunnel is open. Send an HTTP GET and time the first response byte
-    // — this is the real VPN round-trip latency.
-    let http_req =
-        format!("GET /generate_204 HTTP/1.1\r\nHost: {HOST_STR}\r\nConnection: close\r\n\r\n");
+    let request_target = match probe.query() {
+        Some(query) => format!("{}?{query}", probe.path()),
+        None => probe.path().to_string(),
+    };
+    let host_header = match probe.host().expect("validated probe host") {
+        url::Host::Ipv6(address) => format!("[{address}]"),
+        host => host.to_string(),
+    };
+    let host_header = probe
+        .port()
+        .map_or(host_header.clone(), |port| format!("{host_header}:{port}"));
+    let request = format!(
+        "GET {request_target} HTTP/1.1\r\nHost: {host_header}\r\nConnection: close\r\n\r\n"
+    );
+
+    // sing-box acknowledges SOCKS CONNECT before the outbound connection is
+    // ready. For HTTPS, starting here includes TLS setup in the user-visible
+    // end-to-end latency, matching ordinary web traffic more closely.
     let start = Instant::now();
-    stream.write_all(http_req.as_bytes())?;
     let mut buf = [0u8; 16];
-    stream.read_exact(&mut buf)?;
+    if probe.scheme() == "https" {
+        let roots =
+            rustls::RootCertStore::from_iter(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+        let config = rustls::ClientConfig::builder()
+            .with_root_certificates(roots)
+            .with_no_client_auth();
+        let server_name = rustls::pki_types::ServerName::try_from(host.to_owned())
+            .context("invalid connectivity probe TLS server name")?;
+        let connection = rustls::ClientConnection::new(std::sync::Arc::new(config), server_name)
+            .context("failed to initialize connectivity probe TLS")?;
+        let mut tls = rustls::StreamOwned::new(connection, stream);
+        tls.write_all(request.as_bytes())?;
+        tls.read_exact(&mut buf)?;
+    } else {
+        stream.write_all(request.as_bytes())?;
+        stream.read_exact(&mut buf)?;
+    }
     Ok(start.elapsed().as_millis() as u64)
 }
 

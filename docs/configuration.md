@@ -16,11 +16,11 @@ with a partial file.
 
 ## File structure
 
-The current schema version is 4. A minimal configuration is:
+The current schema version is 5. A minimal configuration is:
 
 ```json
 {
-  "schema_version": 4,
+  "schema_version": 5,
   "profiles": [],
   "subscriptions": [],
   "settings": {}
@@ -49,9 +49,26 @@ A subscription contains `id`, `name`, `url`, `auto_update`, and an optional
 | `kill_switch` | `false` | Persisted kill-switch state |
 | `last_connected_profile` | `null` | Last connected profile; maintained by the application |
 | `theme` | `tokyo-night` | Bundled palette slug or `omarchy` |
+| `connectivity_probe.enabled` | `true` | Enable the HTTP(S) endpoint used only by manual `t` / `T` latency tests |
+| `connectivity_probe.url` | `https://connectivitycheck.gstatic.com/generate_204` | Probe endpoint; required and validated only when the probe is enabled |
 | `logs.level` | `info` | `trace`, `debug`, `info`, `warn`, or `error` |
 | `logs.line_retention.app` | `1000` | Physical lines retained in `app.log` |
 | `logs.line_retention.singbox` | `100000` | Physical lines retained in `sing-box.log` |
+
+The latency value is an end-to-end probe rather than a raw network RTT. For an
+HTTPS endpoint it includes the TLS handshake, request, and time to the first
+response byte through the tested VPN profile. The probe runs only when `t` or
+`T` is pressed and does not affect normal VPN connection health.
+
+```json
+"connectivity_probe": {
+  "enabled": true,
+  "url": "https://connectivitycheck.gstatic.com/generate_204"
+}
+```
+
+Set `enabled` to `false` to disable active probing. While disabled, `url` may
+be absent or retain any value; it is ignored until probing is enabled again.
 
 ```json
 "logs": {
