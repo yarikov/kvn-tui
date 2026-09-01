@@ -688,6 +688,17 @@ esac
     }
 
     #[test]
+    fn cleanup_scripts_remove_group_only_after_both_integrations_are_gone() {
+        let polkit = include_str!("../contrib/clean-polkit.sh");
+        assert!(polkit.contains("/etc/sudoers.d/kvn-tui-killswitch"));
+        assert!(polkit.contains("groupdel \"$GROUP_NAME\""));
+
+        let killswitch = include_str!("../contrib/clean-killswitch.sh");
+        assert!(killswitch.contains("/etc/polkit-1/rules.d/49-kvn-tui.rules"));
+        assert!(killswitch.contains("groupdel \"$GROUP_NAME\""));
+    }
+
+    #[test]
     fn polkit_rule_is_narrow_and_uses_dedicated_group() {
         let script = include_str!("../contrib/setup-polkit.sh");
         for action in [

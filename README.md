@@ -160,8 +160,9 @@ sudo kvn-tui clean --polkit
 sudo kvn-tui clean --killswitch
 ```
 
-Cleanup deliberately preserves the `kvn-tui` group and user membership because
-the other integration may still need them.
+Cleanup preserves the `kvn-tui` group while either integration still uses it.
+After both integrations are removed, the now-unused group and its membership
+records are removed automatically.
 
 ### Omarchy integration (optional)
 

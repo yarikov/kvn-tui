@@ -6,6 +6,24 @@ RULESET="/etc/kvn-tui/killswitch.nft"
 HELPER="/usr/lib/kvn-tui/killswitch-helper.sh"
 UNIT_FILE="/etc/systemd/system/$UNIT"
 SUDOERS="/etc/sudoers.d/kvn-tui-killswitch"
+POLKIT_RULE="/etc/polkit-1/rules.d/49-kvn-tui.rules"
+GROUP_NAME="kvn-tui"
+
+cleanup_group_if_unused() {
+    if [[ -e "$POLKIT_RULE" ]]; then
+        echo "The '$GROUP_NAME' group was preserved because the polkit rule still uses it."
+        return
+    fi
+    if ! getent group "$GROUP_NAME" >/dev/null; then
+        echo "The '$GROUP_NAME' group is not present."
+        return
+    fi
+    if groupdel "$GROUP_NAME"; then
+        echo "Removed unused '$GROUP_NAME' group and its membership records."
+    else
+        echo "Warning: could not remove unused '$GROUP_NAME' group; remove it manually." >&2
+    fi
+}
 
 if [[ $EUID -ne 0 ]]; then
     echo "This cleanup must be run as root (e.g. sudo kvn-tui clean --killswitch)" >&2
@@ -32,5 +50,5 @@ systemctl daemon-reload
 systemctl reset-failed "$UNIT" >/dev/null 2>&1 || true
 
 echo "Removed kvn-tui kill-switch system integration."
-echo "The 'kvn-tui' group and memberships were preserved."
+cleanup_group_if_unused
 echo "Restart the user kvn-tui daemon so its persisted state is reconciled."
