@@ -90,9 +90,10 @@ Choose a regional routing preset on first launch, then:
 Clipboard import requires `wl-clipboard` on Wayland or `xclip` / `xsel` on X11.
 Press `?` at any time to see the full key map.
 
-Subscription URLs must use HTTPS. Plain HTTP subscriptions are rejected because
-their access tokens and returned VPN credentials would otherwise cross the
-network without transport encryption.
+New installations require HTTPS for subscriptions. Existing configurations
+migrated to schema v5 retain deprecated HTTP support for compatibility with
+self-hosted servers. Set `settings.allow_insecure_http_subscriptions` to `false`
+after migrating those servers to HTTPS.
 
 ---
 

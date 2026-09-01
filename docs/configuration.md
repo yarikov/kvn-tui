@@ -49,6 +49,7 @@ A subscription contains `id`, `name`, `url`, `auto_update`, and an optional
 | `kill_switch` | `false` | Persisted kill-switch state |
 | `last_connected_profile` | `null` | Last connected profile; maintained by the application |
 | `theme` | `tokyo-night` | Bundled palette slug or `omarchy` |
+| `allow_insecure_http_subscriptions` | `false` (`true` after migration from v4) | Temporarily allow deprecated HTTP subscription URLs for backward compatibility |
 | `connectivity_probe.enabled` | `true` | Enable the HTTP(S) endpoint used only by manual `t` / `T` latency tests |
 | `connectivity_probe.url` | `https://connectivitycheck.gstatic.com/generate_204` | Probe endpoint; required and validated only when the probe is enabled |
 | `logs.level` | `info` | `trace`, `debug`, `info`, `warn`, or `error` |
@@ -69,6 +70,12 @@ response byte through the tested VPN profile. The probe runs only when `t` or
 
 Set `enabled` to `false` to disable active probing. While disabled, `url` may
 be absent or retain any value; it is ignored until probing is enabled again.
+
+New configurations reject HTTP subscription URLs by default. Configurations
+migrated from schema v4 enable them to preserve compatibility with self-hosted
+servers and emit a warning on every HTTP update. Set
+`allow_insecure_http_subscriptions` to `false` after enabling HTTPS to reject
+HTTP before any network request is made.
 
 ```json
 "logs": {

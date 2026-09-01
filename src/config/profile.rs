@@ -1415,6 +1415,8 @@ pub struct Settings {
     #[serde(default)]
     pub hwid: String,
     #[serde(default)]
+    pub allow_insecure_http_subscriptions: bool,
+    #[serde(default)]
     pub connectivity_probe: ConnectivityProbeConfig,
 }
 
@@ -1607,6 +1609,7 @@ impl Default for Settings {
             logs: LogsConfig::default(),
             legacy_log_level: None,
             hwid: String::new(),
+            allow_insecure_http_subscriptions: false,
             connectivity_probe: ConnectivityProbeConfig::default(),
         }
     }
@@ -1799,10 +1802,11 @@ impl Config {
         }
     }
 
-    /// v4 → v5: preserve the historical always-on latency probe while moving
-    /// its endpoint into an explicit nested configuration object.
+    /// v4 → v5: preserve the historical always-on latency probe and HTTP
+    /// subscription support while making both behaviors configurable.
     fn migrate_v4_to_v5(&mut self) {
         self.settings.connectivity_probe = ConnectivityProbeConfig::default();
+        self.settings.allow_insecure_http_subscriptions = true;
     }
 }
 
@@ -2661,6 +2665,15 @@ mod tests {
 
         let restored: Settings = serde_json::from_str("{}").unwrap();
         assert_eq!(restored.connectivity_probe, default.connectivity_probe);
+    }
+
+    #[test]
+    fn new_settings_disable_http_subscriptions_by_default() {
+        let default = Settings::default();
+        let restored: Settings = serde_json::from_str("{}").unwrap();
+
+        assert!(!default.allow_insecure_http_subscriptions);
+        assert!(!restored.allow_insecure_http_subscriptions);
     }
 
     #[test]
@@ -3901,6 +3914,7 @@ mod tests {
             enabled: false,
             url: None,
         };
+        cfg.settings.allow_insecure_http_subscriptions = false;
 
         cfg.migrate().unwrap();
 
@@ -3910,6 +3924,7 @@ mod tests {
             cfg.settings.connectivity_probe.url.as_deref(),
             Some("https://connectivitycheck.gstatic.com/generate_204")
         );
+        assert!(cfg.settings.allow_insecure_http_subscriptions);
     }
 
     #[test]
@@ -3925,6 +3940,7 @@ mod tests {
         cfg.migrate().unwrap();
         assert_eq!(cfg.schema_version, CURRENT_SCHEMA_VERSION);
         assert_eq!(cfg.settings.dns.strategy, DnsStrategy::OnlyIpv6);
+        assert!(cfg.settings.allow_insecure_http_subscriptions);
         let vc = vless_cfg(&cfg.profiles[0]);
         assert_eq!(vc.tls.utls_fingerprint.as_deref(), Some("chrome"));
     }

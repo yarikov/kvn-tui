@@ -21,15 +21,42 @@ fn ensure_subscription_size(bytes: usize, kind: &str) -> Result<()> {
     Ok(())
 }
 
-/// Validate that a subscription URL uses encrypted transport.
-pub fn validate_subscription_url(input: &str) -> Result<()> {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SubscriptionUrlTransport {
+    Https,
+    DeprecatedHttp,
+}
+
+/// Validate a subscription URL against the configured transport policy.
+pub(crate) fn validate_subscription_url(
+    input: &str,
+    allow_insecure_http: bool,
+) -> Result<SubscriptionUrlTransport> {
     let url = url::Url::parse(input).map_err(|_| anyhow::anyhow!("Invalid subscription URL"))?;
     match url.scheme() {
-        "https" if url.host_str().is_some() => Ok(()),
-        "https" => anyhow::bail!("Invalid subscription URL: missing host"),
-        "http" => anyhow::bail!("Insecure HTTP subscriptions are blocked; use HTTPS"),
+        "https" if url.host_str().is_some() => Ok(SubscriptionUrlTransport::Https),
+        "http" if url.host_str().is_some() && allow_insecure_http => {
+            Ok(SubscriptionUrlTransport::DeprecatedHttp)
+        }
+        "http" if url.host_str().is_some() => {
+            anyhow::bail!("Insecure HTTP subscriptions are blocked; use HTTPS")
+        }
+        "https" | "http" => anyhow::bail!("Invalid subscription URL: missing host"),
         scheme => anyhow::bail!("Unsupported subscription URL scheme: {scheme}"),
     }
+}
+
+pub(crate) fn deprecated_http_warning(sub: &Subscription, settings: &Settings) -> Option<String> {
+    matches!(
+        validate_subscription_url(&sub.url, settings.allow_insecure_http_subscriptions),
+        Ok(SubscriptionUrlTransport::DeprecatedHttp)
+    )
+    .then(|| {
+        format!(
+            "HTTP subscription '{}' uses deprecated insecure transport; migrate it to HTTPS",
+            sub.name
+        )
+    })
 }
 
 /// Generate a stable installation identifier once: `lnx-` + UUID v4.
@@ -260,7 +287,7 @@ fn fetch_response(
 /// rejection reasons surface directly instead of failing deep inside body
 /// parsing.
 pub fn fetch_subscription(sub: &Subscription, settings: &Settings) -> Result<Vec<Profile>> {
-    validate_subscription_url(&sub.url)?;
+    validate_subscription_url(&sub.url, settings.allow_insecure_http_subscriptions)?;
     fetch_subscription_after_validation(sub, settings)
 }
 
@@ -692,26 +719,60 @@ mod tests {
 
     #[test]
     fn subscription_url_policy_accepts_https() {
-        assert!(validate_subscription_url("https://example.com/sub").is_ok());
+        for allow_http in [false, true] {
+            assert_eq!(
+                validate_subscription_url("https://example.com/sub", allow_http).unwrap(),
+                SubscriptionUrlTransport::Https
+            );
+        }
     }
 
     #[test]
-    fn subscription_url_policy_rejects_http() {
-        let error = validate_subscription_url("http://example.com/sub").unwrap_err();
+    fn subscription_url_policy_allows_http_only_when_configured() {
+        assert_eq!(
+            validate_subscription_url("http://example.com/sub", true).unwrap(),
+            SubscriptionUrlTransport::DeprecatedHttp
+        );
+        let error = validate_subscription_url("http://example.com/sub", false).unwrap_err();
         assert!(error.to_string().contains("HTTP subscriptions are blocked"));
     }
 
     #[test]
     fn fetch_rejects_http_before_request() {
         let sub = sub_with("http://example.invalid/secret-token".into(), false, None);
-        let error = fetch_subscription(&sub, &settings_with_hwid()).unwrap_err();
+        let mut settings = settings_with_hwid();
+        settings.allow_insecure_http_subscriptions = false;
+        let error = fetch_subscription(&sub, &settings).unwrap_err();
         assert!(error.to_string().contains("HTTP subscriptions are blocked"));
     }
 
     #[test]
+    fn deprecated_http_warning_omits_subscription_url() {
+        let sub = sub_with("http://example.com/secret-token".into(), false, None);
+        let mut settings = settings_with_hwid();
+        settings.allow_insecure_http_subscriptions = true;
+
+        let warning = deprecated_http_warning(&sub, &settings).unwrap();
+
+        assert!(warning.contains(&sub.name));
+        assert!(warning.contains("deprecated"));
+        assert!(!warning.contains(&sub.url));
+        assert!(
+            deprecated_http_warning(
+                &sub,
+                &Settings {
+                    allow_insecure_http_subscriptions: false,
+                    ..settings.clone()
+                }
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
     fn subscription_url_policy_rejects_unsupported_and_invalid_urls() {
-        assert!(validate_subscription_url("ftp://example.com/sub").is_err());
-        assert!(validate_subscription_url("not a URL").is_err());
+        assert!(validate_subscription_url("ftp://example.com/sub", true).is_err());
+        assert!(validate_subscription_url("not a URL", true).is_err());
     }
 
     #[test]
@@ -996,7 +1057,9 @@ mod tests {
         let _guard = crate::test_helpers::ENV_LOCK.lock().unwrap();
         let (url, rx) = spawn_http_server("HTTP/1.1 200 OK", &[], sample_vless());
         let sub = sub_with(url, false, None);
-        fetch_subscription_after_validation(&sub, &settings_with_hwid()).unwrap();
+        let mut settings = settings_with_hwid();
+        settings.allow_insecure_http_subscriptions = true;
+        fetch_subscription(&sub, &settings).unwrap();
         let req = captured_request(rx);
         assert_eq!(
             req.get("user-agent").map(String::as_str),
