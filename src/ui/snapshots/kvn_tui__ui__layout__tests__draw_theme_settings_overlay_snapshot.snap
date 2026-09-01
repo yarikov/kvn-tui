@@ -28,9 +28,9 @@ expression: "snapshot_terminal(&model, 80, 32)"
 │               │                   solitude                   │               │
 │               │                  tokyo-night                 │               │
 │               │                  vantablack                  │               │
+│               │                     white                    │               │
 │               │                                              │               │
-│               │          j/k navigate, Enter confirm         │               │
-│               │             q/Esc cancel, ? help             │               │
+│               │      Enter confirm, q/Esc cancel, ? help     │               │
 │               └──────────────────────────────────────────────┘               │
 └──────────────────────────────────────┘└──────────────────────────────────────┘
 [DISCONNECTED] [DNS: DoH] [Global] [Geo: 2026-05-31 13:41]

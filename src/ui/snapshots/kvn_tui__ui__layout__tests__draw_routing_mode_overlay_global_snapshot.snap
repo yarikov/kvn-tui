@@ -12,8 +12,8 @@ expression: "snapshot_terminal(&model, 80, 20)"
 │               │                                              │               │
 │               │                   > Global                   │               │
 │               │                                              │               │
-│               │          j/k navigate, Enter confirm         │               │
-│               │             q/Esc cancel, ? help             │               │
+│               │      Enter confirm, q/Esc cancel, ? help     │               │
+│               │                                              │               │
 │               │                                              │               │
 │               │                                              │               │
 │               └──────────────────────────────────────────────┘               │
