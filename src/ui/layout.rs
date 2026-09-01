@@ -851,7 +851,7 @@ fn draw_routing_mode(frame: &mut Frame, model: &Model, area: Rect) {
         model.routing_selected,
         active,
         POPUP_HEIGHT_PERCENT,
-        &["j/k navigate, Enter confirm", "q/Esc cancel, ? help"],
+        &["Enter confirm, q/Esc cancel, ? help"],
     );
 }
 
@@ -884,9 +884,9 @@ fn draw_geo_region(frame: &mut Frame, model: &Model, area: Rect) {
         active,
         POPUP_HEIGHT_PERCENT,
         if model.config.settings.geo_routing.current_region.is_some() {
-            &["j/k navigate, Enter confirm", "q/Esc cancel, ? help"]
+            &["Enter confirm, q/Esc cancel, ? help"]
         } else {
-            &["j/k navigate, Enter confirm, ? help"]
+            &["Enter confirm, ? help"]
         },
     );
 }
@@ -934,10 +934,7 @@ fn draw_dns_settings(frame: &mut Frame, model: &Model, area: Rect) {
         model.dns_selected,
         current_dns_preset_index(dns),
         POPUP_HEIGHT_PERCENT,
-        &[
-            "j/k navigate, h/l change",
-            "Enter confirm, q/Esc cancel, ? help",
-        ],
+        &["Enter confirm, q/Esc cancel, ? help"],
     );
 }
 
@@ -999,7 +996,6 @@ fn draw_service_routing(frame: &mut Frame, model: &Model, area: Rect) {
     }
 
     lines.push(Line::from(""));
-    lines.push(Line::from("j/k navigate, h/l change").centered());
     lines.push(Line::from("Enter confirm, q/Esc cancel, ? help").centered());
 
     frame.render_widget(Paragraph::new(lines), inner);
@@ -1024,7 +1020,7 @@ fn draw_theme_settings(frame: &mut Frame, model: &Model, area: Rect) {
         model.theme_selected,
         active,
         POPUP_HEIGHT_PERCENT_TALL,
-        &["j/k navigate, Enter confirm", "q/Esc cancel, ? help"],
+        &["Enter confirm, q/Esc cancel, ? help"],
     );
 }
 
@@ -2081,8 +2077,9 @@ mod tests {
         model.overlay = Overlay::GeoRegions;
 
         let required = snapshot_terminal(&model, 80, 20);
-        assert!(required.contains("j/k navigate, Enter confirm"));
+        assert!(required.contains("Enter confirm, ? help"));
         assert!(!required.contains("q/Esc cancel"));
+        assert!(!required.contains("j/k navigate"));
 
         model
             .config
@@ -2090,8 +2087,8 @@ mod tests {
             .geo_routing
             .set_region(crate::config::profile::GeoRegion::Ru);
         let optional = snapshot_terminal(&model, 80, 20);
-        assert!(optional.contains("j/k navigate, Enter confirm"));
-        assert!(optional.contains("q/Esc cancel, ? help"));
+        assert!(optional.contains("Enter confirm, q/Esc cancel, ? help"));
+        assert!(!optional.contains("j/k navigate"));
     }
 
     #[test]
@@ -2198,8 +2195,8 @@ mod tests {
 
         let rendered = snapshot_terminal(&model, 80, 24);
         assert!(rendered.contains("> white"));
-        assert!(rendered.contains("j/k navigate, Enter confirm"));
-        assert!(rendered.contains("q/Esc cancel, ? help"));
+        assert!(rendered.contains("Enter confirm, q/Esc cancel, ? help"));
+        assert!(!rendered.contains("j/k navigate"));
         assert!(!rendered.contains("catppuccin-latte"));
     }
 
