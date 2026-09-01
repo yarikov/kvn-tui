@@ -2204,10 +2204,13 @@ mod tests {
     }
 
     #[test]
-    fn help_mode_any_key_returns_to_normal() {
+    fn help_mode_only_closes_on_exit_keys() {
         let mut model = model_with_profiles(vec![]);
-        model.overlay = Overlay::Help;
-        let effects = handle_key(&mut model, key('x'));
+        model.overlay = Overlay::Help(crate::app::model::HelpState::default());
+        assert!(handle_key(&mut model, key('x')).is_empty());
+        assert!(matches!(model.overlay, Overlay::Help(_)));
+
+        let effects = handle_key(&mut model, key('q'));
         assert_eq!(model.overlay, Overlay::None);
         assert!(effects.is_empty());
     }
@@ -3045,7 +3048,7 @@ mod tests {
         model.overlay = Overlay::None;
         let effects = handle_key(&mut model, key('?'));
         assert!(effects.is_empty());
-        assert_eq!(model.overlay, Overlay::Help);
+        assert!(matches!(model.overlay, Overlay::Help(_)));
     }
 
     #[test]
