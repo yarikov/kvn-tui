@@ -759,6 +759,7 @@ fn draw_help(
     };
     let table = Table::new(rows, widths)
         .header(header)
+        .style(theme.normal())
         .row_highlight_style(theme.selected())
         .highlight_symbol("> ");
     let mut table_state = TableState::default().with_selected(Some(selected - window_start));
@@ -772,7 +773,8 @@ fn draw_help(
         Paragraph::new(vec![
             Line::from(mode_hint).centered(),
             Line::from("j/k scroll · gg/G edges · q/Esc/? back").centered(),
-        ]),
+        ])
+        .style(theme.normal()),
         chunks[1],
     );
 }
@@ -827,6 +829,7 @@ fn draw_modal(
 
     let paragraph = Paragraph::new(lines)
         .block(block)
+        .style(theme.normal())
         .alignment(Alignment::Center)
         .wrap(Wrap { trim: true });
 
@@ -998,7 +1001,7 @@ fn draw_service_routing(frame: &mut Frame, model: &Model, area: Rect) {
     lines.push(Line::from(""));
     lines.push(Line::from("Enter confirm, q/Esc cancel, ? help").centered());
 
-    frame.render_widget(Paragraph::new(lines), inner);
+    frame.render_widget(Paragraph::new(lines).style(theme.normal()), inner);
 }
 
 /// Draw the theme picker overlay. Lists all bundled palettes plus an
@@ -1125,9 +1128,10 @@ fn draw_sources(frame: &mut Frame, model: &Model, area: Rect, focused: bool) {
     let rows = model.source_rows();
 
     if rows.is_empty() {
-        lines.push(Line::from(
+        lines.push(Line::from(Span::styled(
             "No sources. Press p to paste a profile or subscription URL from clipboard.",
-        ));
+            theme.normal(),
+        )));
     } else {
         // Global address-column width: max across all visible profiles so every
         // row shares the same column layout and aligns vertically.
@@ -1703,6 +1707,20 @@ mod tests {
         buffer_to_string(frame.buffer)
     }
 
+    fn find_text(buffer: &ratatui::buffer::Buffer, needle: &str) -> usize {
+        buffer
+            .content
+            .windows(needle.len())
+            .position(|cells| {
+                cells
+                    .iter()
+                    .map(ratatui::buffer::Cell::symbol)
+                    .collect::<String>()
+                    == needle
+            })
+            .unwrap_or_else(|| panic!("{needle:?} should be rendered"))
+    }
+
     #[test]
     fn centered_rect_60_50_in_100_100() {
         let area = Rect::new(0, 0, 100, 100);
@@ -2046,6 +2064,50 @@ mod tests {
         model.geo_last_updated = Some("2026-05-31 13:41".to_string());
         model.overlay = Overlay::ConfirmDelete;
         insta::assert_snapshot!(snapshot_terminal(&model, 80, 20));
+    }
+
+    #[test]
+    fn light_overlay_footer_uses_theme_foreground() {
+        let mut model = model_with_profiles(vec![Profile::new_vless(
+            "Alpha".to_string(),
+            "1.1.1.1".to_string(),
+            443,
+            "u1".to_string(),
+        )]);
+        model.overlay = Overlay::ConfirmDelete;
+        model.theme = crate::ui::styles::Theme::resolve("catppuccin-latte");
+
+        let mut terminal = Terminal::new(TestBackend::new(80, 20)).unwrap();
+        terminal.draw(|frame| draw(frame, &model)).unwrap();
+        let buffer = terminal.backend().buffer();
+        let footer_start = find_text(buffer, "y/Enter");
+
+        assert_eq!(
+            buffer.content[footer_start].style().fg,
+            model.theme.normal().fg
+        );
+    }
+
+    #[test]
+    fn light_theme_uses_theme_foreground_for_help_rows_and_empty_sources() {
+        let mut model = model_with_profiles(vec![]);
+        model.theme = crate::ui::styles::Theme::resolve("catppuccin-latte");
+        model.overlay = Overlay::Help(crate::app::model::HelpState::default());
+
+        let mut terminal = Terminal::new(TestBackend::new(80, 40)).unwrap();
+        terminal.draw(|frame| draw(frame, &model)).unwrap();
+        let buffer = terminal.backend().buffer();
+        let help_row = find_text(buffer, "Move up");
+        assert_eq!(buffer.content[help_row].style().fg, model.theme.normal().fg);
+
+        model.overlay = Overlay::None;
+        terminal.draw(|frame| draw(frame, &model)).unwrap();
+        let buffer = terminal.backend().buffer();
+        let empty_state = find_text(buffer, "No sources");
+        assert_eq!(
+            buffer.content[empty_state].style().fg,
+            model.theme.normal().fg
+        );
     }
 
     #[test]
