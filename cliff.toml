@@ -14,7 +14,7 @@ body = """\
 {% endfor -%}\
 {% set new_contributors = github.contributors | filter(attribute="is_first_time", value=true) %}\
 {% if new_contributors | length != 0 %}
-## New Contributors
+### New Contributors
 
 {% for contributor in new_contributors -%}
 * @{{ contributor.username }} made their first contribution\
