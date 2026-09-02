@@ -323,7 +323,7 @@ pub fn run_docs_preview(theme_slug: &str) -> Result<()> {
     for line in [
         "[app] Starting connection to 🇺🇸 United States",
         "[sb] 17:43:01 INFO network: updated default interface wlp1s0, index 2",
-        "[sb] 17:43:01 INFO inbound/tun[tun-in]: started at tun0",
+        "[sb] 17:43:01 INFO inbound/tun[tun-in]: started at kvn0",
         "[sb] 17:43:02 INFO outbound/trojan[proxy]: connected to us.demo.example:443",
         "[app] Connection established; traffic statistics are live",
         "[sb] 17:43:03 INFO inbound/tun[tun-in]: inbound packet connection to 10.222.0.2:53",

@@ -42,7 +42,7 @@ A subscription contains `id`, `name`, `url`, `auto_update`, and an optional
 | Field | Default | Description |
 |-------|---------|-------------|
 | `default_profile` | `null` | UUID of the selected default profile |
-| `tun_interface` | `tun0` | Name of the sing-box TUN interface |
+| `tun_interface` | `kvn0` | Name of the sing-box TUN interface |
 | `dns` | Cloudflare DoH | DNS servers, rules, strategy, and fake-IP state |
 | `geo_routing` | no region | Country modes, rule-set updates, and service overrides |
 | `auto_connect` | `false` | Connect to `last_connected_profile` at startup |
@@ -207,6 +207,7 @@ Older files are migrated automatically:
 
 - v0 → v1 moves the legacy `dns_strategy` value into `dns.strategy`.
 - v1 → v2 moves the legacy VLESS `fingerprint` into the shared TLS settings.
+- v4 → v5 sets the TUN interface name to `kvn0`, replacing any previous name.
 
 A file with a schema version newer than the running kvn-tui build is rejected;
 upgrade kvn-tui instead of downgrading the version manually.

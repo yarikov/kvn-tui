@@ -108,7 +108,7 @@ accepts only:
 - `allow <ip> <tcp|udp> <port>`
 
 The nftables policy drops other input, output, and forwarded traffic while
-allowing loopback, `tun*`, established connections, private LAN ranges,
+allowing loopback, `tun*`/`kvn*`, established connections, private LAN ranges,
 DHCP, ICMP, and packets marked by sing-box. Temporary IPv4/IPv6 exceptions are
 added for VPN and DNS handshakes, then revoked on disconnect.
 
