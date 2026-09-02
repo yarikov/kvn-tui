@@ -232,6 +232,32 @@ mod tests {
     }
 
     #[test]
+    fn bundled_foregrounds_contrast_with_their_backgrounds() {
+        fn channel(value: u8) -> f64 {
+            let value = f64::from(value) / 255.0;
+            if value <= 0.04045 {
+                value / 12.92
+            } else {
+                ((value + 0.055) / 1.055).powf(2.4)
+            }
+        }
+        fn luminance(color: Color) -> f64 {
+            let (r, g, b) = to_rgb(color);
+            0.2126 * channel(r) + 0.7152 * channel(g) + 0.0722 * channel(b)
+        }
+
+        for (name, palette) in BUNDLED {
+            let foreground = luminance(palette.foreground);
+            let background = luminance(palette.background);
+            let ratio = (foreground.max(background) + 0.05) / (foreground.min(background) + 0.05);
+            assert!(
+                ratio >= 3.0,
+                "{name} foreground contrast is only {ratio:.2}:1"
+            );
+        }
+    }
+
+    #[test]
     fn parses_runtime_omarchy_palette() {
         let raw = include_str!("../../themes/tokyo-night.toml")
             .replace("#7aa2f7", "#010203")

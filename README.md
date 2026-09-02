@@ -29,6 +29,7 @@
 - [Diagnostics](#diagnostics)
 - [Default Key Bindings](#default-key-bindings)
 - [Configuration](#configuration)
+- [Theme Gallery](docs/themes.md)
 - [Technology Stack](#technology-stack)
 - [Architecture Highlights](#architecture-highlights)
 - [Platform Support](#platform-support)
@@ -47,7 +48,7 @@
 - **Kill switch** — block outbound traffic if the VPN connection drops
 - **Automatic recovery** — auto-connect on startup and reconnect after suspend
 - **Live insights** — traffic rates, totals, active connections, and combined logs
-- **Themes** — choose from 22 bundled color palettes directly in the TUI
+- **Themes** — choose from 22 bundled color palettes directly in the TUI; see the [theme gallery](docs/themes.md)
 
 ---
 

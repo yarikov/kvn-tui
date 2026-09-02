@@ -106,6 +106,12 @@ impl Theme {
     pub fn palette_background(&self) -> ratatui::style::Color {
         self.palette.background
     }
+
+    /// Raw palette foreground for synchronizing the terminal's default text
+    /// color with cells that intentionally use `Style::default()`.
+    pub fn palette_foreground(&self) -> ratatui::style::Color {
+        self.palette.foreground
+    }
 }
 
 #[cfg(test)]
@@ -181,5 +187,11 @@ mod tests {
     fn resolve_unknown_theme_falls_back_to_legacy() {
         let t = Theme::resolve("not-a-real-theme");
         assert_eq!(t, Theme::legacy());
+    }
+
+    #[test]
+    fn exposes_raw_palette_foreground() {
+        let theme = Theme::resolve("catppuccin-latte");
+        assert_eq!(theme.palette_foreground(), Color::Rgb(0x4c, 0x4f, 0x69));
     }
 }

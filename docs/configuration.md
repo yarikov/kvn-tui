@@ -174,6 +174,7 @@ downloaded and the connection is restarted.
 ## Themes and logging
 
 Press `C` to choose one of the 22 palettes bundled from [`themes/`](../themes/).
+See the [theme gallery](themes.md) for a full UI preview of every bundled palette.
 The special `omarchy` value follows the active Omarchy theme. Fresh non-Omarchy
 installations use `tokyo-night`.
 
