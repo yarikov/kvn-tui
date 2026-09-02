@@ -214,7 +214,7 @@ The **TUI client** (`tui_client.rs`) additionally spawns:
 - `services/suspend.rs` runs a blocking zbus listener in a dedicated thread. On resume (`PrepareForSleep` with `false`), it sends `Msg::SystemResumed` through the `mpsc` channel so `update.rs` can schedule a reconnect effect.
 
 ### Kill Switch
-- Uses **nftables** + a systemd unit (`kvn-tui-killswitch.service`) that loads `/etc/kvn-tui/killswitch.nft`. The ruleset drops all outbound traffic except localhost, `tun*` interfaces, and packets marked `0x29a` by sing-box.
+- Uses **nftables** + a systemd unit (`kvn-tui-killswitch.service`) that loads `/etc/kvn-tui/killswitch.nft`. The ruleset drops all outbound traffic except localhost, `tun*`/`kvn*` interfaces, and packets marked `0x29a` by sing-box.
 - Privilege escalation via **sudoers NOPASSWD** (not polkit) — grants the `network` group passwordless access to `/usr/lib/kvn-tui/killswitch-helper.sh`. Installed with `sudo kvn-tui setup --killswitch`.
 - **Toggle flow**: `K` keybinding → `Effect::ApplyKillSwitch { enabled }` → daemon spawns thread calling `services::killswitch::apply(enabled)` → sends `Msg::KillSwitchApplied { enabled, error }` back. On success the boolean is flipped and config is saved; on error the boolean is unchanged and the error is shown.
 - **Reconciliation on startup**: daemon queries systemd to check whether the unit is actually active and aligns `settings.kill_switch` with the real state, preventing drift if the unit was manually disabled or the helper was uninstalled.

@@ -57,6 +57,7 @@ table inet kvn_tui_killswitch {
         type filter hook input priority -10; policy drop;
         iifname "lo" accept
         iifname "tun*" accept
+        iifname "kvn*" accept
         ct state established,related accept
         meta l4proto { icmp, icmpv6 } accept
         ip saddr { 192.168.0.0/16, 10.0.0.0/8, 172.16.0.0/12 } accept
@@ -69,6 +70,7 @@ table inet kvn_tui_killswitch {
         type filter hook output priority -10; policy drop;
         oifname "lo" accept
         oifname "tun*" accept
+        oifname "kvn*" accept
         # Packets marked by sing-box (route.default_mark = 666 / 0x29a). This
         # allows the `direct` outbound used by Bypass/Only routing modes to
         # reach the physical interface; everything else still drops.
@@ -86,6 +88,7 @@ table inet kvn_tui_killswitch {
     chain forward {
         type filter hook forward priority -10; policy drop;
         oifname "tun*" accept
+        oifname "kvn*" accept
         ct state established,related accept
     }
 }

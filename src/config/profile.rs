@@ -1435,7 +1435,7 @@ fn validate_host(address: &str) -> anyhow::Result<()> {
 }
 
 fn default_tun_interface() -> String {
-    "tun0".to_string()
+    "kvn0".to_string()
 }
 
 fn default_dns_strategy() -> DnsStrategy {
@@ -1803,10 +1803,12 @@ impl Config {
     }
 
     /// v4 → v5: preserve the historical always-on latency probe and HTTP
-    /// subscription support while making both behaviors configurable.
+    /// subscription support while making both behaviors configurable, and
+    /// reset the TUN interface name to the app-specific one.
     fn migrate_v4_to_v5(&mut self) {
         self.settings.connectivity_probe = ConnectivityProbeConfig::default();
         self.settings.allow_insecure_http_subscriptions = true;
+        self.settings.tun_interface = default_tun_interface();
     }
 }
 
@@ -2109,7 +2111,7 @@ mod tests {
     #[test]
     fn settings_default() {
         let s = Settings::default();
-        assert_eq!(s.tun_interface, "tun0");
+        assert_eq!(s.tun_interface, "kvn0");
         assert_eq!(s.dns_strategy, DnsStrategy::PreferIpv4);
         assert!(s.default_profile.is_none());
         assert!(!s.auto_connect);
@@ -2228,7 +2230,7 @@ mod tests {
     fn config_default() {
         let c = Config::default();
         assert!(c.profiles.is_empty());
-        assert_eq!(c.settings.tun_interface, "tun0");
+        assert_eq!(c.settings.tun_interface, "kvn0");
     }
 
     #[test]
@@ -2442,7 +2444,7 @@ mod tests {
         let json = r#"{}"#;
         let c: Config = serde_json::from_str(json).unwrap();
         assert!(c.profiles.is_empty());
-        assert_eq!(c.settings.tun_interface, "tun0");
+        assert_eq!(c.settings.tun_interface, "kvn0");
     }
 
     #[test]
@@ -3910,6 +3912,7 @@ mod tests {
             schema_version: 4,
             ..Config::default()
         };
+        cfg.settings.tun_interface = "tun0".into();
         cfg.settings.connectivity_probe = ConnectivityProbeConfig {
             enabled: false,
             url: None,
@@ -3925,6 +3928,20 @@ mod tests {
             Some("https://connectivitycheck.gstatic.com/generate_204")
         );
         assert!(cfg.settings.allow_insecure_http_subscriptions);
+        assert_eq!(cfg.settings.tun_interface, "kvn0");
+    }
+
+    #[test]
+    fn migrate_v4_to_v5_replaces_custom_tun_interface() {
+        let mut cfg = Config {
+            schema_version: 4,
+            ..Config::default()
+        };
+        cfg.settings.tun_interface = "work-vpn".into();
+
+        cfg.migrate().unwrap();
+
+        assert_eq!(cfg.settings.tun_interface, "kvn0");
     }
 
     #[test]
