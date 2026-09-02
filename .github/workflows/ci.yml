@@ -13,6 +13,20 @@ env:
   INSTA_UPDATE: no
 
 jobs:
+  release-notes:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: orhun/git-cliff-action@v4.8.0
+        with:
+          version: v2.13.1
+          config: cliff.toml
+          args: --unreleased --strip header --offline
+        env:
+          GITHUB_REPO: ${{ github.repository }}
+
   fmt:
     runs-on: ubuntu-latest
     steps:
