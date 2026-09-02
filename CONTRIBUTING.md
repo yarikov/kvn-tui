@@ -60,9 +60,15 @@ must use the same Conventional Commits format as a commit message:
 fix(subscription): support per-source request headers
 ```
 
-GitHub uses merged pull request titles to generate release notes. Write the
-title as a concise, user-facing changelog entry. A title such as `update code`
-will become an unhelpful public release note.
+`git-cliff` uses commit subjects to generate release notes. Since pull requests
+are squash-merged, their titles become those subjects. Write the title as a
+concise, user-facing changelog entry; `update code` would produce an unhelpful
+public release note.
+
+Release notes remove the Conventional Commit prefix and group pull requests as
+follows: `feat` becomes **New Features**; `fix` becomes **Bug Fixes**;
+`perf`, `refactor`, `docs`, and dependency chores become **Improvements**; and
+the remaining types become **Other**. `chore(release)` version bumps are omitted.
 
 The description must explain:
 
