@@ -72,7 +72,7 @@ enum Command {
     ))]
     Setup {
         /// Set up Omarchy Shell/Waybar, launcher, and Hyprland integration.
-        #[arg(long)]
+        #[arg(long, conflicts_with_all = ["polkit", "killswitch"])]
         omarchy: bool,
 
         /// Set up polkit access for passwordless DNS management.
@@ -172,6 +172,53 @@ fn clean_killswitch() -> Result<()> {
         "clean-killswitch.sh",
         include_str!("../contrib/clean-killswitch.sh"),
         &[],
+    )
+}
+
+fn validate_integration_privileges(
+    omarchy: bool,
+    system: bool,
+    effective_uid: u32,
+    sudo_user: Option<&str>,
+    action: &str,
+) -> Result<()> {
+    if omarchy && effective_uid == 0 {
+        anyhow::bail!(
+            "Omarchy integration changes user files; run `kvn-tui {action} --omarchy` without sudo"
+        );
+    }
+
+    if system {
+        if effective_uid != 0 {
+            anyhow::bail!(
+                "system integration requires root privileges; run `sudo kvn-tui {action} --polkit` and/or `sudo kvn-tui {action} --killswitch`"
+            );
+        }
+        if !matches!(sudo_user, Some(user) if !user.is_empty() && user != "root") {
+            anyhow::bail!(
+                "could not identify a non-root invoking user; run this command via sudo from a non-root account"
+            );
+        }
+    }
+
+    Ok(())
+}
+
+fn validate_current_integration_privileges(
+    omarchy: bool,
+    polkit: bool,
+    killswitch: bool,
+    action: &str,
+) -> Result<()> {
+    #[allow(unsafe_code)]
+    let effective_uid = unsafe { libc::geteuid() };
+    let sudo_user = std::env::var("SUDO_USER").ok();
+    validate_integration_privileges(
+        omarchy,
+        polkit || killswitch,
+        effective_uid,
+        sudo_user.as_deref(),
+        action,
     )
 }
 
@@ -381,6 +428,7 @@ pub fn try_run_from_parsed(cli: &Cli) -> Option<Result<()>> {
             killswitch,
         }) => {
             let result = (|| {
+                validate_current_integration_privileges(*omarchy, *polkit, *killswitch, "setup")?;
                 if *omarchy {
                     install_omarchy()?;
                 }
@@ -400,6 +448,7 @@ pub fn try_run_from_parsed(cli: &Cli) -> Option<Result<()>> {
             killswitch,
         }) => {
             let result = (|| {
+                validate_current_integration_privileges(*omarchy, *polkit, *killswitch, "clean")?;
                 if *omarchy {
                     clean_omarchy()?;
                 }
@@ -617,16 +666,22 @@ esac
     }
 
     #[test]
-    fn setup_options_can_be_combined() {
-        let cli = Cli::parse_from(["kvn-tui", "setup", "--omarchy", "--polkit", "--killswitch"]);
+    fn setup_system_options_can_be_combined() {
+        let cli = Cli::parse_from(["kvn-tui", "setup", "--polkit", "--killswitch"]);
         assert!(matches!(
             cli.command,
             Some(Command::Setup {
-                omarchy: true,
+                omarchy: false,
                 polkit: true,
                 killswitch: true,
             })
         ));
+    }
+
+    #[test]
+    fn setup_omarchy_conflicts_with_system_integrations() {
+        assert!(Cli::try_parse_from(["kvn-tui", "setup", "--omarchy", "--polkit"]).is_err());
+        assert!(Cli::try_parse_from(["kvn-tui", "setup", "--omarchy", "--killswitch"]).is_err());
     }
 
     #[test]
@@ -672,6 +727,33 @@ esac
     }
 
     #[test]
+    fn integration_privileges_separate_user_and_system_actions() {
+        assert!(validate_integration_privileges(true, false, 1000, None, "setup").is_ok());
+        assert!(validate_integration_privileges(false, true, 0, Some("alice"), "setup").is_ok());
+
+        let omarchy_as_root =
+            validate_integration_privileges(true, false, 0, Some("alice"), "setup")
+                .unwrap_err()
+                .to_string();
+        assert!(omarchy_as_root.contains("without sudo"));
+
+        let system_as_user = validate_integration_privileges(false, true, 1000, None, "clean")
+            .unwrap_err()
+            .to_string();
+        assert!(system_as_user.contains("sudo kvn-tui clean"));
+    }
+
+    #[test]
+    fn system_integrations_require_non_root_sudo_user() {
+        for sudo_user in [None, Some(""), Some("root")] {
+            let error = validate_integration_privileges(false, true, 0, sudo_user, "setup")
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains("non-root invoking user"));
+        }
+    }
+
+    #[test]
     fn embedded_system_scripts_have_valid_bash_syntax() {
         let _lock = crate::test_helpers::ENV_LOCK.lock().unwrap();
         for (name, script) in [
@@ -707,6 +789,20 @@ esac
         let killswitch = include_str!("../contrib/clean-killswitch.sh");
         assert!(killswitch.contains("/etc/polkit-1/rules.d/49-kvn-tui.rules"));
         assert!(killswitch.contains("groupdel \"$GROUP_NAME\""));
+    }
+
+    #[test]
+    fn system_scripts_require_sudo_user() {
+        for script in [
+            include_str!("../contrib/setup-polkit.sh"),
+            include_str!("../contrib/setup-killswitch.sh"),
+            include_str!("../contrib/clean-polkit.sh"),
+            include_str!("../contrib/clean-killswitch.sh"),
+        ] {
+            assert!(script.contains("SUDO_USER"));
+            assert!(script.contains("non-root invoking user"));
+        }
+        assert!(!include_str!("../contrib/setup-killswitch.sh").contains("${USER:-}"));
     }
 
     #[test]

@@ -30,6 +30,12 @@ if [[ $EUID -ne 0 ]]; then
     exit 1
 fi
 
+USER_NAME="${SUDO_USER:-}"
+if [[ -z "$USER_NAME" || "$USER_NAME" == "root" ]] || ! id "$USER_NAME" >/dev/null 2>&1; then
+    echo "Could not identify a non-root invoking user; run this command via sudo." >&2
+    exit 1
+fi
+
 if systemctl is-active --quiet "$UNIT"; then
     systemctl disable --now "$UNIT"
     if systemctl is-active --quiet "$UNIT"; then

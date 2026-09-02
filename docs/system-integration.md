@@ -47,6 +47,11 @@ Do not revoke them while another TUN client relies on the same sing-box binary.
 sudo kvn-tui setup --polkit
 ```
 
+System integration setup and cleanup must be run through `sudo` from a
+non-root user. Unprivileged invocations and commands run directly from a root
+shell are rejected. Polkit and the kill switch may be handled together with
+`--polkit --killswitch`.
+
 The command:
 
 - creates the dedicated system group `kvn-tui` and adds the invoking user if
@@ -134,8 +139,11 @@ persisted state is reconciled.
 kvn-tui setup --omarchy
 ```
 
-This command runs without sudo and changes only the current user's files. Both
-Omarchy generations install this executable launcher:
+This command runs without sudo and changes only the current user's files.
+Running it as root is rejected to prevent changes under `/root`. `--omarchy`
+cannot be combined with `--polkit` or `--killswitch`; run user-level and
+system-level commands separately. Both Omarchy generations install this
+executable launcher:
 
 ```text
 ~/.local/bin/omarchy-launch-kvn-tui

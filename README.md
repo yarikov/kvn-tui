@@ -154,6 +154,10 @@ the kill switch can also be installed together:
 sudo kvn-tui setup --polkit --killswitch
 ```
 
+System setup and cleanup must be run through `sudo` from a non-root user.
+Unprivileged invocations and commands run directly from a root shell are
+rejected.
+
 Remove either system integration with:
 
 ```bash
@@ -176,6 +180,10 @@ integration with:
 ```bash
 kvn-tui setup --omarchy
 ```
+
+Run Omarchy setup and cleanup without `sudo`, because they modify the current
+user's configuration. `--omarchy` cannot be combined with `--polkit` or
+`--killswitch`; run the user and system commands separately.
 
 On **Omarchy 4 (Quattro)** this installs the standalone
 [omakvn](https://github.com/yarikov/omakvn) Quickshell bar plugin (`yarikov.omakvn`):
