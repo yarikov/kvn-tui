@@ -30,6 +30,14 @@ pub struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
+    /// Render a side-effect-free fixture used to capture documentation images.
+    #[command(hide = true)]
+    DocsPreview {
+        /// Bundled theme slug to render.
+        #[arg(long)]
+        theme: String,
+    },
+
     /// Check whether kvn-tui and its runtime dependencies are ready.
     Doctor,
 
@@ -358,6 +366,9 @@ pub fn try_run() -> Option<Result<()>> {
 /// Same as `try_run` but takes an already-parsed `Cli`.
 pub fn try_run_from_parsed(cli: &Cli) -> Option<Result<()>> {
     match &cli.command {
+        Some(Command::DocsPreview { theme }) => {
+            return Some(crate::tui_client::run_docs_preview(theme));
+        }
         Some(Command::Doctor) => return Some(crate::doctor::run()),
         Some(Command::Status { json }) => return Some(run_status(*json)),
         Some(Command::Connect { profile }) => return Some(run_connect(profile)),
@@ -813,6 +824,19 @@ esac
     fn doctor_subcommand_detected() {
         let cli = Cli::parse_from(["kvn-tui", "doctor"]);
         assert!(matches!(cli.command, Some(Command::Doctor)));
+    }
+
+    #[test]
+    fn docs_preview_subcommand_is_parseable_but_hidden() {
+        use clap::CommandFactory;
+
+        let cli = Cli::parse_from(["kvn-tui", "docs-preview", "--theme", "tokyo-night"]);
+        assert!(matches!(
+            cli.command,
+            Some(Command::DocsPreview { theme }) if theme == "tokyo-night"
+        ));
+        let help = Cli::command().render_long_help().to_string();
+        assert!(!help.contains("docs-preview"));
     }
 
     #[test]

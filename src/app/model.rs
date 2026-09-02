@@ -741,10 +741,10 @@ impl Model {
     }
 }
 
-#[cfg(test)]
 impl Model {
-    /// Create a Model instance for testing with a given config.
-    pub fn test_new(config: Config) -> Self {
+    /// Create an in-memory model without filesystem or service initialization.
+    /// Used by tests and the documentation preview renderer.
+    pub(crate) fn in_memory(config: Config) -> Self {
         let selected = 0;
         Self {
             overlay: Overlay::None,
@@ -795,6 +795,14 @@ impl Model {
             testing_profiles: HashSet::new(),
             pending_tests: VecDeque::new(),
         }
+    }
+}
+
+#[cfg(test)]
+impl Model {
+    /// Create a Model instance for testing with a given config.
+    pub fn test_new(config: Config) -> Self {
+        Self::in_memory(config)
     }
 }
 

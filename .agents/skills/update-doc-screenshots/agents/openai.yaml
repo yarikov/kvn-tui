@@ -1,0 +1,4 @@
+interface:
+  display_name: "Update documentation screenshots"
+  short_description: "Refresh README and theme gallery images"
+  default_prompt: "Use $update-doc-screenshots to refresh the README screenshot and all bundled-theme previews."

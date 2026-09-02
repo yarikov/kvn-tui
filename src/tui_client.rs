@@ -17,7 +17,7 @@ use crossterm::terminal::{
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 
-use crate::app::model::Model;
+use crate::app::model::{AppStatus, ConnectionState, Model, TrafficStats};
 use crate::app::msg::{IpcCommand, Msg};
 use crate::ipc::IpcClient;
 use crate::services::LogTailer;
@@ -29,14 +29,13 @@ use ratatui::style::Color;
 /// grid that no TUI widget can reach). Most modern emulators
 /// (Alacritty, Foot, Kitty, Ghostty, Konsole, xterm, WezTerm…) honor it;
 /// the rest silently ignore the unknown OSC and stay as-is.
-pub(crate) fn osc11(color: Color) -> String {
+pub(crate) fn osc_color(slot: u8, color: Color) -> String {
     let (r, g, b) = to_rgb(color);
-    format!("\x1b]11;#{r:02x}{g:02x}{b:02x}\x1b\\")
+    format!("\x1b]{slot};#{r:02x}{g:02x}{b:02x}\x1b\\")
 }
 
-/// OSC 111: reset terminal background to its default. Emitted on exit so
-/// we don't leave the user's terminal stuck on our palette color.
-pub(crate) const OSC_RESET_BG: &str = "\x1b]111\x1b\\";
+/// Reset terminal foreground and background to their configured defaults.
+pub(crate) const OSC_RESET_COLORS: &str = "\x1b]110\x1b\\\x1b]111\x1b\\";
 /// Show a pointing hand over clickable rows; an empty shape list restores the
 /// terminal's contextual default (usually an I-beam over terminal text).
 pub(crate) const OSC_POINTER_INTERACTIVE: &str = "\x1b]22;pointer\x1b\\";
@@ -128,30 +127,265 @@ impl Drop for TerminalSession {
         let _ = input::disable_keyboard_protocol(&mut stdout);
         let _ = disable_raw_mode();
         let _ = stdout.execute(LeaveAlternateScreen);
-        reset_terminal_bg();
+        reset_terminal_colors();
     }
 }
 
 /// Write OSC 11 to stdout (no-op when stdout isn't a TTY — pipes, CI,
 /// captured output). Errors are swallowed: a terminal that doesn't
 /// recognise the sequence is not a failure mode worth surfacing.
-fn apply_terminal_bg(color: Color) {
+fn apply_terminal_colors(foreground: Color, background: Color) {
     let mut stdout = io::stdout();
     if !stdout.is_terminal() {
         return;
     }
-    let _ = stdout.write_all(osc11(color).as_bytes());
+    let _ = stdout.write_all(osc_color(10, foreground).as_bytes());
+    let _ = stdout.write_all(osc_color(11, background).as_bytes());
     let _ = stdout.flush();
 }
 
-/// Counterpart to [`apply_terminal_bg`]: restore terminal default.
-fn reset_terminal_bg() {
+/// Counterpart to [`apply_terminal_colors`]: restore terminal defaults.
+fn reset_terminal_colors() {
     let mut stdout = io::stdout();
     if !stdout.is_terminal() {
         return;
     }
-    let _ = stdout.write_all(OSC_RESET_BG.as_bytes());
+    let _ = stdout.write_all(OSC_RESET_COLORS.as_bytes());
     let _ = stdout.flush();
+}
+
+/// Render a fixed, side-effect-free application state for documentation captures.
+pub fn run_docs_preview(theme_slug: &str) -> Result<()> {
+    use crate::config::profile::{
+        Config, GeoRegion, Hysteria2Config, ProtocolConfig, RoutingMode, Subscription,
+        SubscriptionAutoUpdate, TrojanConfig, TuicConfig, VlessConfig, VmessConfig,
+    };
+    use crossterm::event::{self, Event, KeyCode, KeyModifiers};
+    use uuid::Uuid;
+
+    let Some(palette) = crate::ui::palette::Palette::lookup(theme_slug) else {
+        anyhow::bail!("unknown bundled theme {theme_slug:?}");
+    };
+
+    let finland_subscription_id = Uuid::from_u128(0x22222222222222222222222222222222);
+    let france_subscription_id = Uuid::from_u128(0x33333333333333333333333333333333);
+    let profiles = vec![
+        preview_profile(
+            1,
+            "🇳🇱 Netherlands",
+            "nl.demo.example",
+            ProtocolConfig::Vless(VlessConfig {
+                uuid: preview_uuid(),
+                ..Default::default()
+            }),
+            None,
+        ),
+        preview_profile(
+            2,
+            "🇨🇳 China",
+            "cn.demo.example",
+            ProtocolConfig::Vmess(VmessConfig {
+                uuid: preview_uuid(),
+                ..Default::default()
+            }),
+            None,
+        ),
+        preview_profile(
+            3,
+            "🇺🇸 United States",
+            "us.demo.example",
+            ProtocolConfig::Trojan(TrojanConfig {
+                password: "demo".into(),
+                ..Default::default()
+            }),
+            None,
+        ),
+        preview_profile(
+            4,
+            "🇨🇦 Canada",
+            "ca.demo.example",
+            ProtocolConfig::Hysteria2(Hysteria2Config {
+                password: "demo".into(),
+                ..Default::default()
+            }),
+            None,
+        ),
+        preview_profile(
+            5,
+            "🇩🇪 Germany",
+            "de.demo.example",
+            ProtocolConfig::Tuic(TuicConfig {
+                uuid: preview_uuid(),
+                password: "demo".into(),
+                ..Default::default()
+            }),
+            None,
+        ),
+        preview_profile(
+            6,
+            "🇫🇮 Helsinki",
+            "fi-1.demo.example",
+            ProtocolConfig::Vless(VlessConfig {
+                uuid: preview_uuid(),
+                ..Default::default()
+            }),
+            Some(finland_subscription_id),
+        ),
+        preview_profile(
+            7,
+            "🇫🇮 Tampere",
+            "fi-2.demo.example",
+            ProtocolConfig::Vless(VlessConfig {
+                uuid: preview_uuid(),
+                ..Default::default()
+            }),
+            Some(finland_subscription_id),
+        ),
+        preview_profile(
+            8,
+            "🇫🇷 Paris",
+            "fr-1.demo.example",
+            ProtocolConfig::Hysteria2(Hysteria2Config {
+                password: "demo".into(),
+                ..Default::default()
+            }),
+            Some(france_subscription_id),
+        ),
+        preview_profile(
+            9,
+            "🇫🇷 Lyon",
+            "fr-2.demo.example",
+            ProtocolConfig::Hysteria2(Hysteria2Config {
+                password: "demo".into(),
+                ..Default::default()
+            }),
+            Some(france_subscription_id),
+        ),
+        preview_profile(
+            10,
+            "🇫🇷 Marseille",
+            "fr-3.demo.example",
+            ProtocolConfig::Hysteria2(Hysteria2Config {
+                password: "demo".into(),
+                ..Default::default()
+            }),
+            Some(france_subscription_id),
+        ),
+    ];
+    let active_id = profiles[2].id;
+    let mut config = Config {
+        profiles,
+        ..Default::default()
+    };
+    config.subscriptions.push(Subscription {
+        id: finland_subscription_id,
+        name: "🇫🇮 Finland VLESS".into(),
+        url: "https://finland-subscription.demo.example/list".into(),
+        auto_update: SubscriptionAutoUpdate::Every1d,
+        last_updated: None,
+        next_auto_update: None,
+        retry_state: None,
+        send_hwid: false,
+        hwid: None,
+    });
+    config.subscriptions.push(Subscription {
+        id: france_subscription_id,
+        name: "🇫🇷 France Hysteria2".into(),
+        url: "https://france-subscription.demo.example/list".into(),
+        auto_update: SubscriptionAutoUpdate::Every7d,
+        last_updated: None,
+        next_auto_update: None,
+        retry_state: None,
+        send_hwid: false,
+        hwid: None,
+    });
+    config.settings.theme = theme_slug.into();
+    config.settings.auto_connect = true;
+    config.settings.kill_switch = true;
+    config.settings.geo_routing.set_region(GeoRegion::Ru);
+    config.settings.geo_routing.set_mode(RoutingMode::Global);
+
+    let mut model = Model::in_memory(config);
+    model.theme = crate::ui::styles::Theme::from_palette(palette);
+    model.connection = ConnectionState::Connected;
+    model.active_profile_id = Some(active_id);
+    model.selected = 2;
+    model.main_pane_focus = crate::app::model::MainPaneFocus::Sources;
+    model.status = AppStatus::Info("Connected to 🇺🇸 United States".into());
+    model.geo_last_updated = Some("14 Aug 10:20".into());
+    model.traffic = TrafficStats {
+        up_rate_bps: 731 * 1024,
+        down_rate_bps: 5_033_165,
+        up_total: 105 * 1024 * 1024,
+        down_total: 822 * 1024 * 1024,
+        conn_count: 25,
+    };
+    for line in [
+        "[app] Starting connection to 🇺🇸 United States",
+        "[sb] 17:43:01 INFO network: updated default interface wlp1s0, index 2",
+        "[sb] 17:43:01 INFO inbound/tun[tun-in]: started at tun0",
+        "[sb] 17:43:02 INFO outbound/trojan[proxy]: connected to us.demo.example:443",
+        "[app] Connection established; traffic statistics are live",
+        "[sb] 17:43:03 INFO inbound/tun[tun-in]: inbound packet connection to 10.222.0.2:53",
+        "[sb] 17:43:03 INFO dns: exchanged A docs.example. 291 IN A 192.0.2.10",
+        "[sb] 17:43:04 INFO outbound/trojan[proxy]: outbound connection to 192.0.2.10:443",
+        "[sb] 17:43:05 INFO inbound/tun[tun-in]: inbound packet connection to 198.51.100.20:443",
+        "[sb] 17:43:05 INFO outbound/trojan[proxy]: outbound connection to 198.51.100.20:443",
+        "[sb] 17:43:06 INFO dns: exchanged AAAA api.demo.example. 300 IN AAAA 2001:db8::20",
+        "[sb] 17:43:07 INFO inbound/tun[tun-in]: inbound packet connection to [2001:db8::20]:443",
+        "[sb] 17:43:07 INFO outbound/trojan[proxy]: outbound connection to [2001:db8::20]:443",
+        "[sb] 17:43:08 INFO dns: exchanged A cdn.demo.example. 180 IN A 203.0.113.40",
+        "[sb] 17:43:09 INFO inbound/tun[tun-in]: inbound packet connection to 203.0.113.40:443",
+        "[sb] 17:43:09 INFO outbound/trojan[proxy]: outbound connection to 203.0.113.40:443",
+        "[sb] 17:43:10 INFO dns: exchanged A updates.demo.example. 240 IN A 192.0.2.55",
+        "[sb] 17:43:11 INFO outbound/trojan[proxy]: outbound connection to 192.0.2.55:443",
+        "[sb] 17:43:12 INFO inbound/tun[tun-in]: inbound packet connection to 198.51.100.72:443",
+        "[sb] 17:43:12 INFO outbound/trojan[proxy]: outbound connection to 198.51.100.72:443",
+        "[sb] 17:43:13 INFO dns: exchanged A status.demo.example. 120 IN A 203.0.113.80",
+        "[sb] 17:43:14 INFO outbound/trojan[proxy]: outbound connection to 203.0.113.80:443",
+    ] {
+        model.push_log(line.into());
+    }
+
+    let _terminal_session = TerminalSession::enter()?;
+    apply_terminal_colors(
+        model.theme.palette_foreground(),
+        model.theme.palette_background(),
+    );
+    let mut terminal = Terminal::new(CrosstermBackend::new(io::stdout()))?;
+    loop {
+        terminal.draw(|frame| crate::ui::draw(frame, &model))?;
+        if event::poll(Duration::from_millis(250))?
+            && let Event::Key(key) = event::read()?
+            && (matches!(key.code, KeyCode::Char('q') | KeyCode::Esc)
+                || (key.code == KeyCode::Char('c')
+                    && key.modifiers.contains(KeyModifiers::CONTROL)))
+        {
+            return Ok(());
+        }
+    }
+}
+
+fn preview_profile(
+    id: u128,
+    name: &str,
+    address: &str,
+    config: crate::config::profile::ProtocolConfig,
+    subscription_id: Option<uuid::Uuid>,
+) -> crate::config::profile::Profile {
+    crate::config::profile::Profile {
+        id: uuid::Uuid::from_u128(id),
+        name: name.into(),
+        address: address.into(),
+        port: 443,
+        config,
+        tags: Vec::new(),
+        subscription_id,
+    }
+}
+
+fn preview_uuid() -> String {
+    "11111111-1111-1111-1111-111111111111".to_string()
 }
 
 /// Run the TUI client: connects to daemon, renders UI, forwards input.
@@ -176,7 +410,10 @@ pub fn run() -> Result<()> {
     receive_initial_state(&rx, &mut model, &mut log_tailer)?;
 
     let _terminal_session = TerminalSession::enter()?;
-    apply_terminal_bg(model.theme.palette_background());
+    apply_terminal_colors(
+        model.theme.palette_foreground(),
+        model.theme.palette_background(),
+    );
     let stdout = io::stdout();
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
@@ -614,10 +851,17 @@ fn run_loop(
             Msg::ThemeChanged(theme)
                 if model.config.settings.theme == theme_watch::OMARCHY_SENTINEL =>
             {
-                let prev_bg = model.theme.palette_background();
+                let previous = (
+                    model.theme.palette_foreground(),
+                    model.theme.palette_background(),
+                );
                 model.theme = theme;
-                if model.theme.palette_background() != prev_bg {
-                    apply_terminal_bg(model.theme.palette_background());
+                let current = (
+                    model.theme.palette_foreground(),
+                    model.theme.palette_background(),
+                );
+                if current != previous {
+                    apply_terminal_colors(current.0, current.1);
                 }
                 needs_redraw = true;
             }
@@ -720,10 +964,17 @@ fn apply_snapshot(model: &mut Model, snapshot: crate::app::msg::StateSnapshot) {
         .theme_draft
         .as_deref()
         .unwrap_or(&model.config.settings.theme);
-    let prev_bg = model.theme.palette_background();
+    let previous = (
+        model.theme.palette_foreground(),
+        model.theme.palette_background(),
+    );
     model.theme = theme_watch::resolve_active(effective_slug);
-    if model.theme.palette_background() != prev_bg {
-        apply_terminal_bg(model.theme.palette_background());
+    let current = (
+        model.theme.palette_foreground(),
+        model.theme.palette_background(),
+    );
+    if current != previous {
+        apply_terminal_colors(current.0, current.1);
     }
 }
 
@@ -743,20 +994,23 @@ mod tests {
     use super::*;
 
     #[test]
-    fn osc11_formats_rgb_color_as_hex_triplet() {
+    fn osc_color_formats_rgb_color_as_hex_triplet() {
         // Tokyo Night accent — typical RGB value.
-        assert_eq!(osc11(Color::Rgb(0x7a, 0xa2, 0xf7)), "\x1b]11;#7aa2f7\x1b\\");
+        assert_eq!(
+            osc_color(11, Color::Rgb(0x7a, 0xa2, 0xf7)),
+            "\x1b]11;#7aa2f7\x1b\\"
+        );
     }
 
     #[test]
-    fn osc11_formats_named_ansi_colors_via_to_rgb_table() {
+    fn osc_color_formats_named_ansi_colors_via_to_rgb_table() {
         // Color::Black maps to (0, 0, 0) in palette::to_rgb.
-        assert_eq!(osc11(Color::Black), "\x1b]11;#000000\x1b\\");
+        assert_eq!(osc_color(10, Color::Black), "\x1b]10;#000000\x1b\\");
     }
 
     #[test]
-    fn osc_reset_bg_is_osc_111() {
-        assert_eq!(OSC_RESET_BG, "\x1b]111\x1b\\");
+    fn osc_reset_colors_resets_foreground_and_background() {
+        assert_eq!(OSC_RESET_COLORS, "\x1b]110\x1b\\\x1b]111\x1b\\");
     }
 
     #[test]
