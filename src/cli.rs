@@ -129,14 +129,6 @@ enum ConfigCommand {
     },
 }
 
-fn recovery_archive_path(path: &Path) -> PathBuf {
-    path.with_file_name(format!(
-        "profiles.json.invalid-{}-{}",
-        chrono::Local::now().format("%Y%m%dT%H%M%S"),
-        Uuid::new_v4()
-    ))
-}
-
 fn require_daemon_stopped() -> Result<()> {
     anyhow::ensure!(
         !crate::ipc::is_daemon_running(),
@@ -149,10 +141,13 @@ fn archive_current(path: &Path) -> Result<Option<PathBuf>> {
     if !path.exists() {
         return Ok(None);
     }
-    let archive = recovery_archive_path(path);
     let contents = std::fs::read(path).context("failed to read profiles.json before archiving")?;
-    crate::atomic_write::write(&archive, &contents)
-        .with_context(|| format!("failed to archive profiles.json to {}", archive.display()))?;
+    let archive = crate::config::recovery::preserve_at(
+        path,
+        crate::config::recovery::RecoveryKind::Archive,
+        &contents,
+    )
+    .context("failed to archive profiles.json")?;
     Ok(Some(archive))
 }
 
