@@ -29,6 +29,9 @@ const LOG_PRUNE_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60);
 
 /// Run the daemon main loop.
 pub fn run(mut model: Model) -> Result<()> {
+    if let Err(error) = crate::config::recovery::maintain() {
+        tracing::warn!("Failed to maintain config recovery files: {error:#}");
+    }
     let (tx, rx) = channel::<Msg>();
     let ipc_server = IpcServer::bind(tx.clone())?;
 

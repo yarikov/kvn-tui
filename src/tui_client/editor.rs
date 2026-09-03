@@ -1,13 +1,12 @@
 use std::env;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use anyhow::{Context, Result};
 
 use crate::app::model::SourceRow;
 use crate::config::profile::Config;
-use crate::paths::profiles_path;
 
 /// Config object that should be selected when the editor opens.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -154,14 +153,72 @@ pub(super) struct EditedConfig {
     pub edited: Config,
 }
 
+struct EditorSnapshot {
+    path: PathBuf,
+    remove_on_drop: bool,
+}
+
+impl EditorSnapshot {
+    fn retain(mut self) -> PathBuf {
+        self.remove_on_drop = false;
+        self.path.clone()
+    }
+}
+
+impl Drop for EditorSnapshot {
+    fn drop(&mut self) {
+        if self.remove_on_drop
+            && let Err(error) = fs::remove_file(&self.path)
+            && error.kind() != std::io::ErrorKind::NotFound
+        {
+            tracing::warn!(
+                "Failed to remove editor snapshot {:?}: {}",
+                self.path,
+                error
+            );
+        }
+    }
+}
+
+fn preserve_invalid_edit(snapshot: EditorSnapshot) -> Result<PathBuf> {
+    let result = fs::read(&snapshot.path)
+        .with_context(|| {
+            format!(
+                "Failed to read invalid editor snapshot {}",
+                snapshot.path.display()
+            )
+        })
+        .and_then(|contents| {
+            crate::config::recovery::preserve(
+                crate::config::recovery::RecoveryKind::InvalidEdit,
+                &contents,
+            )
+        });
+    match result {
+        Ok(path) => Ok(path),
+        Err(error) => {
+            let retained = snapshot.retain();
+            Err(error).with_context(|| {
+                format!(
+                    "Failed to preserve invalid edit; editor snapshot retained at {}",
+                    retained.display()
+                )
+            })
+        }
+    }
+}
+
 /// Edit an isolated snapshot. The live `profiles.json` remains daemon-owned.
 pub fn open_profiles_editor(target: Option<EditorTarget>, base: Config) -> Result<EditedConfig> {
     let editor = detect_editor();
     let (program, base_args) = split_editor(&editor);
-    let live_path = profiles_path().context("Failed to determine profiles path")?;
-    let path =
-        live_path.with_file_name(format!(".profiles.json.edit-{}.json", uuid::Uuid::new_v4()));
+    let runtime_dir = crate::paths::ensure_runtime_dir()?;
+    let path = runtime_dir.join(format!("profiles-edit-{}.json", std::process::id()));
     crate::config::save_config_at(&path, &base).context("Failed to create editor snapshot")?;
+    let snapshot = EditorSnapshot {
+        path: path.clone(),
+        remove_on_drop: true,
+    };
 
     let args = if let Some(line) = target.and_then(|target| find_target_line(&path, target)) {
         editor_args(&program, &path, line)
@@ -173,32 +230,16 @@ pub fn open_profiles_editor(target: Option<EditorTarget>, base: Config) -> Resul
         .args(&base_args)
         .args(&args)
         .status()
-        .with_context(|| format!("Failed to launch editor: {}", editor));
-
-    let status = match status {
-        Ok(status) => status,
-        Err(error) => {
-            let _ = fs::remove_file(&path);
-            return Err(error);
-        }
-    };
+        .with_context(|| format!("Failed to launch editor: {}", editor))?;
 
     if !status.success() {
-        let _ = fs::remove_file(&path);
         anyhow::bail!("Editor exited with non-zero status");
     }
 
     let edited = match crate::config::load_config_at(&path) {
         Ok(cfg) => cfg,
         Err(e) => {
-            let conflict = live_path.with_file_name(format!(
-                "profiles.json.conflict-invalid-{}-{}",
-                chrono::Local::now().format("%Y%m%dT%H%M%S"),
-                uuid::Uuid::new_v4()
-            ));
-            fs::rename(&path, &conflict).with_context(|| {
-                format!("Failed to preserve invalid edit at {}", conflict.display())
-            })?;
+            let conflict = preserve_invalid_edit(snapshot)?;
             return Err(e).with_context(|| {
                 format!(
                     "Invalid JSON; live config was not changed. Edited version saved to {}.",
@@ -209,14 +250,7 @@ pub fn open_profiles_editor(target: Option<EditorTarget>, base: Config) -> Resul
     };
 
     if let Err(e) = edited.validate() {
-        let conflict = live_path.with_file_name(format!(
-            "profiles.json.conflict-invalid-{}-{}",
-            chrono::Local::now().format("%Y%m%dT%H%M%S"),
-            uuid::Uuid::new_v4()
-        ));
-        fs::rename(&path, &conflict).with_context(|| {
-            format!("Failed to preserve invalid edit at {}", conflict.display())
-        })?;
+        let conflict = preserve_invalid_edit(snapshot)?;
         return Err(e).with_context(|| {
             format!(
                 "Validation failed; live config was not changed. Edited version saved to {}.",
@@ -225,7 +259,7 @@ pub fn open_profiles_editor(target: Option<EditorTarget>, base: Config) -> Resul
         });
     }
 
-    let _ = fs::remove_file(&path);
+    drop(snapshot);
     Ok(EditedConfig { base, edited })
 }
 
@@ -233,6 +267,53 @@ pub fn open_profiles_editor(target: Option<EditorTarget>, base: Config) -> Resul
 mod tests {
     use super::*;
     use tempfile::TempDir;
+
+    #[test]
+    fn editor_snapshot_removes_file_on_drop() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("snapshot.json");
+        fs::write(&path, "snapshot").unwrap();
+        drop(EditorSnapshot {
+            path: path.clone(),
+            remove_on_drop: true,
+        });
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn retained_editor_snapshot_survives_drop() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("snapshot.json");
+        fs::write(&path, "snapshot").unwrap();
+        let retained = EditorSnapshot {
+            path: path.clone(),
+            remove_on_drop: true,
+        }
+        .retain();
+        assert_eq!(retained, path);
+        assert!(path.exists());
+    }
+
+    #[test]
+    fn failed_recovery_write_retains_editor_snapshot() {
+        let _guard = crate::test_helpers::ENV_LOCK.lock().unwrap();
+        let dir = TempDir::new().unwrap();
+        let invalid_config_home = dir.path().join("not-a-directory");
+        fs::write(&invalid_config_home, "block directory creation").unwrap();
+        let _config_home =
+            crate::test_helpers::EnvVarGuard::set("XDG_CONFIG_HOME", &invalid_config_home);
+        let path = dir.path().join("snapshot.json");
+        fs::write(&path, "invalid edit").unwrap();
+
+        let error = preserve_invalid_edit(EditorSnapshot {
+            path: path.clone(),
+            remove_on_drop: true,
+        })
+        .unwrap_err();
+
+        assert!(path.exists());
+        assert!(error.to_string().contains(path.to_str().unwrap()));
+    }
 
     #[test]
     fn find_profile_line_first_profile() {

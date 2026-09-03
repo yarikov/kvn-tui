@@ -5,6 +5,25 @@ use std::path::Path;
 
 use anyhow::{Context, Result};
 
+struct TempFileCleanup<'a> {
+    path: &'a Path,
+    armed: bool,
+}
+
+impl TempFileCleanup<'_> {
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for TempFileCleanup<'_> {
+    fn drop(&mut self) {
+        if self.armed {
+            let _ = fs::remove_file(self.path);
+        }
+    }
+}
+
 /// Write `data` to `dest` atomically and durably.
 ///
 /// Writes to `<dest>.tmp`, fsyncs the data to disk, renames over `dest`, then
@@ -31,6 +50,10 @@ fn write_inner(dest: &Path, data: &[u8], expected: Option<Option<&[u8]>>) -> Res
         .file_name()
         .with_context(|| format!("Atomic write: dest {:?} has no file name", dest))?;
     let temp = dir.join(format!("{}.tmp", name.to_string_lossy()));
+    let mut temp_cleanup = TempFileCleanup {
+        path: &temp,
+        armed: true,
+    };
 
     {
         let mut file = fs::OpenOptions::new()
@@ -56,18 +79,17 @@ fn write_inner(dest: &Path, data: &[u8], expected: Option<Option<&[u8]>>) -> Res
             Ok(bytes) => Some(bytes),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
             Err(error) => {
-                let _ = fs::remove_file(&temp);
                 return Err(error).context("Failed to verify destination revision");
             }
         };
         if actual.as_deref() != expected {
-            let _ = fs::remove_file(&temp);
             anyhow::bail!("destination changed since it was read");
         }
     }
 
     fs::rename(&temp, dest)
         .with_context(|| format!("Failed to rename {:?} -> {:?}", temp, dest))?;
+    temp_cleanup.disarm();
 
     // Persist the rename itself. Best-effort: some filesystems (tmpfs, certain
     // FUSE mounts) return errors here even though the rename is safe in
@@ -114,6 +136,16 @@ mod tests {
         fs::write(&path, b"old").unwrap();
         write(&path, b"new").unwrap();
         assert_eq!(fs::read_to_string(&path).unwrap(), "new");
+    }
+
+    #[test]
+    fn atomic_write_removes_temp_file_when_rename_fails() {
+        let dir = tempfile::tempdir().unwrap();
+        let destination = dir.path().join("destination");
+        fs::create_dir(&destination).unwrap();
+
+        assert!(write(&destination, b"payload").is_err());
+        assert!(!dir.path().join("destination.tmp").exists());
     }
 
     #[test]

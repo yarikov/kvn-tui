@@ -5,6 +5,7 @@ use anyhow::{Context, Result};
 
 pub(crate) mod merge;
 pub mod profile;
+pub(crate) mod recovery;
 pub mod subscription;
 
 use profile::Config;
@@ -142,14 +143,8 @@ pub fn save_config(config: &Config) -> Result<()> {
 }
 
 pub(crate) fn save_conflict_config(config: &Config) -> Result<std::path::PathBuf> {
-    let original = crate::paths::profiles_path().context("Failed to determine profiles path")?;
-    let path = original.with_file_name(format!(
-        "profiles.json.conflict-{}-{}",
-        chrono::Local::now().format("%Y%m%dT%H%M%S"),
-        uuid::Uuid::new_v4()
-    ));
-    save_config_at(&path, config)?;
-    Ok(path)
+    let json = serialized_config(config)?;
+    recovery::preserve(recovery::RecoveryKind::Conflict, json.as_bytes())
 }
 
 #[cfg(test)]
