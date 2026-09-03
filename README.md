@@ -48,7 +48,7 @@
 - **Kill switch** — block outbound traffic if the VPN connection drops
 - **Automatic recovery** — auto-connect on startup and reconnect after suspend
 - **Live insights** — traffic rates, totals, active connections, and combined logs
-- **Themes** — choose from 22 bundled color palettes directly in the TUI; see the [theme gallery](docs/themes.md)
+- **Themes** — choose from [22 bundled color palettes](docs/themes.md) directly in the TUI
 
 ---
 
@@ -90,11 +90,6 @@ Choose a regional routing preset on first launch, then:
 
 Clipboard import requires `wl-clipboard` on Wayland or `xclip` / `xsel` on X11.
 Press `?` at any time to see the full key map.
-
-New installations require HTTPS for subscriptions. Existing configurations
-migrated to schema v5 retain deprecated HTTP support for compatibility with
-self-hosted servers. Set `settings.allow_insecure_http_subscriptions` to `false`
-after migrating those servers to HTTPS.
 
 ---
 
@@ -164,10 +159,6 @@ Remove either system integration with:
 sudo kvn-tui clean --polkit
 sudo kvn-tui clean --killswitch
 ```
-
-Cleanup preserves the `kvn-tui` group while either integration still uses it.
-After both integrations are removed, the now-unused group and its membership
-records are removed automatically.
 
 ### Omarchy integration (optional)
 
@@ -262,21 +253,6 @@ unusable.
 | `k` / `↑` | Move or scroll up |
 | `gg` / `G` | Go to the first / last item |
 
-The focused panel is preserved while the daemon remains active. Selectable
-overlays use the same navigation. In Logs, the first `j` selects the top
-visible record and the first `k` selects the bottom visible record; the record
-focus clears after 15 seconds of inactivity.
-
-**Logs**
-
-| Key | Action |
-|-----|--------|
-| `y` | Copy the focused log record, or every record in the visual selection |
-| `Shift+V` | Start a record-wise visual selection |
-| `j` / `k` | Extend the visual selection by one complete log record |
-| `gg` / `G` | Extend the visual selection to the start / end of the complete log buffer |
-| `Esc` | Cancel the visual selection |
-
 **Sources**
 
 | Key | Action |
@@ -289,6 +265,16 @@ focus clears after 15 seconds of inactivity.
 | `u` | Update selected subscription or geo |
 | `i` / `I` | Cycle subscription / geo auto-update |
 | `t` / `T` | Test selected / all profiles |
+
+**Logs**
+
+| Key | Action |
+|-----|--------|
+| `y` | Copy the focused log record, or every record in the visual selection |
+| `Shift+V` | Start a record-wise visual selection |
+| `j` / `k` | Extend the visual selection by one complete log record |
+| `gg` / `G` | Extend the visual selection to the start / end of the complete log buffer |
+| `Esc` | Cancel the visual selection |
 
 **Connection**
 
@@ -335,9 +321,6 @@ their physical US key positions regardless of the active keyboard layout.
 
 Configuration is stored in `~/.config/kvn-tui/profiles.json`. Press `e` to edit
 it in `$EDITOR`; invalid configuration is rejected when reloaded.
-Manual latency tests use an HTTPS connectivity endpoint by default. Set
-`settings.connectivity_probe.url` to another HTTP(S) URL, or set
-`settings.connectivity_probe.enabled` to `false` to disable active probing.
 
 See the [configuration guide](docs/configuration.md) for the JSON structure,
 advanced DNS and routing, validation, migrations, and runtime file locations.
