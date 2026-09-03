@@ -6,7 +6,7 @@ use ratatui::widgets::{Block, Borders, Clear, Paragraph, Row, Table, TableState,
 use std::time::{Duration, Instant};
 use unicode_width::UnicodeWidthChar;
 
-use crate::app::model::{HelpMode, MainPaneFocus, Model, Overlay, SourceRow};
+use crate::app::model::{MainPaneFocus, Model, Overlay, SourceRow};
 use crate::ui::styles::Theme;
 use crate::ui::widgets::{
     StatusBar, format_bps_field, format_bytes_field, format_connections_field,
@@ -687,32 +687,19 @@ fn draw_help(
     area: Rect,
 ) {
     let theme = &model.theme;
-    let help_rows = crate::ui::help::rows(
-        help_state,
-        model.config.settings.geo_routing.current_region.is_some(),
-    );
-    let needed = help_rows.len() as u16 + 1 + 2 + 2;
+    let help_rows = crate::ui::help::rows(help_state.context);
+    let needed = help_rows.len() as u16 + 2 + 2;
     let percent = needed
         .saturating_mul(100)
         .checked_div(area.height)
         .unwrap_or(90)
         .clamp(50, 90);
-    let width_percent = match help_state.mode {
-        HelpMode::Context => 70,
-        HelpMode::All => 80,
-    };
-    let popup_area = centered_rect(width_percent, percent, area);
+    let popup_area = centered_rect(70, percent, area);
 
     frame.render_widget(Clear, popup_area);
 
     let block = Block::default()
-        .title(format!(
-            " Help — {} ",
-            match help_state.mode {
-                HelpMode::Context => crate::ui::help::title(help_state.context),
-                HelpMode::All => "All",
-            }
-        ))
+        .title(" Help ")
         .borders(Borders::ALL)
         .border_style(theme.accent())
         .style(theme.popup_bg());
@@ -724,7 +711,7 @@ fn draw_help(
         .direction(Direction::Vertical)
         .constraints([Constraint::Min(1), Constraint::Length(2)])
         .split(inner);
-    let visible_count = chunks[0].height.saturating_sub(1) as usize;
+    let visible_count = chunks[0].height as usize;
     let selected = help_state.selected.min(help_rows.len().saturating_sub(1));
     let window_start = if help_rows.len() > visible_count {
         selected
@@ -734,44 +721,25 @@ fn draw_help(
         0
     };
     let window_end = (window_start + visible_count).min(help_rows.len());
-    let all_mode = help_state.mode == HelpMode::All;
-    let header = if all_mode {
-        Row::new(vec!["Context", "Key", "Action"])
-    } else {
-        Row::new(vec!["Key", "Action"])
-    }
-    .style(theme.accent().add_modifier(Modifier::BOLD));
-    let rows = help_rows[window_start..window_end].iter().map(|row| {
-        if all_mode {
-            Row::new(vec![row.context, row.key, row.action])
-        } else {
-            Row::new(vec![row.key, row.action])
-        }
-    });
-    let widths = if all_mode {
-        vec![
-            Constraint::Length(16),
-            Constraint::Length(18),
-            Constraint::Min(1),
-        ]
-    } else {
-        vec![Constraint::Length(18), Constraint::Min(1)]
-    };
-    let table = Table::new(rows, widths)
-        .header(header)
+    let rows = help_rows[window_start..window_end]
+        .iter()
+        .map(|line| match line {
+            crate::ui::help::HelpLine::Heading(title) => {
+                Row::new(vec![*title, ""]).style(theme.accent().add_modifier(Modifier::BOLD))
+            }
+            crate::ui::help::HelpLine::Separator => Row::new(vec!["", ""]),
+            crate::ui::help::HelpLine::Command { key, action } => Row::new(vec![*key, *action]),
+        });
+    let table = Table::new(rows, [Constraint::Length(12), Constraint::Min(1)])
         .style(theme.normal())
         .row_highlight_style(theme.selected())
         .highlight_symbol("> ");
     let mut table_state = TableState::default().with_selected(Some(selected - window_start));
     frame.render_stateful_widget(table, chunks[0], &mut table_state);
 
-    let mode_hint = match help_state.mode {
-        HelpMode::Context => "Tab: show all commands",
-        HelpMode::All => "Tab: show contextual commands",
-    };
     frame.render_widget(
         Paragraph::new(vec![
-            Line::from(mode_hint).centered(),
+            Line::from(""),
             Line::from("j/k scroll · gg/G edges · q/Esc/? back").centered(),
         ])
         .style(theme.normal()),
@@ -1837,7 +1805,7 @@ mod tests {
         use ratatui::Terminal;
         use ratatui::backend::TestBackend;
 
-        let backend = TestBackend::new(80, 40);
+        let backend = TestBackend::new(80, 60);
         let mut terminal = Terminal::new(backend).unwrap();
         let model = model_with_profiles(vec![]);
         let state = crate::app::model::HelpState::default();
@@ -1848,38 +1816,43 @@ mod tests {
             })
             .unwrap();
 
-        let content: String = frame.buffer.content.iter().map(|c| c.symbol()).collect();
+        let content = buffer_to_string(frame.buffer);
+        let lines = crate::ui::help::rows(state.context);
         let expected = [
-            ("h/l / Left/Right", "Focus Sources / Logs"),
-            ("j / Down", "Move down"),
-            ("k / Up", "Move up"),
-            ("gg", "Go to first"),
-            ("G", "Go to last"),
-            ("Enter", "Connect to selected profile"),
-            ("p", "Paste from clipboard"),
-            ("d", "Delete selected source"),
-            ("m", "Routing mode"),
-            ("u", "Update subscription or geo"),
-            ("i", "Cycle subscription auto-update"),
+            ("h/l, ←/→", "Focus panes / change value"),
+            ("j/k, ↑/↓", "Move or scroll"),
+            ("gg/G", "Go to first / last"),
+            ("Enter", "Connect selected profile"),
             ("e", "Open profiles.json in $EDITOR"),
-            ("C", "Theme picker"),
-            ("t", "Test selected profile latency"),
-            ("T", "Test all profiles"),
+            ("y", "Yank selected source"),
+            ("p", "Paste source from clipboard"),
+            ("d", "Delete selected source"),
+            ("u", "Update subscription or geo"),
+            ("i/I", "Cycle subscription / geo auto-update"),
+            ("t/T", "Test selected / all profiles"),
             ("r", "Reconnect"),
             ("s", "Disconnect"),
-            ("q / Esc", "Detach TUI"),
-            ("Ctrl+C", "Quit"),
-            ("?", "Show help"),
+            ("m", "Routing mode"),
+            ("C", "Theme picker"),
+            ("q/Esc", "Detach TUI from main screen"),
+            ("Ctrl+C", "Quit daemon"),
+            ("?", "Open or close help"),
         ];
         for (key, action) in expected {
-            assert!(content.contains(key), "help should contain key: {}", key);
             assert!(
-                content.contains(action),
-                "help should contain action: {}",
-                action
+                lines.iter().any(|line| matches!(
+                    line,
+                    crate::ui::help::HelpLine::Command {
+                        key: actual_key,
+                        action: actual_action,
+                    } if *actual_key == key && *actual_action == action
+                )),
+                "help catalog should contain {key}: {action}"
             );
         }
         assert!(content.contains("Help"), "should contain Help title");
+        assert!(content.contains("Navigation"));
+        assert!(content.contains("Sources"));
     }
 
     #[test]
@@ -2043,11 +2016,10 @@ mod tests {
     }
 
     #[test]
-    fn draw_all_help_overlay_snapshot() {
+    fn draw_logs_help_overlay_snapshot() {
         let mut model = model_with_profiles(vec![]);
         model.overlay = Overlay::Help(crate::app::model::HelpState {
             context: crate::app::model::HelpContext::Logs,
-            mode: HelpMode::All,
             selected: 12,
         });
         insta::assert_snapshot!(snapshot_terminal(&model, 100, 24));
@@ -2097,7 +2069,7 @@ mod tests {
         let mut terminal = Terminal::new(TestBackend::new(80, 40)).unwrap();
         terminal.draw(|frame| draw(frame, &model)).unwrap();
         let buffer = terminal.backend().buffer();
-        let help_row = find_text(buffer, "Move up");
+        let help_row = find_text(buffer, "Move or scroll");
         assert_eq!(buffer.content[help_row].style().fg, model.theme.normal().fg);
 
         model.overlay = Overlay::None;

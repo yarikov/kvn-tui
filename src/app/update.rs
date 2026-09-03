@@ -2253,7 +2253,7 @@ mod tests {
     }
 
     #[test]
-    fn help_mode_only_closes_on_exit_keys() {
+    fn help_only_closes_on_exit_keys() {
         let mut model = model_with_profiles(vec![]);
         model.overlay = Overlay::Help(crate::app::model::HelpState::default());
         assert!(handle_key(&mut model, key('x')).is_empty());
