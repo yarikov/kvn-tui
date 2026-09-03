@@ -9,9 +9,7 @@
 use crossterm::event::KeyEvent;
 
 use crate::app::effect::Effect;
-use crate::app::model::{
-    AppStatus, HelpContext, HelpMode, HelpState, MainPaneFocus, Model, Overlay,
-};
+use crate::app::model::{AppStatus, HelpContext, HelpState, MainPaneFocus, Model, Overlay};
 
 use super::*;
 
@@ -67,27 +65,20 @@ fn open_help(model: &mut Model) {
     };
     model.overlay = Overlay::Help(HelpState {
         context,
-        mode: HelpMode::Context,
-        selected: 0,
+        selected: crate::ui::help::first_command(&crate::ui::help::rows(context)),
     });
 }
 
 fn handle_help(model: &mut Model, mut state: HelpState, key: KeyEvent) -> Vec<Effect> {
-    let can_cancel_geo = model.config.settings.geo_routing.current_region.is_some();
-    let row_count = crate::ui::help::rows(state, can_cancel_geo).len();
+    let rows = crate::ui::help::rows(state.context);
     match key.code {
-        KeyCode::Tab => {
-            state.mode = match state.mode {
-                HelpMode::Context => HelpMode::All,
-                HelpMode::All => HelpMode::Context,
-            };
-            state.selected = 0;
-        }
         KeyCode::Char('j') | KeyCode::Down => {
-            crate::ui::nav::select_next(&mut state.selected, row_count);
+            state.selected = crate::ui::help::next_command(&rows, state.selected);
         }
-        KeyCode::Char('k') | KeyCode::Up => crate::ui::nav::select_prev(&mut state.selected),
-        KeyCode::Char('G') => crate::ui::nav::select_last(&mut state.selected, row_count),
+        KeyCode::Char('k') | KeyCode::Up => {
+            state.selected = crate::ui::help::previous_command(&rows, state.selected);
+        }
+        KeyCode::Char('G') => state.selected = crate::ui::help::last_command(&rows),
         KeyCode::Char('q') | KeyCode::Esc | KeyCode::Char('?') => {
             model.overlay = state.context.restore_overlay();
             return vec![];
@@ -671,7 +662,7 @@ fn handle_go_first(model: &mut Model) -> Vec<Effect> {
             crate::ui::nav::select_first(&mut model.service_routing_selected);
         }
         Overlay::Help(mut state) => {
-            state.selected = 0;
+            state.selected = crate::ui::help::first_command(&crate::ui::help::rows(state.context));
             model.overlay = Overlay::Help(state);
         }
         Overlay::ConfirmDelete => {}
@@ -2335,14 +2326,13 @@ mod tests {
             model.overlay,
             Overlay::Help(HelpState {
                 context: HelpContext::Logs,
-                mode: HelpMode::Context,
-                selected: 0,
+                selected: 1,
             })
         ));
     }
 
     #[test]
-    fn help_switches_modes_scrolls_and_restores_overlay_draft() {
+    fn help_scrolls_and_restores_overlay_draft() {
         let mut model = model_with_profiles(vec![]);
         model.overlay = Overlay::DnsSettings;
         model.dns_selected = 4;
@@ -2350,13 +2340,19 @@ mod tests {
 
         handle_key(&mut model, key('?'));
         handle_key(&mut model, KeyEvent::from(KeyCode::Tab));
+        assert!(matches!(
+            model.overlay,
+            Overlay::Help(HelpState {
+                context: HelpContext::DnsSettings,
+                selected: 1,
+            })
+        ));
         handle_key(&mut model, key('j'));
         assert!(matches!(
             model.overlay,
             Overlay::Help(HelpState {
                 context: HelpContext::DnsSettings,
-                mode: HelpMode::All,
-                selected: 1,
+                selected: 2,
             })
         ));
 

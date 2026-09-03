@@ -4,41 +4,41 @@ expression: "snapshot_terminal(&model, 80, 40)"
 ---
 ┌ Traffic ─────────────────────────────────────────────────────────────────────┐
 │↑ 0.0 KB/s  ↓ 0.0 KB/s    Total: ↑ 0.0 KB  ↓ 0.0 KB    0 connections          │
-└──────────────────────────────────────────────────────────────────────────────┘
-┌ Sources ─────────────────────────────┐┌ Logs ────────────────────────────────┐
-│No sources.┌ Help — Sources ──────────────────────────────────────┐           │
-│or subscrip│  Key                Action                           │           │
-│           │> Enter              Connect to selected profile      │           │
-│           │  p                  Paste from clipboard             │           │
-│           │  y                  Yank selected source             │           │
-│           │  d                  Delete selected source           │           │
-│           │  u                  Update subscription or geo       │           │
-│           │  i                  Cycle subscription auto-update   │           │
-│           │  e                  Open profiles.json in $EDITOR    │           │
-│           │  t                  Test selected profile latency    │           │
-│           │  T                  Test all profiles                │           │
-│           │  r                  Reconnect                        │           │
-│           │  s                  Disconnect                       │           │
-│           │  a                  Toggle auto-connect              │           │
-│           │  K                  Toggle kill switch               │           │
-│           │  m                  Routing mode                     │           │
-│           │  o                  Geo region                       │           │
-│           │  D                  DNS settings                     │           │
-│           │  S                  Service routing                  │           │
-│           │  C                  Theme picker                     │           │
-│           │  I                  Cycle geo auto-update            │           │
-│           │  h/l / Left/Right   Focus Sources / Logs             │           │
-│           │  j / Down           Move down                        │           │
-│           │  k / Up             Move up                          │           │
-│           │  gg                 Go to first                      │           │
-│           │  G                  Go to last                       │           │
-│           │  q / Esc            Detach TUI                       │           │
-│           │  ?                  Show help                        │           │
-│           │  Ctrl+C             Quit daemon                      │           │
-│           │                Tab: show all commands                │           │
+└───────────┌ Help ────────────────────────────────────────────────┐───────────┘
+┌ Sources ──│  Navigation                                          │───────────┐
+│No sources.│> h/l, ←/→     Focus panes / change value             │           │
+│or subscrip│  j/k, ↑/↓     Move or scroll                         │           │
+│           │  gg/G         Go to first / last                     │           │
+│           │                                                      │           │
+│           │  Sources                                             │           │
+│           │  Enter        Connect selected profile               │           │
+│           │  e            Open profiles.json in $EDITOR          │           │
+│           │  y            Yank selected source                   │           │
+│           │  p            Paste source from clipboard            │           │
+│           │  d            Delete selected source                 │           │
+│           │  u            Update subscription or geo             │           │
+│           │  i/I          Cycle subscription / geo auto-update   │           │
+│           │  t/T          Test selected / all profiles           │           │
+│           │                                                      │           │
+│           │  Logs                                                │           │
+│           │  y            Yank selected log(s)                   │           │
+│           │  Shift+V      Select multiple logs                   │           │
+│           │  Esc          Cancel log selection                   │           │
+│           │                                                      │           │
+│           │  Connection                                          │           │
+│           │  r            Reconnect                              │           │
+│           │  s            Disconnect                             │           │
+│           │  a            Toggle auto-connect                    │           │
+│           │  K            Toggle kill switch                     │           │
+│           │                                                      │           │
+│           │  Settings                                            │           │
+│           │  m            Routing mode                           │           │
+│           │  o            Geo region                             │           │
+│           │  D            DNS settings                           │           │
+│           │  S            Service routing                        │           │
+│           │  C            Theme picker                           │           │
+│           │                                                      │           │
 │           │        j/k scroll · gg/G edges · q/Esc/? back        │           │
 │           └──────────────────────────────────────────────────────┘           │
-│                                      ││                                      │
-│                                      ││                                      │
 └──────────────────────────────────────┘└──────────────────────────────────────┘
 [DISCONNECTED] [DNS: DoH] [Global] [Geo: 2026-05-31 13:41]

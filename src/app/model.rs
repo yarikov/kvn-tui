@@ -24,7 +24,7 @@ pub enum Overlay {
     ServiceRouting,
 }
 
-/// Screen that was active when contextual help was opened.
+/// Screen that was active when help was opened.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum HelpContext {
     #[default]
@@ -52,20 +52,21 @@ impl HelpContext {
     }
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub enum HelpMode {
-    #[default]
-    Context,
-    All,
-}
-
 /// Interactive state of the help popup.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HelpState {
     pub context: HelpContext,
-    pub mode: HelpMode,
     /// Selected help row; rendering keeps it inside the visible viewport.
     pub selected: usize,
+}
+
+impl Default for HelpState {
+    fn default() -> Self {
+        Self {
+            context: HelpContext::Sources,
+            selected: 1,
+        }
+    }
 }
 
 /// Main panel focused by the active daemon session. It is deliberately not

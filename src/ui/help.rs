@@ -1,386 +1,305 @@
-use crate::app::model::{HelpContext, HelpMode, HelpState};
+use crate::app::model::HelpContext;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct HelpRow {
-    pub context: &'static str,
-    pub key: &'static str,
-    pub action: &'static str,
+pub(crate) enum HelpLine {
+    Heading(&'static str),
+    Separator,
+    Command {
+        key: &'static str,
+        action: &'static str,
+    },
 }
 
-const GLOBAL: &[(&str, &str)] = &[("?", "Show help"), ("Ctrl+C", "Quit daemon")];
+impl HelpLine {
+    pub(crate) fn is_command(self) -> bool {
+        matches!(self, Self::Command { .. })
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HelpGroup {
+    Navigation,
+    Sources,
+    Logs,
+    Connection,
+    Settings,
+    Dialogs,
+    General,
+}
+
+const BASE_ORDER: &[HelpGroup] = &[
+    HelpGroup::Sources,
+    HelpGroup::Logs,
+    HelpGroup::Connection,
+    HelpGroup::Settings,
+    HelpGroup::Dialogs,
+    HelpGroup::General,
+];
+
+const NAVIGATION: &[(&str, &str)] = &[
+    ("h/l, ←/→", "Focus panes / change value"),
+    ("j/k, ↑/↓", "Move or scroll"),
+    ("gg/G", "Go to first / last"),
+];
 
 const SOURCES: &[(&str, &str)] = &[
-    ("Enter", "Connect to selected profile"),
-    ("p", "Paste from clipboard"),
+    ("Enter", "Connect selected profile"),
+    ("e", "Open profiles.json in $EDITOR"),
     ("y", "Yank selected source"),
+    ("p", "Paste source from clipboard"),
     ("d", "Delete selected source"),
     ("u", "Update subscription or geo"),
-    ("i", "Cycle subscription auto-update"),
-    ("e", "Open profiles.json in $EDITOR"),
-    ("t", "Test selected profile latency"),
-    ("T", "Test all profiles"),
-    ("r", "Reconnect"),
-    ("s", "Disconnect"),
-    ("a", "Toggle auto-connect"),
-    ("K", "Toggle kill switch"),
-    ("m", "Routing mode"),
-    ("o", "Geo region"),
-    ("D", "DNS settings"),
-    ("S", "Service routing"),
-    ("C", "Theme picker"),
-    ("I", "Cycle geo auto-update"),
-    ("h/l / Left/Right", "Focus Sources / Logs"),
-    ("j / Down", "Move down"),
-    ("k / Up", "Move up"),
-    ("gg", "Go to first"),
-    ("G", "Go to last"),
-    ("q / Esc", "Detach TUI"),
+    ("i/I", "Cycle subscription / geo auto-update"),
+    ("t/T", "Test selected / all profiles"),
 ];
 
 const LOGS: &[(&str, &str)] = &[
-    ("Shift+V", "Select multiple logs"),
     ("y", "Yank selected log(s)"),
+    ("Shift+V", "Select multiple logs"),
     ("Esc", "Cancel log selection"),
+];
+
+const CONNECTION: &[(&str, &str)] = &[
     ("r", "Reconnect"),
     ("s", "Disconnect"),
     ("a", "Toggle auto-connect"),
     ("K", "Toggle kill switch"),
+];
+
+const SETTINGS: &[(&str, &str)] = &[
     ("m", "Routing mode"),
     ("o", "Geo region"),
     ("D", "DNS settings"),
     ("S", "Service routing"),
     ("C", "Theme picker"),
-    ("I", "Cycle geo auto-update"),
-    ("h/l / Left/Right", "Focus Sources / Logs"),
-    ("j / Down", "Move down"),
-    ("k / Up", "Move up"),
-    ("gg", "Go to buffer top"),
-    ("G", "Go to buffer bottom"),
-    ("q / Esc", "Detach TUI"),
 ];
 
-const CONFIRM_DELETE: &[(&str, &str)] = &[("y / Enter", "Confirm deletion"), ("q / Esc", "Cancel")];
-
-const PICKER: &[(&str, &str)] = &[
-    ("Enter", "Confirm"),
-    ("j / Down", "Move down"),
-    ("k / Up", "Move up"),
-    ("gg", "Go to first"),
-    ("G", "Go to last"),
-    ("q / Esc", "Cancel"),
+const DIALOGS: &[(&str, &str)] = &[
+    ("h/l, ←/→", "Change selected value"),
+    ("Enter", "Confirm selection or changes"),
+    ("y/n", "Confirm / cancel deletion"),
+    ("q/Esc", "Cancel dialog"),
 ];
 
-const DNS: &[(&str, &str)] = &[
-    ("h/l / Left/Right", "Change selected value"),
-    ("Enter", "Confirm"),
-    ("j / Down", "Move down"),
-    ("k / Up", "Move up"),
-    ("gg", "Go to first"),
-    ("G", "Go to last"),
-    ("q / Esc", "Cancel"),
+const GENERAL: &[(&str, &str)] = &[
+    ("q/Esc", "Detach TUI from main screen"),
+    ("Ctrl+C", "Quit daemon"),
+    ("?", "Open or close help"),
 ];
 
-const SERVICES: &[(&str, &str)] = &[
-    ("h/l / Left/Right", "Change selected route"),
-    ("Enter", "Confirm all changes"),
-    ("j / Down", "Move down"),
-    ("k / Up", "Move up"),
-    ("gg", "Go to first"),
-    ("G", "Go to last"),
-    ("q / Esc", "Cancel"),
-];
-
-/// Compact, purpose-grouped catalog for the All view. This is intentionally
-/// curated separately from the contextual lists: repeating j/k and the main
-/// pane shortcuts under every overlay makes the complete reference noisy.
-const ALL_ROWS: &[HelpRow] = &[
-    HelpRow {
-        context: "Sources",
-        key: "Enter",
-        action: "Connect to selected profile",
-    },
-    HelpRow {
-        context: "Sources",
-        key: "p",
-        action: "Paste from clipboard",
-    },
-    HelpRow {
-        context: "Sources",
-        key: "y",
-        action: "Yank selected source",
-    },
-    HelpRow {
-        context: "Sources",
-        key: "d",
-        action: "Delete selected source",
-    },
-    HelpRow {
-        context: "Sources",
-        key: "u",
-        action: "Update subscription or geo",
-    },
-    HelpRow {
-        context: "Sources",
-        key: "i",
-        action: "Cycle subscription auto-update",
-    },
-    HelpRow {
-        context: "Sources",
-        key: "e",
-        action: "Open profiles.json in $EDITOR",
-    },
-    HelpRow {
-        context: "Sources",
-        key: "t / T",
-        action: "Test selected / all profiles",
-    },
-    HelpRow {
-        context: "Logs",
-        key: "Shift+V",
-        action: "Select multiple logs",
-    },
-    HelpRow {
-        context: "Logs",
-        key: "y",
-        action: "Yank selected log(s)",
-    },
-    HelpRow {
-        context: "DNS / Services",
-        key: "h/l / Left/Right",
-        action: "Change selected value",
-    },
-    HelpRow {
-        context: "Confirm Delete",
-        key: "y / Enter",
-        action: "Confirm deletion",
-    },
-    HelpRow {
-        context: "Overlays",
-        key: "Enter",
-        action: "Confirm selection or changes",
-    },
-    HelpRow {
-        context: "Main panes",
-        key: "r",
-        action: "Reconnect",
-    },
-    HelpRow {
-        context: "Main panes",
-        key: "s",
-        action: "Disconnect",
-    },
-    HelpRow {
-        context: "Main panes",
-        key: "a",
-        action: "Toggle auto-connect",
-    },
-    HelpRow {
-        context: "Main panes",
-        key: "K",
-        action: "Toggle kill switch",
-    },
-    HelpRow {
-        context: "Main panes",
-        key: "m",
-        action: "Routing mode",
-    },
-    HelpRow {
-        context: "Main panes",
-        key: "o",
-        action: "Geo region",
-    },
-    HelpRow {
-        context: "Main panes",
-        key: "D",
-        action: "DNS settings",
-    },
-    HelpRow {
-        context: "Main panes",
-        key: "S",
-        action: "Service routing",
-    },
-    HelpRow {
-        context: "Main panes",
-        key: "C",
-        action: "Theme picker",
-    },
-    HelpRow {
-        context: "Main panes",
-        key: "I",
-        action: "Cycle geo auto-update",
-    },
-    HelpRow {
-        context: "Main panes",
-        key: "h/l / Left/Right",
-        action: "Focus Sources / Logs",
-    },
-    HelpRow {
-        context: "Lists / pickers",
-        key: "j/k / Up/Down",
-        action: "Navigate",
-    },
-    HelpRow {
-        context: "Lists / pickers",
-        key: "gg/G",
-        action: "Jump to list/buffer edges",
-    },
-    HelpRow {
-        context: "Main panes",
-        key: "q / Esc",
-        action: "Detach; Esc cancels visual",
-    },
-    HelpRow {
-        context: "Overlays",
-        key: "q / Esc",
-        action: "Cancel",
-    },
-    HelpRow {
-        context: "Global",
-        key: "?",
-        action: "Show help",
-    },
-    HelpRow {
-        context: "Global",
-        key: "Ctrl+C",
-        action: "Quit daemon",
-    },
-];
-
-fn label(context: HelpContext) -> &'static str {
-    match context {
-        HelpContext::Sources => "Sources",
-        HelpContext::Logs => "Logs",
-        HelpContext::ConfirmDelete => "Confirm Delete",
-        HelpContext::RoutingMode => "Routing Mode",
-        HelpContext::GeoRegions => "Geo Region",
-        HelpContext::DnsSettings => "DNS",
-        HelpContext::ThemeSettings => "Theme",
-        HelpContext::ServiceRouting => "Service Routing",
-    }
-}
-
-fn commands(context: HelpContext) -> &'static [(&'static str, &'static str)] {
-    match context {
-        HelpContext::Sources => SOURCES,
-        HelpContext::Logs => LOGS,
-        HelpContext::ConfirmDelete => CONFIRM_DELETE,
-        HelpContext::RoutingMode | HelpContext::GeoRegions | HelpContext::ThemeSettings => PICKER,
-        HelpContext::DnsSettings => DNS,
-        HelpContext::ServiceRouting => SERVICES,
-    }
-}
-
-fn append(
-    rows: &mut Vec<HelpRow>,
-    context: &'static str,
-    commands: &[(&'static str, &'static str)],
-) {
-    rows.extend(commands.iter().map(|&(key, action)| HelpRow {
-        context,
-        key,
-        action,
-    }));
-}
-
-pub(crate) fn rows(state: HelpState, can_cancel_geo: bool) -> Vec<HelpRow> {
-    let mut rows = Vec::new();
-    match state.mode {
-        HelpMode::Context => {
-            append(&mut rows, label(state.context), commands(state.context));
-            if state.context == HelpContext::GeoRegions && !can_cancel_geo {
-                rows.retain(|row| row.key != "q / Esc");
-            }
-            append(&mut rows, "Global", GLOBAL);
-        }
-        HelpMode::All => {
-            rows.extend_from_slice(ALL_ROWS);
+impl HelpGroup {
+    fn title(self) -> &'static str {
+        match self {
+            Self::Navigation => "Navigation",
+            Self::Sources => "Sources",
+            Self::Logs => "Logs",
+            Self::Connection => "Connection",
+            Self::Settings => "Settings",
+            Self::Dialogs => "Dialogs",
+            Self::General => "General",
         }
     }
-    rows
+
+    fn commands(self) -> &'static [(&'static str, &'static str)] {
+        match self {
+            Self::Navigation => NAVIGATION,
+            Self::Sources => SOURCES,
+            Self::Logs => LOGS,
+            Self::Connection => CONNECTION,
+            Self::Settings => SETTINGS,
+            Self::Dialogs => DIALOGS,
+            Self::General => GENERAL,
+        }
+    }
 }
 
-pub(crate) fn title(context: HelpContext) -> &'static str {
-    label(context)
+fn relevant_group(context: HelpContext) -> HelpGroup {
+    match context {
+        HelpContext::Sources => HelpGroup::Sources,
+        HelpContext::Logs => HelpGroup::Logs,
+        HelpContext::ConfirmDelete
+        | HelpContext::RoutingMode
+        | HelpContext::GeoRegions
+        | HelpContext::DnsSettings
+        | HelpContext::ThemeSettings
+        | HelpContext::ServiceRouting => HelpGroup::Dialogs,
+    }
+}
+
+fn append_group(lines: &mut Vec<HelpLine>, group: HelpGroup) {
+    if !lines.is_empty() {
+        lines.push(HelpLine::Separator);
+    }
+    lines.push(HelpLine::Heading(group.title()));
+    lines.extend(
+        group
+            .commands()
+            .iter()
+            .map(|&(key, action)| HelpLine::Command { key, action }),
+    );
+}
+
+pub(crate) fn rows(context: HelpContext) -> Vec<HelpLine> {
+    let relevant = relevant_group(context);
+    let mut lines = Vec::new();
+    append_group(&mut lines, HelpGroup::Navigation);
+    append_group(&mut lines, relevant);
+    for &group in BASE_ORDER {
+        if group != relevant {
+            append_group(&mut lines, group);
+        }
+    }
+    lines
+}
+
+pub(crate) fn first_command(lines: &[HelpLine]) -> usize {
+    lines.iter().position(|line| line.is_command()).unwrap_or(0)
+}
+
+pub(crate) fn last_command(lines: &[HelpLine]) -> usize {
+    lines
+        .iter()
+        .rposition(|line| line.is_command())
+        .unwrap_or(0)
+}
+
+pub(crate) fn next_command(lines: &[HelpLine], selected: usize) -> usize {
+    lines
+        .iter()
+        .enumerate()
+        .skip(selected.saturating_add(1))
+        .find_map(|(index, line)| line.is_command().then_some(index))
+        .unwrap_or_else(|| last_command(lines))
+}
+
+pub(crate) fn previous_command(lines: &[HelpLine], selected: usize) -> usize {
+    lines
+        .iter()
+        .enumerate()
+        .take(selected)
+        .rev()
+        .find_map(|(index, line)| line.is_command().then_some(index))
+        .unwrap_or_else(|| first_command(lines))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn state(context: HelpContext, mode: HelpMode) -> HelpState {
-        HelpState {
-            context,
-            mode,
-            selected: 0,
-        }
+    fn headings(context: HelpContext) -> Vec<&'static str> {
+        rows(context)
+            .into_iter()
+            .filter_map(|line| match line {
+                HelpLine::Heading(title) => Some(title),
+                HelpLine::Separator | HelpLine::Command { .. } => None,
+            })
+            .collect()
     }
 
     #[test]
-    fn contextual_rows_only_include_active_context_and_global_commands() {
-        let sources = rows(state(HelpContext::Sources, HelpMode::Context), true);
-        assert_eq!(sources.first().map(|row| row.key), Some("Enter"));
-        assert!(sources.iter().any(|row| row.key == "p"));
-        assert!(!sources.iter().any(|row| row.key == "Shift+V"));
-
-        let logs = rows(state(HelpContext::Logs, HelpMode::Context), true);
-        assert_eq!(logs.first().map(|row| row.key), Some("Shift+V"));
-        assert!(logs.iter().any(|row| row.key == "Shift+V"));
-        assert!(logs.iter().any(|row| row.key == "D"));
-        assert!(logs.iter().any(|row| row.key == "a"));
-        assert!(logs.iter().any(|row| row.key == "K"));
-        assert!(logs.iter().any(|row| row.key == "r"));
-        assert!(logs.iter().any(|row| row.key == "s"));
-        assert!(logs.iter().any(|row| row.key == "I"));
-        assert!(!logs.iter().any(|row| row.key == "p"));
-        assert!(logs.iter().any(|row| row.context == "Global"));
-
-        let dns = rows(state(HelpContext::DnsSettings, HelpMode::Context), true);
-        assert_eq!(dns.first().map(|row| row.key), Some("h/l / Left/Right"));
-        let picker = rows(state(HelpContext::ThemeSettings, HelpMode::Context), true);
-        assert_eq!(picker.first().map(|row| row.key), Some("Enter"));
-    }
-
-    #[test]
-    fn all_rows_are_compact_and_cover_command_categories() {
-        use std::collections::HashSet;
-
-        let all = rows(state(HelpContext::Sources, HelpMode::All), true);
-        assert_eq!(all.first().map(|row| row.context), Some("Sources"));
-        assert_eq!(all.first().map(|row| row.key), Some("Enter"));
-        assert_eq!(all.last().map(|row| row.key), Some("Ctrl+C"));
-        for context in [
-            "Global",
-            "Lists / pickers",
-            "Main panes",
-            "Sources",
-            "Logs",
-            "Confirm Delete",
-            "Overlays",
-            "DNS / Services",
-        ] {
-            assert!(all.iter().any(|row| row.context == context), "{context}");
-        }
-        assert_eq!(all.iter().filter(|row| row.key == "m").count(), 1);
+    fn relevant_group_follows_navigation() {
         assert_eq!(
-            all.iter().filter(|row| row.key == "j/k / Up/Down").count(),
-            1
+            headings(HelpContext::Sources),
+            [
+                "Navigation",
+                "Sources",
+                "Logs",
+                "Connection",
+                "Settings",
+                "Dialogs",
+                "General",
+            ]
         );
-        assert!(all.len() < SOURCES.len() + LOGS.len());
-        let index = |context| all.iter().position(|row| row.context == context).unwrap();
-        assert!(index("Sources") < index("Logs"));
-        assert!(index("Logs") < index("Main panes"));
-        assert!(index("Main panes") < index("Lists / pickers"));
-        assert!(index("Lists / pickers") < index("Global"));
-        let mut unique = HashSet::new();
-        assert!(all.iter().all(|row| unique.insert((row.key, row.action))));
+        assert_eq!(
+            headings(HelpContext::Logs),
+            [
+                "Navigation",
+                "Logs",
+                "Sources",
+                "Connection",
+                "Settings",
+                "Dialogs",
+                "General",
+            ]
+        );
+        assert_eq!(
+            headings(HelpContext::DnsSettings),
+            [
+                "Navigation",
+                "Dialogs",
+                "Sources",
+                "Logs",
+                "Connection",
+                "Settings",
+                "General",
+            ]
+        );
     }
 
     #[test]
-    fn required_geo_selection_omits_cancel_in_context_mode() {
-        let required = rows(state(HelpContext::GeoRegions, HelpMode::Context), false);
-        assert!(!required.iter().any(|row| row.key == "q / Esc"));
+    fn every_group_is_present_once() {
+        for context in [
+            HelpContext::Sources,
+            HelpContext::Logs,
+            HelpContext::ConfirmDelete,
+            HelpContext::RoutingMode,
+            HelpContext::GeoRegions,
+            HelpContext::DnsSettings,
+            HelpContext::ThemeSettings,
+            HelpContext::ServiceRouting,
+        ] {
+            let headings = headings(context);
+            assert_eq!(headings.len(), 7);
+            for expected in [
+                "Navigation",
+                "Sources",
+                "Logs",
+                "Connection",
+                "Settings",
+                "Dialogs",
+                "General",
+            ] {
+                assert_eq!(
+                    headings.iter().filter(|&&title| title == expected).count(),
+                    1
+                );
+            }
+        }
+    }
 
-        let optional = rows(state(HelpContext::GeoRegions, HelpMode::Context), true);
-        assert!(optional.iter().any(|row| row.key == "q / Esc"));
+    #[test]
+    fn navigation_skips_headings_and_stops_at_edges() {
+        let lines = rows(HelpContext::Sources);
+        let first = first_command(&lines);
+        let last = last_command(&lines);
+        assert!(lines[first].is_command());
+        assert!(lines[last].is_command());
+        assert_eq!(previous_command(&lines, first), first);
+        assert_eq!(next_command(&lines, last), last);
+    }
+
+    #[test]
+    fn groups_have_single_separators_between_them() {
+        let lines = rows(HelpContext::Sources);
+        assert!(!matches!(lines.first(), Some(HelpLine::Separator)));
+        assert!(!matches!(lines.last(), Some(HelpLine::Separator)));
+        assert_eq!(
+            lines
+                .iter()
+                .filter(|line| matches!(line, HelpLine::Separator))
+                .count(),
+            6
+        );
+        assert!(
+            lines
+                .windows(2)
+                .all(|pair| !matches!(pair, [HelpLine::Separator, HelpLine::Separator]))
+        );
+    }
+
+    #[test]
+    fn general_orders_quit_before_help() {
+        assert_eq!(GENERAL[1], ("Ctrl+C", "Quit daemon"));
+        assert_eq!(GENERAL[2], ("?", "Open or close help"));
     }
 }
