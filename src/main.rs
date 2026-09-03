@@ -107,6 +107,27 @@ pub(crate) fn start_daemon() -> Result<()> {
     spawn_daemon_process()
 }
 
+/// Start the daemon binary that corresponds to this client after an upgrade.
+///
+/// The packaged executable keeps using its systemd unit (and therefore its
+/// supervision). A source or manual build bypasses that unit so it cannot
+/// accidentally restart an older `/usr/bin/kvn-tui`.
+pub(crate) fn start_current_daemon() -> Result<()> {
+    let current = std::env::current_exe().context("Failed to determine current executable path")?;
+    if paths_refer_to_same_file(&current, std::path::Path::new("/usr/bin/kvn-tui")) {
+        start_daemon()
+    } else {
+        spawn_daemon_process()
+    }
+}
+
+fn paths_refer_to_same_file(left: &std::path::Path, right: &std::path::Path) -> bool {
+    match (left.canonicalize(), right.canonicalize()) {
+        (Ok(left), Ok(right)) => left == right,
+        _ => left == right,
+    }
+}
+
 /// Re-exec ourselves as `kvn-tui --daemon` in a fresh process group so the
 /// daemon outlives the TUI when no packaged systemd unit is available.
 fn spawn_daemon_process() -> Result<()> {
@@ -126,7 +147,18 @@ fn spawn_daemon_process() -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::resolve_log_filter;
+    use super::{paths_refer_to_same_file, resolve_log_filter};
+    use std::path::Path;
+
+    #[test]
+    fn executable_path_comparison_handles_identical_missing_paths() {
+        let path = Path::new("/definitely/missing/kvn-tui");
+        assert!(paths_refer_to_same_file(path, path));
+        assert!(!paths_refer_to_same_file(
+            path,
+            Path::new("/another/missing/kvn-tui")
+        ));
+    }
 
     fn with_no_rust_log<F: FnOnce() -> R, R>(f: F) -> R {
         let _guard = crate::test_helpers::ENV_LOCK.lock().unwrap();

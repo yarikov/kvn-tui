@@ -1116,6 +1116,8 @@ esac
 
     fn snapshot_with_profiles() -> StateSnapshot {
         let mut snap = StateSnapshot {
+            daemon_version: env!("CARGO_PKG_VERSION").into(),
+            ipc_version: crate::ipc::IPC_VERSION,
             connection: ConnectionState::Idle,
             status: "ok".into(),
             status_is_error: false,
