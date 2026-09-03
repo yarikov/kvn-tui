@@ -263,6 +263,7 @@ pub fn update(model: &mut Model, msg: Msg) -> Vec<Effect> {
         }
         Msg::IpcCommand(cmd) => handle_ipc_command(model, cmd),
         Msg::StateUpdate(_) => vec![],
+        Msg::IpcReadFailed(_) => vec![],
         Msg::ConfigReloaded(result) => handle_config_reloaded(model, *result),
         Msg::KillSwitchApplied { enabled, error } => {
             handle_kill_switch_applied(model, enabled, error)

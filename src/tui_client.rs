@@ -5,11 +5,11 @@ pub(crate) mod theme_watch;
 
 use std::io::{self, IsTerminal, Write};
 use std::sync::Arc;
-use std::sync::mpsc::{Receiver, Sender, channel};
+use std::sync::mpsc::{Sender, channel};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use crossterm::ExecutableCommand;
 use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
@@ -390,8 +390,7 @@ fn preview_uuid() -> String {
 
 /// Run the TUI client: connects to daemon, renders UI, forwards input.
 pub fn run() -> Result<()> {
-    let mut client = IpcClient::connect()?;
-    client.send(&IpcCommand::Attach)?;
+    let (mut client, initial_snapshot) = connect_to_current_daemon()?;
 
     let config = crate::config::load_config().unwrap_or_default();
     let mut model = Model::from_config(config.clone());
@@ -407,7 +406,7 @@ pub fn run() -> Result<()> {
         (crate::paths::app_log_path(), "[app]"),
         (crate::paths::singbox_log_path(), "[sb]"),
     ]);
-    receive_initial_state(&rx, &mut model, &mut log_tailer)?;
+    apply_initial_snapshot(&mut model, initial_snapshot, &mut log_tailer);
 
     let _terminal_session = TerminalSession::enter()?;
     apply_terminal_colors(
@@ -429,33 +428,120 @@ pub fn run() -> Result<()> {
     )
 }
 
-fn receive_initial_state(
-    rx: &Receiver<Msg>,
-    model: &mut Model,
-    log_tailer: &mut LogTailer,
-) -> Result<()> {
-    loop {
-        match rx.recv()? {
-            Msg::StateUpdate(snapshot) => {
-                if let Some(offsets) = snapshot.log_session_offsets {
-                    for line in log_tailer.load_history(
-                        &[offsets.app, offsets.singbox],
-                        crate::app::model::MAX_LOG_LINES,
-                    ) {
-                        model.push_log(line);
-                    }
-                }
-                apply_snapshot(model, *snapshot);
-                return Ok(());
-            }
-            Msg::ThemeChanged(theme)
-                if model.config.settings.theme == theme_watch::OMARCHY_SENTINEL =>
+/// Attach to a daemon built from the same package as this client. Upgrades can
+/// leave the previous daemon alive, so inspect the first response as generic
+/// JSON before attempting to decode the full (possibly changed) snapshot.
+fn connect_to_current_daemon() -> Result<(IpcClient, crate::app::msg::StateSnapshot)> {
+    let mut reconnect_profile = None;
+
+    for attempt in 0..=1 {
+        let mut client = IpcClient::connect().context("Failed to connect to kvn-tui daemon")?;
+        client.send(&IpcCommand::Attach)?;
+        let value = client
+            .read_snapshot_value(Duration::from_secs(2))
+            .context("Daemon did not provide its initial state")?;
+
+        let daemon_version = value
+            .get("daemon_version")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default();
+        let ipc_version = value
+            .get("ipc_version")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or_default();
+        let compatible = snapshot_is_compatible(&value);
+
+        if compatible {
+            let mut snapshot: crate::app::msg::StateSnapshot = serde_json::from_value(value)
+                .context("Malformed state snapshot from the daemon")?;
+            if snapshot.connection == ConnectionState::Idle
+                && let Some(profile_id) = reconnect_profile
             {
-                model.theme = theme;
+                client.send(&IpcCommand::ConnectProfile { profile_id })?;
+                snapshot = client
+                    .read_snapshot(Duration::from_secs(2))
+                    .context("Restarted daemon did not acknowledge reconnect")?;
             }
-            _ => {}
+            return Ok((client, snapshot));
+        }
+
+        anyhow::ensure!(
+            attempt == 0,
+            "daemon is still incompatible after restart (daemon version {:?}, IPC {}; client version {:?}, IPC {})",
+            daemon_version,
+            ipc_version,
+            env!("CARGO_PKG_VERSION"),
+            crate::ipc::IPC_VERSION
+        );
+
+        reconnect_profile = reconnect_profile_after_restart(&value);
+
+        if io::stderr().is_terminal() {
+            eprintln!(
+                "kvn-tui: restarting outdated daemon (version {})…",
+                if daemon_version.is_empty() {
+                    "unknown"
+                } else {
+                    daemon_version
+                }
+            );
+        }
+        client
+            .send(&IpcCommand::Quit)
+            .context("Failed to ask outdated daemon to stop")?;
+        drop(client);
+        anyhow::ensure!(
+            crate::ipc::wait_for_daemon_exit(Duration::from_secs(5)),
+            "outdated daemon did not stop within 5s"
+        );
+        crate::start_current_daemon().context("Failed to start updated daemon")?;
+        anyhow::ensure!(
+            crate::ipc::wait_for_daemon(Duration::from_secs(5)),
+            "updated daemon did not start within 5s"
+        );
+    }
+
+    unreachable!("daemon compatibility loop always returns or errors")
+}
+
+fn snapshot_is_compatible(value: &serde_json::Value) -> bool {
+    value
+        .get("daemon_version")
+        .and_then(serde_json::Value::as_str)
+        == Some(env!("CARGO_PKG_VERSION"))
+        && value.get("ipc_version").and_then(serde_json::Value::as_u64)
+            == Some(u64::from(crate::ipc::IPC_VERSION))
+}
+
+fn reconnect_profile_after_restart(value: &serde_json::Value) -> Option<uuid::Uuid> {
+    if value.get("connection").and_then(serde_json::Value::as_str) != Some("Connected") {
+        return None;
+    }
+    value
+        .get("active_profile_id")
+        .and_then(serde_json::Value::as_str)
+        .or_else(|| {
+            value
+                .pointer("/settings/last_connected_profile")
+                .and_then(serde_json::Value::as_str)
+        })
+        .and_then(|id| uuid::Uuid::parse_str(id).ok())
+}
+
+fn apply_initial_snapshot(
+    model: &mut Model,
+    snapshot: crate::app::msg::StateSnapshot,
+    log_tailer: &mut LogTailer,
+) {
+    if let Some(offsets) = snapshot.log_session_offsets {
+        for line in log_tailer.load_history(
+            &[offsets.app, offsets.singbox],
+            crate::app::model::MAX_LOG_LINES,
+        ) {
+            model.push_log(line);
         }
     }
+    apply_snapshot(model, snapshot);
 }
 
 fn run_loop(
@@ -825,6 +911,7 @@ fn run_loop(
                 update_pointer_shape(terminal, model, mouse_position, &mut pointer_shape)?;
                 needs_redraw = true;
             }
+            Msg::IpcReadFailed(message) => anyhow::bail!(message),
             Msg::Tick => {
                 log_navigation.expire_if_idle(Instant::now());
                 let new_lines = log_tailer.tail();
@@ -989,6 +1076,51 @@ fn spawn_ticker(tx: Sender<Msg>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn snapshot_compatibility_requires_matching_binary_and_ipc_versions() {
+        let current = serde_json::json!({
+            "daemon_version": env!("CARGO_PKG_VERSION"),
+            "ipc_version": crate::ipc::IPC_VERSION,
+        });
+        assert!(snapshot_is_compatible(&current));
+        assert!(!snapshot_is_compatible(&serde_json::json!({})));
+        assert!(!snapshot_is_compatible(&serde_json::json!({
+            "daemon_version": "0.0.0",
+            "ipc_version": crate::ipc::IPC_VERSION,
+        })));
+        assert!(!snapshot_is_compatible(&serde_json::json!({
+            "daemon_version": env!("CARGO_PKG_VERSION"),
+            "ipc_version": crate::ipc::IPC_VERSION + 1,
+        })));
+    }
+
+    #[test]
+    fn restart_reconnects_only_the_profile_from_a_connected_snapshot() {
+        let id = uuid::Uuid::new_v4();
+        let connected = serde_json::json!({
+            "connection": "Connected",
+            "active_profile_id": id.to_string(),
+        });
+        assert_eq!(reconnect_profile_after_restart(&connected), Some(id));
+
+        let idle = serde_json::json!({
+            "connection": "Idle",
+            "active_profile_id": id.to_string(),
+        });
+        assert_eq!(reconnect_profile_after_restart(&idle), None);
+    }
+
+    #[test]
+    fn restart_reconnect_profile_falls_back_to_persisted_last_profile() {
+        let id = uuid::Uuid::new_v4();
+        let snapshot = serde_json::json!({
+            "connection": "Connected",
+            "active_profile_id": null,
+            "settings": { "last_connected_profile": id.to_string() },
+        });
+        assert_eq!(reconnect_profile_after_restart(&snapshot), Some(id));
+    }
 
     #[test]
     fn osc_color_formats_rgb_color_as_hex_triplet() {

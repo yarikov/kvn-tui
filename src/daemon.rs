@@ -1257,6 +1257,8 @@ fn dns_bootstrap_endpoints(
 
 fn build_snapshot(model: &Model, log_session_offsets: LogSessionOffsets) -> StateSnapshot {
     StateSnapshot {
+        daemon_version: env!("CARGO_PKG_VERSION").to_string(),
+        ipc_version: crate::ipc::IPC_VERSION,
         connection: model.connection,
         status: model.status.text().to_string(),
         status_is_error: matches!(model.status, AppStatus::Error(_)),

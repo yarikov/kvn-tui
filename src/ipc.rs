@@ -16,6 +16,9 @@ use crate::app::msg::{IpcCommand, Msg, StateSnapshot};
 /// — anything slower than this is treated as a dead client and disconnected.
 const BROADCAST_WRITE_TIMEOUT: Duration = Duration::from_millis(200);
 
+/// Current daemon/client wire-schema epoch.
+pub const IPC_VERSION: u32 = 1;
+
 /// Return the path to the Unix domain socket used for IPC.
 pub fn socket_path() -> anyhow::Result<std::path::PathBuf> {
     let dir = dirs::runtime_dir().ok_or_else(|| {
@@ -52,6 +55,18 @@ pub fn wait_for_daemon(timeout: Duration) -> bool {
         delay = (delay * 2).min(cap);
     }
     is_daemon_running()
+}
+
+/// Wait until the daemon socket stops accepting connections.
+pub fn wait_for_daemon_exit(timeout: Duration) -> bool {
+    let start = std::time::Instant::now();
+    while start.elapsed() < timeout {
+        if !is_daemon_running() {
+            return true;
+        }
+        thread::sleep(Duration::from_millis(25));
+    }
+    !is_daemon_running()
 }
 
 /// Daemon-side IPC server.
@@ -178,6 +193,14 @@ impl IpcClient {
     /// stream so nothing past the first `\n` is consumed — a follow-up read
     /// after sending a command still sees the daemon's next broadcast.
     pub fn read_snapshot(&mut self, timeout: Duration) -> anyhow::Result<StateSnapshot> {
+        let value = self.read_snapshot_value(timeout)?;
+        serde_json::from_value(value).context("Malformed state snapshot from the daemon")
+    }
+
+    /// Read one snapshot as untyped JSON. The TUI uses this for the initial
+    /// version handshake so it can recognize an old daemon even when the full
+    /// old snapshot no longer deserializes into the current Rust type.
+    pub fn read_snapshot_value(&mut self, timeout: Duration) -> anyhow::Result<serde_json::Value> {
         use std::io::Read;
         self.stream
             .set_read_timeout(Some(timeout))
@@ -198,7 +221,7 @@ impl IpcClient {
                 anyhow::bail!("State snapshot exceeds 16 MiB");
             }
         }
-        serde_json::from_slice(&line).context("Malformed state snapshot from the daemon")
+        serde_json::from_slice(&line).context("Malformed JSON from the daemon")
     }
 
     /// Spawn a background thread that reads state snapshots from the daemon
@@ -210,15 +233,34 @@ impl IpcClient {
             .context("Failed to clone IPC socket for snapshot reader")?;
         thread::spawn(move || {
             let reader = BufReader::new(stream);
+            let mut failure_reported = false;
             for line in reader.lines() {
                 match line {
-                    Ok(line) => {
-                        if let Ok(snapshot) = serde_json::from_str::<StateSnapshot>(&line) {
+                    Ok(line) => match serde_json::from_str::<StateSnapshot>(&line) {
+                        Ok(snapshot) => {
                             let _ = tx.send(Msg::StateUpdate(Box::new(snapshot)));
                         }
+                        Err(error) => {
+                            let _ = tx.send(Msg::IpcReadFailed(format!(
+                                "Malformed state snapshot from the daemon: {error}"
+                            )));
+                            failure_reported = true;
+                            break;
+                        }
+                    },
+                    Err(error) => {
+                        let _ = tx.send(Msg::IpcReadFailed(format!(
+                            "Lost connection to the daemon: {error}"
+                        )));
+                        failure_reported = true;
+                        break;
                     }
-                    Err(_) => break,
                 }
+            }
+            if !failure_reported {
+                let _ = tx.send(Msg::IpcReadFailed(
+                    "Daemon closed the IPC connection".to_string(),
+                ));
             }
         });
         Ok(())
@@ -247,6 +289,8 @@ mod tests {
 
     fn sample_snapshot() -> StateSnapshot {
         StateSnapshot {
+            daemon_version: env!("CARGO_PKG_VERSION").into(),
+            ipc_version: IPC_VERSION,
             connection: ConnectionState::Idle,
             status: "ok".into(),
             status_is_error: false,

@@ -113,6 +113,10 @@ pub enum Msg {
 
     IpcCommand(IpcCommand),
     StateUpdate(Box<StateSnapshot>),
+    /// The local TUI's IPC reader stopped or received a snapshot it could not
+    /// decode. Daemon-side reducers ignore this; the TUI turns it into a
+    /// visible error instead of waiting forever with a stale screen.
+    IpcReadFailed(String),
     ConfigReloaded(Box<Result<crate::config::profile::Config, IpcError>>),
     KillSwitchApplied {
         enabled: bool,
@@ -362,6 +366,14 @@ mod tests {
 /// State snapshot pushed from the daemon to TUI clients.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct StateSnapshot {
+    /// Version of the daemon binary that produced this snapshot. An empty
+    /// value identifies daemons predating the versioned IPC handshake.
+    #[serde(default)]
+    pub daemon_version: String,
+    /// Schema epoch for daemon/client IPC. Bump when wire compatibility is
+    /// intentionally broken independently of the application version.
+    #[serde(default)]
+    pub ipc_version: u32,
     pub connection: ConnectionState,
     pub status: String,
     pub status_is_error: bool,
