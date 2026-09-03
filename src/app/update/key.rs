@@ -522,7 +522,7 @@ pub(super) fn handle_ipc_command(
     cmd: crate::app::msg::IpcCommand,
 ) -> Vec<Effect> {
     use crate::app::msg::IpcCommand;
-    let mut effects = match cmd {
+    let effects = match cmd {
         IpcCommand::Attach => vec![],
         IpcCommand::Detach => vec![],
         IpcCommand::Key { code, char, ctrl } => {
@@ -624,6 +624,24 @@ pub(super) fn handle_ipc_command(
         IpcCommand::ReloadConfig => {
             vec![Effect::ReloadConfig]
         }
+        IpcCommand::ApplyEditedConfig { base, edited } => {
+            if model.config_persistence_blocked {
+                let conflicts = vec!["persisted config failed to load".to_string()];
+                let mut result = vec![Effect::SaveConfigConflict {
+                    edited,
+                    conflicts: conflicts.clone(),
+                }];
+                push_status(
+                    &mut result,
+                    model,
+                    AppStatus::Error(
+                        "Cannot apply an edit over an unreadable profiles.json".into(),
+                    ),
+                );
+                return finish_ipc_effects(result);
+            }
+            vec![Effect::CommitEditedConfig { base, edited }]
+        }
         IpcCommand::Quit => vec![Effect::Quit],
         IpcCommand::ClientError { message } => {
             let mut inner = Vec::new();
@@ -631,6 +649,10 @@ pub(super) fn handle_ipc_command(
             inner
         }
     };
+    finish_ipc_effects(effects)
+}
+
+fn finish_ipc_effects(mut effects: Vec<Effect>) -> Vec<Effect> {
     effects.push(Effect::BroadcastState);
     effects
 }

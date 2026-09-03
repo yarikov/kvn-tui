@@ -252,6 +252,10 @@ pub enum IpcCommand {
         count: usize,
     },
     ReloadConfig,
+    ApplyEditedConfig {
+        base: Box<crate::config::profile::Config>,
+        edited: Box<crate::config::profile::Config>,
+    },
     Quit,
     /// Client-side failure the daemon owns none of — e.g. the external editor
     /// path rejecting an edit. The daemon writes it into its model's status
@@ -330,6 +334,10 @@ mod tests {
                 count: 2,
             },
             IpcCommand::ReloadConfig,
+            IpcCommand::ApplyEditedConfig {
+                base: Box::new(crate::config::profile::Config::default()),
+                edited: Box::new(crate::config::profile::Config::default()),
+            },
             IpcCommand::Quit,
         ];
         for cmd in cmds {
