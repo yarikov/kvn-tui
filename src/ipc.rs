@@ -231,6 +231,13 @@ impl IpcClient {
             .stream
             .try_clone()
             .context("Failed to clone IPC socket for snapshot reader")?;
+        // The initial snapshot handshake uses a bounded read, and cloned Unix
+        // streams share the underlying socket timeout. The long-lived reader
+        // must wait indefinitely while the daemon has no state changes to
+        // broadcast (most notably while disconnected).
+        stream
+            .set_read_timeout(None)
+            .context("Failed to clear IPC read timeout")?;
         thread::spawn(move || {
             let reader = BufReader::new(stream);
             let mut failure_reported = false;
@@ -360,6 +367,32 @@ mod tests {
 
         cleanup_socket();
         unsafe { std::env::remove_var("XDG_RUNTIME_DIR") };
+    }
+
+    #[test]
+    fn snapshot_reader_clears_handshake_timeout_while_idle() {
+        let (client_stream, mut daemon_stream) = UnixStream::pair().unwrap();
+        client_stream
+            .set_read_timeout(Some(Duration::from_millis(20)))
+            .unwrap();
+        let client = IpcClient {
+            stream: client_stream,
+        };
+        let (tx, rx) = channel();
+        client.spawn_reader(tx).unwrap();
+
+        // Wait well past the inherited handshake timeout before publishing a
+        // snapshot. The persistent reader must still be alive and blocked.
+        thread::sleep(Duration::from_millis(100));
+        serde_json::to_writer(&mut daemon_stream, &sample_snapshot()).unwrap();
+        daemon_stream.write_all(b"\n").unwrap();
+        daemon_stream.flush().unwrap();
+
+        match rx.recv_timeout(Duration::from_secs(1)) {
+            Ok(Msg::StateUpdate(snapshot)) => assert_eq!(snapshot.status, "ok"),
+            Ok(_) => panic!("expected StateUpdate after idle period, got another message"),
+            Err(error) => panic!("reader did not receive snapshot after idle period: {error}"),
+        }
     }
 
     #[test]
