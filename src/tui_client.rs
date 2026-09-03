@@ -781,7 +781,8 @@ fn run_loop(
                         disable_raw_mode()?;
                         terminal.backend_mut().execute(LeaveAlternateScreen)?;
                         let target = model.selected_row().map(self::editor::EditorTarget::from);
-                        let result = self::editor::open_profiles_editor(target);
+                        let result =
+                            self::editor::open_profiles_editor(target, model.config.clone());
                         enable_raw_mode()?;
                         terminal.backend_mut().execute(EnterAlternateScreen)?;
                         input::enable_keyboard_protocol(terminal.backend_mut())?;
@@ -792,21 +793,17 @@ fn run_loop(
                         event_reader_control.resume();
                         update_pointer_shape(terminal, model, mouse_position, &mut pointer_shape)?;
                         match result {
-                            Ok(_) => {
-                                if let Ok(config) = crate::config::load_config() {
-                                    model.replace_config_preserving_selection(config);
-                                }
-                                client.send(&IpcCommand::ReloadConfig)?;
+                            Ok(edit) => {
+                                client.send(&IpcCommand::ApplyEditedConfig {
+                                    base: Box::new(edit.base),
+                                    edited: Box::new(edit.edited),
+                                })?;
                             }
                             Err(e) => {
-                                // ConfigBackup restored the original file, so
-                                // profiles.json is intact — but the user's
-                                // edits are gone. Route the message through
-                                // the daemon: it updates its own model's
-                                // status (surviving apply_snapshot on the
-                                // client) and appends to app.log, which the
-                                // client's LogTailer picks up on the next
-                                // tick and shows in the log panel.
+                                // The live config was never opened by the
+                                // editor. Route the snapshot error through
+                                // the daemon so it survives the next state
+                                // broadcast and appears in app.log.
                                 let message = format!("Edit rejected: {e:#}");
                                 client.send(&IpcCommand::ClientError { message })?;
                             }

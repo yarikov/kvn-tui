@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use anyhow::Result;
 use chrono::{DateTime, Datelike, Local, NaiveDate, Timelike};
@@ -1657,14 +1657,20 @@ impl Config {
     /// Validate semantic constraints that serde cannot enforce.
     ///
     /// Checks:
+    /// - Profile and subscription IDs are unique.
+    /// - Subscription-owned profiles reference an existing subscription.
     /// - Each profile has non-empty `name`, `address`, and `uuid`.
     /// - `settings.default_profile` references an existing profile if set.
     /// - DNS server tags are non-empty and unique; `dns.final_server` and every
     ///   `dns.rules[*].server` reference an existing tag; when `fakeip_enabled`
     ///   at least one server is of type `fakeip`.
     pub fn validate(&self) -> anyhow::Result<()> {
+        let mut profile_ids = HashSet::with_capacity(self.profiles.len());
         for (idx, profile) in self.profiles.iter().enumerate() {
             let num = idx + 1;
+            if !profile_ids.insert(profile.id) {
+                anyhow::bail!("Profile {num}: duplicate id {}", profile.id);
+            }
             if profile.name.trim().is_empty() {
                 anyhow::bail!("Profile {num}: name must not be empty");
             }
@@ -1679,7 +1685,11 @@ impl Config {
             }
         }
 
+        let mut subscription_ids = HashSet::with_capacity(self.subscriptions.len());
         for (idx, subscription) in self.subscriptions.iter().enumerate() {
+            if !subscription_ids.insert(subscription.id) {
+                anyhow::bail!("Subscription {}: duplicate id {}", idx + 1, subscription.id);
+            }
             if !subscription.send_hwid {
                 continue;
             }
@@ -1692,6 +1702,17 @@ impl Config {
                     "Subscription {} ({:?}): invalid HWID: {error}",
                     idx + 1,
                     subscription.name
+                );
+            }
+        }
+
+        for (idx, profile) in self.profiles.iter().enumerate() {
+            if let Some(id) = profile.subscription_id
+                && !subscription_ids.contains(&id)
+            {
+                anyhow::bail!(
+                    "Profile {}: subscription_id ({id}) references a non-existent subscription",
+                    idx + 1
                 );
             }
         }
@@ -2647,6 +2668,67 @@ mod tests {
         let err = crate::config::save_config_at(file.path(), &config).unwrap_err();
         let msg = format!("{err:#}");
         assert!(msg.contains("Refusing to save"), "Error was: {}", msg);
+    }
+
+    #[test]
+    fn config_validate_rejects_duplicate_profile_ids() {
+        let profile = Profile::new_vless(
+            "A".into(),
+            "1.2.3.4".into(),
+            443,
+            crate::test_helpers::TEST_UUID.into(),
+        );
+        let config = Config {
+            profiles: vec![profile.clone(), profile],
+            ..Config::default()
+        };
+
+        assert!(
+            config
+                .validate()
+                .unwrap_err()
+                .to_string()
+                .contains("duplicate id")
+        );
+    }
+
+    #[test]
+    fn config_validate_rejects_duplicate_subscription_ids() {
+        let subscription = subscription_with_hwid(false, None);
+        let config = Config {
+            subscriptions: vec![subscription.clone(), subscription],
+            ..Config::default()
+        };
+
+        assert!(
+            config
+                .validate()
+                .unwrap_err()
+                .to_string()
+                .contains("duplicate id")
+        );
+    }
+
+    #[test]
+    fn config_validate_rejects_dangling_profile_subscription() {
+        let mut profile = Profile::new_vless(
+            "A".into(),
+            "1.2.3.4".into(),
+            443,
+            crate::test_helpers::TEST_UUID.into(),
+        );
+        profile.subscription_id = Some(Uuid::new_v4());
+        let config = Config {
+            profiles: vec![profile],
+            ..Config::default()
+        };
+        assert!(
+            config
+                .validate()
+                .unwrap_err()
+                .to_string()
+                .contains("subscription_id")
+        );
     }
 
     // ---- Settings::validate ----

@@ -3,10 +3,10 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::time::Instant;
 use uuid::Uuid;
 
+use crate::config::load_config;
 use crate::config::profile::{
     Config, DnsStrategy, GeoRegion, Profile, RoutedService, ServiceRoute,
 };
-use crate::config::{load_config, save_config};
 use crate::ui::styles::Theme;
 use chrono::{DateTime, Local};
 
@@ -200,6 +200,9 @@ pub struct Model {
     pub main_pane_focus: MainPaneFocus,
     pub connection: ConnectionState,
     pub config: Config,
+    /// Prevents a fallback config from overwriting an unreadable persisted
+    /// config. Cleared only after a successful reload from disk.
+    pub config_persistence_blocked: bool,
     pub selected: usize,
     pub status: AppStatus,
     pub singbox_pid: Option<u32>,
@@ -322,6 +325,7 @@ impl Model {
     /// (see the `startup_error` block near the end of this function).
     pub fn new() -> anyhow::Result<Self> {
         let mut startup_error: Option<String> = None;
+        let mut config_persistence_blocked = false;
         let config = match load_config() {
             Ok(cfg) => match cfg.validate() {
                 Ok(()) => cfg,
@@ -329,6 +333,7 @@ impl Model {
                     let msg = format!("Config invalid, using defaults: {e:#}");
                     tracing::error!("{msg}");
                     startup_error = Some(msg);
+                    config_persistence_blocked = true;
                     Config::default()
                 }
             },
@@ -336,6 +341,7 @@ impl Model {
                 let msg = format!("Failed to load config, using defaults: {e:#}");
                 tracing::error!("{msg}");
                 startup_error = Some(msg);
+                config_persistence_blocked = true;
                 Config::default()
             }
         };
@@ -418,6 +424,7 @@ impl Model {
             main_pane_focus: MainPaneFocus::Sources,
             connection,
             config,
+            config_persistence_blocked,
             selected,
             status: AppStatus::Info(String::new()),
             singbox_pid: None,
@@ -522,6 +529,7 @@ impl Model {
             main_pane_focus: MainPaneFocus::Sources,
             connection: ConnectionState::Idle,
             config,
+            config_persistence_blocked: false,
             selected,
             status: AppStatus::Info(String::new()),
             singbox_pid: None,
@@ -601,11 +609,6 @@ impl Model {
             default_selected,
             AppStatus::Info("Press ? for help".to_string()),
         )
-    }
-
-    /// Save current configuration to disk.
-    pub fn save(&self) -> anyhow::Result<()> {
-        save_config(&self.config)
     }
 
     /// Build the flat list of selectable rows for the current config.
@@ -751,6 +754,7 @@ impl Model {
             main_pane_focus: MainPaneFocus::Sources,
             connection: ConnectionState::Idle,
             config,
+            config_persistence_blocked: false,
             selected,
             status: AppStatus::Info(String::new()),
             singbox_pid: None,
@@ -1076,23 +1080,8 @@ mod tests {
             "logs: {:?}",
             model.logs,
         );
-    }
-
-    #[test]
-    fn model_save_roundtrip() {
-        let _guard = crate::test_helpers::ENV_LOCK.lock().unwrap();
-        let dir = tempfile::tempdir().unwrap();
-        unsafe { std::env::set_var("XDG_CONFIG_HOME", dir.path()) };
-
-        let model = model_with_profiles(vec![Profile::new_vless(
-            "Alpha".to_string(),
-            "1.1.1.1".to_string(),
-            443,
-            crate::test_helpers::TEST_UUID.to_string(),
-        )]);
-        // Save should not panic and must write into the temp directory.
-        let _ = model.save();
-        assert!(crate::paths::profiles_path().unwrap().exists());
+        assert!(model.config_persistence_blocked);
+        assert_eq!(std::fs::read_to_string(path).unwrap(), "not json at all");
     }
 
     #[test]

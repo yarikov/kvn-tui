@@ -13,6 +13,17 @@ use anyhow::{Context, Result};
 /// metadata can be lost after a power cut even though the file contents are
 /// persisted — leaving the user with an empty or stale `dest`.
 pub fn write(dest: &Path, data: &[u8]) -> Result<()> {
+    write_inner(dest, data, None)
+}
+
+/// Atomically write `data` only while the destination still has the bytes the
+/// caller previously read. The comparison happens after the temporary file is
+/// durable and immediately before rename.
+pub fn write_if_unchanged(dest: &Path, data: &[u8], expected: Option<&[u8]>) -> Result<()> {
+    write_inner(dest, data, Some(expected))
+}
+
+fn write_inner(dest: &Path, data: &[u8], expected: Option<Option<&[u8]>>) -> Result<()> {
     let dir = dest
         .parent()
         .with_context(|| format!("Atomic write: dest {:?} has no parent", dest))?;
@@ -38,6 +49,21 @@ pub fn write(dest: &Path, data: &[u8]) -> Result<()> {
             .with_context(|| format!("Failed to write temp file {:?}", temp))?;
         file.sync_all()
             .with_context(|| format!("Failed to fsync temp file {:?}", temp))?;
+    }
+
+    if let Some(expected) = expected {
+        let actual = match fs::read(dest) {
+            Ok(bytes) => Some(bytes),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+            Err(error) => {
+                let _ = fs::remove_file(&temp);
+                return Err(error).context("Failed to verify destination revision");
+            }
+        };
+        if actual.as_deref() != expected {
+            let _ = fs::remove_file(&temp);
+            anyhow::bail!("destination changed since it was read");
+        }
     }
 
     fs::rename(&temp, dest)
@@ -117,5 +143,24 @@ mod tests {
         write(&path, b"new").unwrap();
         let mode = fs::metadata(&path).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o600, "expected 0600, got {:o}", mode);
+    }
+
+    #[test]
+    fn conditional_write_rejects_changed_destination() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("profiles.json");
+        fs::write(&path, b"newer").unwrap();
+        assert!(write_if_unchanged(&path, b"ours", Some(b"older")).is_err());
+        assert_eq!(fs::read(&path).unwrap(), b"newer");
+        assert!(!dir.path().join("profiles.json.tmp").exists());
+    }
+
+    #[test]
+    fn conditional_write_accepts_matching_destination() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("profiles.json");
+        fs::write(&path, b"old").unwrap();
+        write_if_unchanged(&path, b"new", Some(b"old")).unwrap();
+        assert_eq!(fs::read(&path).unwrap(), b"new");
     }
 }

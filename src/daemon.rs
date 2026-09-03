@@ -119,7 +119,43 @@ fn run_loop(
 ) -> Result<()> {
     loop {
         let msg = rx.recv()?;
-        let effects = update(model, msg);
+        let config_before = model.config.clone();
+        let mut effects = update(model, msg);
+        if effects
+            .iter()
+            .any(|effect| matches!(effect, Effect::SaveConfig))
+        {
+            let edited = model.config.clone();
+            match commit_config_change(model, &config_before, &edited) {
+                Ok(config) => {
+                    model.replace_config_preserving_selection(config);
+                    effects.retain(|effect| !matches!(effect, Effect::SaveConfig));
+                }
+                Err(error) => {
+                    model.replace_config_preserving_selection(config_before);
+                    let message = match crate::config::save_conflict_config(&edited) {
+                        Ok(path) => format!(
+                            "Failed to save config: {error:#}; unsaved version preserved at {}",
+                            path.display()
+                        ),
+                        Err(save_error) => format!(
+                            "Failed to save config: {error:#}; failed to preserve unsaved version: {save_error:#}"
+                        ),
+                    };
+                    model.set_status(AppStatus::Error(message.clone()));
+                    crate::services::log_tailer::append_app_log("ERROR", &message);
+                    effects.retain(|effect| {
+                        matches!(effect, Effect::BroadcastState | Effect::AppendAppLog { .. })
+                    });
+                    if !effects
+                        .iter()
+                        .any(|effect| matches!(effect, Effect::BroadcastState))
+                    {
+                        effects.push(Effect::BroadcastState);
+                    }
+                }
+            }
+        }
         // `queue_connect` advances the generation before the next Tick emits
         // `Effect::Connect`. Publish that invalidation immediately so an old
         // worker cannot install its process during the intervening 250 ms.
@@ -136,6 +172,7 @@ fn run_loop(
                     | Effect::ResetGeoUpdateSchedules
                     | Effect::WriteState
                     | Effect::SaveConfig
+                    | Effect::CommitEditedConfig { .. }
                     | Effect::UpdateSubscription { .. }
                     | Effect::BroadcastState
                     | Effect::ApplyKillSwitch { .. }
@@ -157,6 +194,32 @@ fn run_loop(
         }
     }
     Ok(())
+}
+
+fn commit_config_change(
+    model: &Model,
+    base: &crate::config::profile::Config,
+    edited: &crate::config::profile::Config,
+) -> anyhow::Result<crate::config::profile::Config> {
+    anyhow::ensure!(
+        !model.config_persistence_blocked,
+        "persisted config previously failed to load"
+    );
+    let path = crate::paths::profiles_path().context("Failed to determine profiles path")?;
+    let expected = match std::fs::read(&path) {
+        Ok(bytes) => Some(bytes),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => return Err(error).context("Failed to read config revision"),
+    };
+    let current = match expected.as_deref() {
+        Some(bytes) => crate::config::load_config_bytes_read_only(bytes, &path)?,
+        None => crate::config::profile::Config::default(),
+    };
+    let mut merged = crate::config::merge::merge_configs(base, &current, edited)
+        .map_err(|conflicts| anyhow::anyhow!("config conflicts at {}", conflicts.join(", ")))?;
+    merged.settings.kill_switch = edited.settings.kill_switch;
+    crate::config::save_config_at_revision(&path, &merged, expected.as_deref())?;
+    Ok(merged)
 }
 
 fn execute_daemon_effect(
@@ -614,8 +677,49 @@ fn execute_daemon_effect(
             crate::services::waybar::write_state(model);
         }
         Effect::SaveConfig => {
-            if let Err(e) = model.save() {
-                model.set_status(AppStatus::Error(format!("Failed to save config: {}", e)));
+            // The main loop must consume this marker through
+            // `commit_config_change` before executing effects. Never fall
+            // back to an unconditional write here.
+            model.set_status(AppStatus::Error(
+                "Internal error: uncommitted SaveConfig effect".into(),
+            ));
+        }
+        Effect::SaveConfigConflict { edited, conflicts } => {
+            match crate::config::save_conflict_config(&edited) {
+                Ok(path) => model.set_status(AppStatus::Error(format!(
+                    "Edit conflicts at {}; edited version saved to {}",
+                    conflicts.join(", "),
+                    path.display()
+                ))),
+                Err(error) => model.set_status(AppStatus::Error(format!(
+                    "Edit conflicts at {}; failed to save edited version: {error:#}",
+                    conflicts.join(", ")
+                ))),
+            }
+        }
+        Effect::CommitEditedConfig { base, edited } => {
+            let mut edited_for_commit = (*edited).clone();
+            edited_for_commit.settings.kill_switch = model.config.settings.kill_switch;
+            let result = commit_config_change(model, &base, &edited_for_commit);
+            match result {
+                Ok(config) => {
+                    for nested in crate::app::update::handle_config_reloaded(model, Ok(config)) {
+                        execute_daemon_effect(nested, tx, model, shared)?;
+                    }
+                }
+                Err(error) => {
+                    let message = match crate::config::save_conflict_config(&edited) {
+                        Ok(path) => format!(
+                            "Failed to apply edited config: {error:#}; edited version saved to {}",
+                            path.display()
+                        ),
+                        Err(save_error) => format!(
+                            "Failed to apply edited config: {error:#}; failed to preserve edited version: {save_error:#}"
+                        ),
+                    };
+                    model.set_status(AppStatus::Error(message.clone()));
+                    crate::services::log_tailer::append_app_log("ERROR", &message);
+                }
             }
         }
         Effect::UpdateSubscription { id } => {
@@ -1045,9 +1149,14 @@ fn reconcile_kill_switch_state(model: &mut Model) {
             model.config.settings.kill_switch,
             active
         );
-        model.config.settings.kill_switch = active;
-        if let Err(e) = model.save() {
-            tracing::warn!("Failed to persist reconciled kill switch state: {}", e);
+        let base = model.config.clone();
+        let mut edited = base.clone();
+        edited.settings.kill_switch = active;
+        match commit_config_change(model, &base, &edited) {
+            Ok(config) => model.replace_config_preserving_selection(config),
+            Err(e) => {
+                tracing::warn!("Failed to persist reconciled kill switch state: {}", e);
+            }
         }
     }
 }
@@ -1274,8 +1383,9 @@ fn spawn_signal_handler(tx: Sender<Msg>) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        ProcessSlot, ServiceRefreshResult, finalize_geo_result, handshake_protocols,
-        lock_process_slot, log_prune_due, poll_process_exit, write_test_config,
+        ProcessSlot, ServiceRefreshResult, commit_config_change, finalize_geo_result,
+        handshake_protocols, lock_process_slot, log_prune_due, poll_process_exit,
+        write_test_config,
     };
     use crate::app::msg::{GeoResult, Msg};
     use crate::config::profile::Protocol;
@@ -1283,6 +1393,30 @@ mod tests {
     use std::os::unix::fs::PermissionsExt;
     use std::sync::{Arc, Mutex};
     use std::time::{Duration, Instant};
+
+    #[test]
+    fn config_commit_merges_external_and_model_changes() {
+        let _guard = crate::test_helpers::ENV_LOCK.lock().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let _config_home = crate::test_helpers::EnvVarGuard::set("XDG_CONFIG_HOME", dir.path());
+        let base = crate::config::profile::Config::default();
+        crate::config::save_config(&base).unwrap();
+        let mut external = base.clone();
+        external.settings.theme = "nord".into();
+        crate::config::save_config(&external).unwrap();
+        let mut edited = base.clone();
+        edited.settings.auto_connect = true;
+        let model = crate::app::model::Model::test_new(edited.clone());
+
+        let merged = commit_config_change(&model, &base, &edited).unwrap();
+        assert_eq!(merged.settings.theme, "nord");
+        assert!(merged.settings.auto_connect);
+        assert_eq!(
+            crate::config::load_config_at_read_only(&crate::paths::profiles_path().unwrap())
+                .unwrap(),
+            merged
+        );
+    }
 
     #[test]
     fn latency_test_config_is_private() {

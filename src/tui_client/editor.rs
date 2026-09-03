@@ -1,6 +1,6 @@
 use std::env;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::Command;
 
 use anyhow::{Context, Result};
@@ -55,57 +55,6 @@ fn split_editor(editor: &str) -> (String, Vec<String>) {
     let mut parts = editor.split_whitespace().map(String::from);
     let program = parts.next().unwrap_or_else(|| "vi".to_string());
     (program, parts.collect())
-}
-
-/// RAII guard for a config file backup.
-///
-/// On creation: copies `original` to a `.bak` sibling.
-/// On drop: restores `original` from the backup unless [`ConfigBackup::commit`] was called.
-struct ConfigBackup {
-    original: PathBuf,
-    backup: PathBuf,
-    committed: bool,
-}
-
-impl ConfigBackup {
-    fn create(original: &Path) -> Result<Self> {
-        let backup = original.with_extension("json.bak");
-        fs::copy(original, &backup)
-            .with_context(|| format!("Failed to create backup at {:?}", backup))?;
-        Ok(Self {
-            original: original.to_path_buf(),
-            backup,
-            committed: false,
-        })
-    }
-
-    /// Mark the backup as committed — the original file is valid and the
-    /// backup can be safely removed on drop.
-    fn commit(&mut self) {
-        self.committed = true;
-        let _ = fs::remove_file(&self.backup)
-            .inspect_err(|e| tracing::warn!("Failed to remove backup file: {}", e));
-    }
-}
-
-impl Drop for ConfigBackup {
-    fn drop(&mut self) {
-        if self.committed || !self.backup.exists() {
-            return;
-        }
-        let _ = fs::rename(&self.backup, &self.original)
-            .inspect_err(|e| tracing::warn!("Failed to restore config backup: {}", e));
-    }
-}
-
-/// Ensure that `profiles.json` exists on disk, creating a default one if necessary.
-fn ensure_profiles_file(path: &Path) -> Result<()> {
-    if path.exists() {
-        return Ok(());
-    }
-    let default_config = Config::default();
-    crate::config::save_config_at(path, &default_config)
-        .context("Failed to create default profiles.json")
 }
 
 /// Determine the 1-based line number of an object in a top-level JSON array.
@@ -200,22 +149,19 @@ fn editor_args(editor: &str, path: &Path, line: usize) -> Vec<String> {
     }
 }
 
-/// Open `profiles.json` in the user's preferred external editor.
-///
-/// If `target` is present and within bounds, the editor will be asked to jump
-/// to the line where that object starts. The caller must restore the terminal
-/// before invoking this function. A backup is created before editing; if
-/// the edited file contains invalid JSON, the backup is restored automatically
-/// and an error is returned. On success the parsed [`Config`] is returned so
-/// the application can reload.
-pub fn open_profiles_editor(target: Option<EditorTarget>) -> Result<Config> {
+pub(super) struct EditedConfig {
+    pub base: Config,
+    pub edited: Config,
+}
+
+/// Edit an isolated snapshot. The live `profiles.json` remains daemon-owned.
+pub fn open_profiles_editor(target: Option<EditorTarget>, base: Config) -> Result<EditedConfig> {
     let editor = detect_editor();
     let (program, base_args) = split_editor(&editor);
-    let path = profiles_path().context("Failed to determine profiles path")?;
-
-    ensure_profiles_file(&path)?;
-
-    let mut backup = ConfigBackup::create(&path)?;
+    let live_path = profiles_path().context("Failed to determine profiles path")?;
+    let path =
+        live_path.with_file_name(format!(".profiles.json.edit-{}.json", uuid::Uuid::new_v4()));
+    crate::config::save_config_at(&path, &base).context("Failed to create editor snapshot")?;
 
     let args = if let Some(line) = target.and_then(|target| find_target_line(&path, target)) {
         editor_args(&program, &path, line)
@@ -227,82 +173,66 @@ pub fn open_profiles_editor(target: Option<EditorTarget>) -> Result<Config> {
         .args(&base_args)
         .args(&args)
         .status()
-        .with_context(|| format!("Failed to launch editor: {}", editor))?;
+        .with_context(|| format!("Failed to launch editor: {}", editor));
 
-    if !status.success() {
-        anyhow::bail!("Editor exited with non-zero status");
-    }
-
-    let config = match crate::config::load_config_at(&path) {
-        Ok(cfg) => cfg,
-        Err(e) => {
-            return Err(e).with_context(|| {
-                format!(
-                    "Invalid JSON in {:?}. Original config restored from backup.",
-                    path
-                )
-            });
-            // ConfigBackup::drop restores the original automatically.
+    let status = match status {
+        Ok(status) => status,
+        Err(error) => {
+            let _ = fs::remove_file(&path);
+            return Err(error);
         }
     };
 
-    if let Err(e) = config.validate() {
-        return Err(e).with_context(|| {
-            format!(
-                "Validation failed for {:?}. Original config restored from backup.",
-                path
-            )
-        });
-        // ConfigBackup::drop restores the original automatically.
+    if !status.success() {
+        let _ = fs::remove_file(&path);
+        anyhow::bail!("Editor exited with non-zero status");
     }
 
-    backup.commit();
-    Ok(config)
+    let edited = match crate::config::load_config_at(&path) {
+        Ok(cfg) => cfg,
+        Err(e) => {
+            let conflict = live_path.with_file_name(format!(
+                "profiles.json.conflict-invalid-{}-{}",
+                chrono::Local::now().format("%Y%m%dT%H%M%S"),
+                uuid::Uuid::new_v4()
+            ));
+            fs::rename(&path, &conflict).with_context(|| {
+                format!("Failed to preserve invalid edit at {}", conflict.display())
+            })?;
+            return Err(e).with_context(|| {
+                format!(
+                    "Invalid JSON; live config was not changed. Edited version saved to {}.",
+                    conflict.display()
+                )
+            });
+        }
+    };
+
+    if let Err(e) = edited.validate() {
+        let conflict = live_path.with_file_name(format!(
+            "profiles.json.conflict-invalid-{}-{}",
+            chrono::Local::now().format("%Y%m%dT%H%M%S"),
+            uuid::Uuid::new_v4()
+        ));
+        fs::rename(&path, &conflict).with_context(|| {
+            format!("Failed to preserve invalid edit at {}", conflict.display())
+        })?;
+        return Err(e).with_context(|| {
+            format!(
+                "Validation failed; live config was not changed. Edited version saved to {}.",
+                conflict.display()
+            )
+        });
+    }
+
+    let _ = fs::remove_file(&path);
+    Ok(EditedConfig { base, edited })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Write;
     use tempfile::TempDir;
-
-    #[test]
-    fn config_backup_restores_on_drop() {
-        let dir = TempDir::new().unwrap();
-        let original = dir.path().join("profiles.json");
-
-        let mut file = std::fs::File::create(&original).unwrap();
-        file.write_all(b"valid content").unwrap();
-        drop(file);
-
-        {
-            let _backup = ConfigBackup::create(&original).unwrap();
-            std::fs::write(&original, "modified content").unwrap();
-            // _backup drops here, should restore original
-        }
-
-        let content = std::fs::read_to_string(&original).unwrap();
-        assert_eq!(content, "valid content");
-    }
-
-    #[test]
-    fn config_backup_commits_successfully() {
-        let dir = TempDir::new().unwrap();
-        let original = dir.path().join("profiles.json");
-
-        std::fs::write(&original, "old content").unwrap();
-
-        {
-            let mut backup = ConfigBackup::create(&original).unwrap();
-            std::fs::write(&original, "new content").unwrap();
-            backup.commit();
-            // backup drops here but should NOT restore
-        }
-
-        let content = std::fs::read_to_string(&original).unwrap();
-        assert_eq!(content, "new content");
-        assert!(!original.with_extension("json.bak").exists());
-    }
 
     #[test]
     fn find_profile_line_first_profile() {
@@ -611,30 +541,5 @@ mod tests {
                 None => env::remove_var("EDITOR"),
             }
         }
-    }
-
-    // ---- ensure_profiles_file ----
-
-    #[test]
-    fn ensure_profiles_file_is_noop_when_present() {
-        let dir = TempDir::new().unwrap();
-        let path = dir.path().join("profiles.json");
-        fs::write(&path, "{\"profiles\":[]}").unwrap();
-        let before = fs::read_to_string(&path).unwrap();
-        ensure_profiles_file(&path).unwrap();
-        let after = fs::read_to_string(&path).unwrap();
-        assert_eq!(before, after);
-    }
-
-    #[test]
-    fn ensure_profiles_file_creates_default_when_missing() {
-        let dir = TempDir::new().unwrap();
-        let path = dir.path().join("profiles.json");
-        assert!(!path.exists());
-        ensure_profiles_file(&path).unwrap();
-        assert!(path.exists());
-        // The created file must round-trip into a Config.
-        let cfg = crate::config::load_config_at(&path).unwrap();
-        assert!(cfg.profiles.is_empty());
     }
 }

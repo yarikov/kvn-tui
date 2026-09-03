@@ -1,4 +1,4 @@
-use crate::config::profile::{Profile, Settings};
+use crate::config::profile::{Config, Profile, Settings};
 use uuid::Uuid;
 
 #[derive(Debug, PartialEq)]
@@ -29,6 +29,14 @@ pub enum Effect {
     ResetGeoUpdateSchedules,
     WriteState,
     SaveConfig,
+    SaveConfigConflict {
+        edited: Box<Config>,
+        conflicts: Vec<String>,
+    },
+    CommitEditedConfig {
+        base: Box<Config>,
+        edited: Box<Config>,
+    },
     UpdateSubscription {
         id: Uuid,
     },

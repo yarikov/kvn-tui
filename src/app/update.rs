@@ -465,7 +465,7 @@ fn append_download_hint(effects: &mut Vec<Effect>, model: &Model, kind: Download
     });
 }
 
-fn handle_config_reloaded(
+pub(crate) fn handle_config_reloaded(
     model: &mut Model,
     result: Result<crate::config::profile::Config, crate::app::msg::IpcError>,
 ) -> Vec<Effect> {
@@ -501,6 +501,7 @@ fn handle_config_reloaded(
             let region_changed = model.config.settings.geo_routing.current_region
                 != config.settings.geo_routing.current_region;
             model.replace_config_preserving_selection(config);
+            model.config_persistence_blocked = false;
             let mut effects = vec![Effect::BroadcastState];
             if active_missing || connecting_missing {
                 effects.push(Effect::Disconnect);
@@ -1613,6 +1614,51 @@ mod tests {
         assert_eq!(effects, vec![Effect::ReloadConfig, Effect::BroadcastState]);
     }
 
+    #[test]
+    fn ipc_apply_edited_config_merges_concurrent_setting_change() {
+        let mut model = model_with_profiles(vec![]);
+        let base = model.config.clone();
+        model.config.settings.auto_connect = true;
+        let mut edited = base.clone();
+        edited.settings.theme = "nord".into();
+
+        let effects = handle_ipc_command(
+            &mut model,
+            crate::app::msg::IpcCommand::ApplyEditedConfig {
+                base: Box::new(base),
+                edited: Box::new(edited),
+            },
+        );
+
+        assert!(model.config.settings.auto_connect);
+        assert_eq!(model.config.settings.theme, "tokyo-night");
+        assert!(matches!(
+            &effects[0],
+            Effect::CommitEditedConfig { base: effect_base, edited: effect_edited }
+                if effect_base.settings.theme == "tokyo-night" && effect_edited.settings.theme == "nord"
+        ));
+    }
+
+    #[test]
+    fn ipc_apply_edited_config_preserves_current_on_conflict() {
+        let mut model = model_with_profiles(vec![]);
+        let base = model.config.clone();
+        model.config.settings.theme = "nord".into();
+        let mut edited = base.clone();
+        edited.settings.theme = "catppuccin".into();
+
+        let effects = handle_ipc_command(
+            &mut model,
+            crate::app::msg::IpcCommand::ApplyEditedConfig {
+                base: Box::new(base),
+                edited: Box::new(edited),
+            },
+        );
+
+        assert_eq!(model.config.settings.theme, "nord");
+        assert!(matches!(effects[0], Effect::CommitEditedConfig { .. }));
+    }
+
     // ---- semantic IPC commands (bar widget / CLI clients) ----
 
     fn connected_model() -> (Model, Uuid) {
@@ -1869,7 +1915,9 @@ mod tests {
         )]);
         model.config.settings.geo_routing.set_region(GeoRegion::Ru);
         let config = model.config.clone();
+        model.config_persistence_blocked = true;
         let effects = update(&mut model, Msg::ConfigReloaded(Box::new(Ok(config))));
+        assert!(!model.config_persistence_blocked);
         assert_eq!(
             effects,
             vec![Effect::BroadcastState, app_log_info("Profiles reloaded")]

@@ -3,6 +3,7 @@ use std::path::Path;
 
 use anyhow::{Context, Result};
 
+pub(crate) mod merge;
 pub mod profile;
 pub mod subscription;
 
@@ -17,17 +18,40 @@ pub fn load_config_at(path: &Path) -> Result<Config> {
     let contents =
         fs::read_to_string(path).with_context(|| format!("Failed to read {:?}", path))?;
 
-    let mut config: Config =
-        serde_json::from_str(&contents).with_context(|| format!("Failed to parse {:?}", path))?;
+    let mut config = parse_config(&contents, path)?;
     let loaded_schema_version = config.schema_version;
     config
         .migrate()
         .with_context(|| format!("Failed to migrate {:?}", path))?;
     if config.schema_version != loaded_schema_version && config.validate().is_ok() {
-        save_config_at(path, &config)
+        save_config_at_revision(path, &config, Some(contents.as_bytes()))
             .with_context(|| format!("Failed to persist migration for {:?}", path))?;
     }
 
+    Ok(config)
+}
+
+fn parse_config(contents: &str, path: &Path) -> Result<Config> {
+    serde_json::from_str(contents).with_context(|| format!("Failed to parse {:?}", path))
+}
+
+/// Load and migrate a configuration without modifying the source file.
+pub(crate) fn load_config_at_read_only(path: &Path) -> Result<Config> {
+    if !path.exists() {
+        return Ok(Config::default());
+    }
+    let contents =
+        fs::read_to_string(path).with_context(|| format!("Failed to read {:?}", path))?;
+    load_config_bytes_read_only(contents.as_bytes(), path)
+}
+
+pub(crate) fn load_config_bytes_read_only(contents: &[u8], path: &Path) -> Result<Config> {
+    let contents = std::str::from_utf8(contents)
+        .with_context(|| format!("Config {:?} is not valid UTF-8", path))?;
+    let mut config = parse_config(contents, path)?;
+    config
+        .migrate()
+        .with_context(|| format!("Failed to migrate {:?}", path))?;
     Ok(config)
 }
 
@@ -36,22 +60,36 @@ pub fn load_config_at(path: &Path) -> Result<Config> {
 /// Fail-close on invalid input: [`Config::validate`] runs before the file is
 /// touched, so a broken in-memory state cannot overwrite a good `profiles.json`.
 pub fn save_config_at(path: &Path, config: &Config) -> Result<()> {
+    let dir = path.parent().context("Invalid config path")?;
+    fs::create_dir_all(dir)?;
+    let json = serialized_config(config)?;
+    crate::atomic_write::write(path, json.as_bytes())?;
+    Ok(())
+}
+
+fn serialized_config(config: &Config) -> Result<String> {
     config
         .validate()
         .context("Refusing to save invalid config")?;
-
-    let dir = path.parent().context("Invalid config path")?;
-    fs::create_dir_all(dir)?;
 
     // Mirror `dns.strategy` into the legacy `dns_strategy` field so configs
     // remain readable by older kvn-tui builds during the deprecation window.
     let mut serializable = config.clone();
     serializable.settings.dns_strategy = serializable.settings.dns.strategy.clone();
 
-    let json = serde_json::to_string_pretty(&serializable)?;
-    crate::atomic_write::write(path, json.as_bytes())?;
+    Ok(serde_json::to_string_pretty(&serializable)?)
+}
 
-    Ok(())
+/// Save only if `profiles.json` has not changed since `expected` was read.
+pub(crate) fn save_config_at_revision(
+    path: &Path,
+    config: &Config,
+    expected: Option<&[u8]>,
+) -> Result<()> {
+    let dir = path.parent().context("Invalid config path")?;
+    fs::create_dir_all(dir)?;
+    let json = serialized_config(config)?;
+    crate::atomic_write::write_if_unchanged(path, json.as_bytes(), expected)
 }
 
 /// Load configuration from disk, or return default if not present.
@@ -97,9 +135,21 @@ fn ensure_hwid(config: &mut Config, path: &Path) -> Result<()> {
 }
 
 /// Save configuration to disk atomically.
+#[cfg(test)]
 pub fn save_config(config: &Config) -> Result<()> {
     let path = crate::paths::profiles_path().context("Failed to determine profiles path")?;
     save_config_at(&path, config)
+}
+
+pub(crate) fn save_conflict_config(config: &Config) -> Result<std::path::PathBuf> {
+    let original = crate::paths::profiles_path().context("Failed to determine profiles path")?;
+    let path = original.with_file_name(format!(
+        "profiles.json.conflict-{}-{}",
+        chrono::Local::now().format("%Y%m%dT%H%M%S"),
+        uuid::Uuid::new_v4()
+    ));
+    save_config_at(&path, config)?;
+    Ok(path)
 }
 
 #[cfg(test)]
@@ -378,5 +428,16 @@ mod tests {
         let loaded = load_config().unwrap();
         assert_eq!(loaded.profiles.len(), 1);
         assert_eq!(loaded.profiles[0].name, "PathTest");
+    }
+
+    #[test]
+    fn read_only_load_migrates_without_rewriting_source() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("recovery.json");
+        let original = r#"{"schema_version":4,"profiles":[],"settings":{}}"#;
+        std::fs::write(&path, original).unwrap();
+        let loaded = load_config_at_read_only(&path).unwrap();
+        assert_eq!(loaded.schema_version, profile::CURRENT_SCHEMA_VERSION);
+        assert_eq!(std::fs::read_to_string(path).unwrap(), original);
     }
 }
