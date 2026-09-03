@@ -37,7 +37,7 @@ const BASE_ORDER: &[HelpGroup] = &[
 ];
 
 const NAVIGATION: &[(&str, &str)] = &[
-    ("h/l, ←/→", "Focus panes / change value"),
+    ("h/l, ←/→", "Focus panes"),
     ("j/k, ↑/↓", "Move or scroll"),
     ("gg/G", "Go to first / last"),
 ];

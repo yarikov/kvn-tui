@@ -256,16 +256,16 @@ unusable.
 
 | Key | Action |
 |-----|--------|
-| `h` / `l` | Focus the Sources / Logs panel |
-| `j` / `↓` | Move down one source or complete log record |
-| `k` / `↑` | Move up one source or complete log record |
-| `gg` | Go to the first item or the top of the complete log buffer |
-| `G` | Go to the last item or the bottom of the complete log buffer |
+| `h` / `←` | Focus the previous pane |
+| `l` / `→` | Focus the next pane |
+| `j` / `↓` | Move or scroll down |
+| `k` / `↑` | Move or scroll up |
+| `gg` / `G` | Go to the first / last item |
 
 The focused panel is preserved while the daemon remains active. Selectable
-overlays use the same `j` / `k` / `gg` / `G` navigation. In Logs, the first
-`j` selects the top visible record and the first `k` selects the bottom visible
-record; the record focus clears after 15 seconds of inactivity.
+overlays use the same navigation. In Logs, the first `j` selects the top
+visible record and the first `k` selects the bottom visible record; the record
+focus clears after 15 seconds of inactivity.
 
 **Logs**
 
@@ -277,42 +277,54 @@ record; the record focus clears after 15 seconds of inactivity.
 | `gg` / `G` | Extend the visual selection to the start / end of the complete log buffer |
 | `Esc` | Cancel the visual selection |
 
-**Profiles & subscriptions**
+**Sources**
 
 | Key | Action |
 |-----|--------|
 | `Enter` | Connect to selected profile |
-| `p` | Paste share link or subscription URL from clipboard |
-| `y` | Yank the selected profile as a share link (or subscription source URL) to the clipboard |
-| `d` | Delete selected source |
-| `u` | Update selected subscription or geoip/geosite databases |
-| `i` | Cycle subscription auto-update interval |
-| `I` | Cycle geoip/geosite auto-update interval |
 | `e` | Open `profiles.json` in `$EDITOR` |
+| `y` | Yank selected source |
+| `p` | Paste source from clipboard |
+| `d` | Delete selected source |
+| `u` | Update selected subscription or geo |
+| `i` / `I` | Cycle subscription / geo auto-update |
+| `t` / `T` | Test selected / all profiles |
 
-**Connection & routing**
+**Connection**
 
 | Key | Action |
 |-----|--------|
-| `m` | Change routing mode |
-| `o` | Select geo region |
+| `r` | Reconnect |
+| `s` | Disconnect |
 | `a` | Toggle auto-connect |
 | `K` | Toggle kill switch |
-| `D` | DNS settings (presets, strategy, fake-IP) |
-| `S` | Service routing (Steam / Telegram → Proxy / Direct) |
-| `C` | Theme picker (live preview, Enter to persist) |
-| `t` | Test latency of selected profile |
-| `T` | Test latency of all profiles (up to 4 in parallel) |
-| `r` | Reconnect |
-| `s` | Stop / disconnect |
+
+**Settings**
+
+| Key | Action |
+|-----|--------|
+| `m` | Routing mode |
+| `o` | Geo region |
+| `D` | DNS settings |
+| `S` | Service routing |
+| `C` | Theme picker |
+
+**Dialogs**
+
+| Key | Action |
+|-----|--------|
+| `h` / `l`, `←` / `→` | Change selected value |
+| `Enter` | Confirm selection or changes |
+| `y` / `n` | Confirm / cancel deletion |
+| `q` / `Esc` | Cancel dialog |
 
 **Application**
 
 | Key | Action |
 |-----|--------|
-| `q` / `Esc` | Close the active overlay; otherwise exit only the TUI — the daemon and VPN keep running (`Esc` cancels an active log selection first) |
+| `q` / `Esc` | Detach the TUI from the main screen; in a dialog, cancel it (`Esc` cancels an active log selection first) |
 | `Ctrl+C` | Stop the daemon, disconnect the VPN, and exit completely |
-| `?` | Show help |
+| `?` | Open or close help |
 
 On terminals supporting the Kitty keyboard protocol, letter shortcuts follow
 their physical US key positions regardless of the active keyboard layout.

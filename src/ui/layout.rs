@@ -1819,7 +1819,7 @@ mod tests {
         let content = buffer_to_string(frame.buffer);
         let lines = crate::ui::help::rows(state.context);
         let expected = [
-            ("h/l, ←/→", "Focus panes / change value"),
+            ("h/l, ←/→", "Focus panes"),
             ("j/k, ↑/↓", "Move or scroll"),
             ("gg/G", "Go to first / last"),
             ("Enter", "Connect selected profile"),
