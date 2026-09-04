@@ -3,6 +3,13 @@
 Upgrade kvn-tui through your usual package source. Review the applicable
 migration guides below when crossing a version that requires additional steps.
 
+## v0.28.0
+
+All users upgrading from v0.27.1 or earlier should review the
+[v0.28.0 migration guide](migrations/v0.28.0.md). Existing polkit and kill-switch
+installations must be refreshed, while the schema v5 configuration migration is
+automatic.
+
 ## v0.27.0 on Omarchy 4
 
 Omarchy 4 users upgrading from an earlier kvn-tui release should follow the
