@@ -224,10 +224,9 @@ fn reset_terminal_colors() {
 /// Render a fixed, side-effect-free application state for documentation captures.
 pub fn run_docs_preview(theme_slug: &str) -> Result<()> {
     use crate::config::profile::{
-        Config, GeoRegion, Hysteria2Config, ProtocolConfig, RoutingMode, Subscription,
-        SubscriptionAutoUpdate, TrojanConfig, TuicConfig, VlessConfig, VmessConfig,
+        Config, GeoAutoUpdate, GeoRegion, Hysteria2Config, ProtocolConfig, RoutingMode,
+        Subscription, SubscriptionAutoUpdate, TrojanConfig, TuicConfig, VlessConfig, VmessConfig,
     };
-    use chrono::TimeZone;
     use crossterm::event::{self, Event, KeyCode, KeyModifiers};
     use uuid::Uuid;
 
@@ -372,6 +371,7 @@ pub fn run_docs_preview(theme_slug: &str) -> Result<()> {
     config.settings.kill_switch = true;
     config.settings.geo_routing.set_region(GeoRegion::Ru);
     config.settings.geo_routing.set_mode(RoutingMode::Global);
+    config.settings.geo_routing.auto_update = GeoAutoUpdate::Every3d;
 
     let mut model = Model::in_memory(config);
     model.theme = crate::ui::styles::Theme::from_palette(palette);
@@ -380,9 +380,7 @@ pub fn run_docs_preview(theme_slug: &str) -> Result<()> {
     model.selected = 2;
     model.main_pane_focus = crate::app::model::MainPaneFocus::Sources;
     model.status = AppStatus::Info("Connected to 🇺🇸 United States".into());
-    model.geo_last_checked_at = chrono::Local
-        .with_ymd_and_hms(2026, 8, 14, 10, 20, 0)
-        .single();
+    model.geo_last_checked_at = Some(chrono::Local::now());
     model.traffic = TrafficStats {
         up_rate_bps: 731 * 1024,
         down_rate_bps: 5_033_165,
