@@ -27,4 +27,4 @@ expression: "snapshot_terminal(&model, 80, 26)"
 │                                      ││                                      │
 │                                      ││                                      │
 └──────────────────────────────────────┘└──────────────────────────────────────┘
-[DISCONNECTED] [DNS: DoH] [Global] [Geo: 2026-05-31 13:41]
+ DISCONNECTED                                                        DoH  Global

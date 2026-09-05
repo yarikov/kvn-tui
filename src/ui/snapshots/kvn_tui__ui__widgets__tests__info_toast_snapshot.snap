@@ -1,0 +1,8 @@
+---
+source: src/ui/widgets.rs
+expression: trimmed
+---
+
+                                     ┌ Status ────────────┐
+                                     │ Connected to Alpha │
+                                     └────────────────────┘

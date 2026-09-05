@@ -206,6 +206,10 @@ pub struct Model {
     pub config_persistence_blocked: bool,
     pub selected: usize,
     pub status: AppStatus,
+    /// Monotonic revision of the latest status event. TUI clients use it to
+    /// show repeated messages as distinct toast notifications even when the
+    /// text itself did not change.
+    pub status_revision: u64,
     pub singbox_pid: Option<u32>,
     pub active_profile_id: Option<Uuid>,
     /// Explicit target for a queued connection attempt. This must never be
@@ -315,6 +319,7 @@ impl Model {
             self.push_log(text.to_string());
         }
         self.status = status;
+        self.status_revision = self.status_revision.wrapping_add(1);
     }
 
     /// Initialize application state and load persisted configuration.
@@ -428,6 +433,7 @@ impl Model {
             config_persistence_blocked,
             selected,
             status: AppStatus::Info(String::new()),
+            status_revision: 0,
             singbox_pid: None,
             active_profile_id: None,
             connecting_profile_id,
@@ -533,6 +539,7 @@ impl Model {
             config_persistence_blocked: false,
             selected,
             status: AppStatus::Info(String::new()),
+            status_revision: 0,
             singbox_pid: None,
             active_profile_id: None,
             connecting_profile_id: None,
@@ -758,6 +765,7 @@ impl Model {
             config_persistence_blocked: false,
             selected,
             status: AppStatus::Info(String::new()),
+            status_revision: 0,
             singbox_pid: None,
             active_profile_id: None,
             connecting_profile_id: None,
@@ -1100,13 +1108,16 @@ mod tests {
     #[test]
     fn set_status_logs_plain_text() {
         let mut model = Model::test_new(Config::default());
+        let initial_revision = model.status_revision;
         model.set_status(AppStatus::Info("hello".into()));
         assert_eq!(model.status.text(), "hello");
         assert_eq!(model.logs.back().unwrap(), "hello");
+        assert_eq!(model.status_revision, initial_revision + 1);
 
         model.set_status(AppStatus::Error("oops".into()));
         assert_eq!(model.status.text(), "oops");
         assert_eq!(model.logs.back().unwrap(), "oops");
+        assert_eq!(model.status_revision, initial_revision + 2);
     }
 
     #[test]

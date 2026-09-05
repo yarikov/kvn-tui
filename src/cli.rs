@@ -1121,6 +1121,7 @@ esac
             connection: ConnectionState::Idle,
             status: "ok".into(),
             status_is_error: false,
+            status_revision: 1,
             singbox_pid: None,
             active_profile_id: None,
             selected: 0,
@@ -1135,6 +1136,8 @@ esac
             service_routing_draft: None,
             geo_updating: false,
             geo_last_updated: None,
+            geo_last_checked_at: None,
+            service_checked_at: Default::default(),
             overlay: crate::app::model::Overlay::None,
             main_pane_focus: Default::default(),
             profiles: vec![

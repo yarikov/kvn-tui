@@ -9,7 +9,7 @@ use unicode_width::UnicodeWidthChar;
 use crate::app::model::{MainPaneFocus, Model, Overlay, SourceRow};
 use crate::ui::styles::Theme;
 use crate::ui::widgets::{
-    StatusBar, format_bps_field, format_bytes_field, format_connections_field,
+    StatusBar, Toast, format_bps_field, format_bytes_field, format_connections_field,
     format_connections_padding,
 };
 
@@ -510,7 +510,15 @@ pub(crate) fn source_hit_test(
 
 /// Render the full application UI into the terminal frame.
 pub fn draw(frame: &mut Frame, model: &Model) {
-    draw_with_interaction(frame, model, MainPaneFocus::Sources, None, None);
+    draw_impl(
+        frame,
+        model,
+        MainPaneFocus::Sources,
+        None,
+        None,
+        None,
+        false,
+    );
 }
 
 #[cfg(test)]
@@ -519,15 +527,64 @@ pub(crate) fn draw_with_log_selection(
     model: &Model,
     log_selection: Option<&LogSelection>,
 ) {
-    draw_with_interaction(frame, model, MainPaneFocus::Sources, None, log_selection);
+    draw_impl(
+        frame,
+        model,
+        MainPaneFocus::Sources,
+        None,
+        log_selection,
+        None,
+        false,
+    );
 }
 
+#[cfg(test)]
 pub(crate) fn draw_with_interaction(
     frame: &mut Frame,
     model: &Model,
     pane_focus: MainPaneFocus,
     log_navigation: Option<&LogNavigation>,
     log_selection: Option<&LogSelection>,
+) {
+    draw_impl(
+        frame,
+        model,
+        pane_focus,
+        log_navigation,
+        log_selection,
+        None,
+        false,
+    );
+}
+
+pub(crate) fn draw_with_toast(
+    frame: &mut Frame,
+    model: &Model,
+    pane_focus: MainPaneFocus,
+    log_navigation: Option<&LogNavigation>,
+    log_selection: Option<&LogSelection>,
+    toast: Option<&crate::app::model::AppStatus>,
+    show_toast_over_overlay: bool,
+) {
+    draw_impl(
+        frame,
+        model,
+        pane_focus,
+        log_navigation,
+        log_selection,
+        toast,
+        show_toast_over_overlay,
+    );
+}
+
+fn draw_impl(
+    frame: &mut Frame,
+    model: &Model,
+    pane_focus: MainPaneFocus,
+    log_navigation: Option<&LogNavigation>,
+    log_selection: Option<&LogSelection>,
+    toast: Option<&crate::app::model::AppStatus>,
+    show_toast_over_overlay: bool,
 ) {
     let area = frame.area();
 
@@ -581,6 +638,15 @@ pub(crate) fn draw_with_interaction(
         Overlay::ThemeSettings => draw_theme_settings(frame, model, area),
         Overlay::ServiceRouting => draw_service_routing(frame, model, area),
         Overlay::None => {}
+    }
+
+    if (model.overlay == Overlay::None || show_toast_over_overlay)
+        && let Some(status) = toast
+    {
+        let toast = Toast::new(status, &model.theme);
+        if let Some(area) = toast.area(frame.area()) {
+            frame.render_widget(toast, area);
+        }
     }
 }
 
@@ -1167,7 +1233,7 @@ fn draw_sources(frame: &mut Frame, model: &Model, area: Rect, focused: bool) {
             };
             let profiles = &sub_profile_rows[sub_idx];
             let header_text = format!(
-                "Subscription: {} ({}) [{}]",
+                "Subscription: {} ({}) {}",
                 sub.name,
                 profiles.len(),
                 sub.auto_update.label(),
@@ -1673,6 +1739,73 @@ mod tests {
         let mut terminal = Terminal::new(backend).unwrap();
         let frame = terminal.draw(|f| draw(f, model)).unwrap();
         buffer_to_string(frame.buffer)
+    }
+
+    #[test]
+    fn toast_renders_over_the_top_right_corner() {
+        let model = model_with_profiles(vec![]);
+        let status = crate::app::model::AppStatus::Info("Saved".into());
+        let mut terminal = Terminal::new(TestBackend::new(80, 20)).unwrap();
+        terminal
+            .draw(|frame| {
+                draw_with_toast(
+                    frame,
+                    &model,
+                    MainPaneFocus::Sources,
+                    None,
+                    None,
+                    Some(&status),
+                    false,
+                )
+            })
+            .unwrap();
+        let output = buffer_to_string(terminal.backend().buffer());
+        assert!(output.lines().nth(1).unwrap().contains("Status"));
+        assert!(output.lines().nth(2).unwrap().contains("Saved"));
+    }
+
+    #[test]
+    fn overlay_hides_toast() {
+        let mut model = model_with_profiles(vec![]);
+        model.overlay = Overlay::ConfirmDelete;
+        let status = crate::app::model::AppStatus::Error("Must not appear".into());
+        let mut terminal = Terminal::new(TestBackend::new(80, 20)).unwrap();
+        terminal
+            .draw(|frame| {
+                draw_with_toast(
+                    frame,
+                    &model,
+                    MainPaneFocus::Sources,
+                    None,
+                    None,
+                    Some(&status),
+                    false,
+                )
+            })
+            .unwrap();
+        assert!(!buffer_to_string(terminal.backend().buffer()).contains("Must not appear"));
+    }
+
+    #[test]
+    fn explicitly_allowed_toast_renders_over_overlay() {
+        let mut model = model_with_profiles(vec![]);
+        model.overlay = Overlay::ConfirmDelete;
+        let status = crate::app::model::AppStatus::Error("Startup failed".into());
+        let mut terminal = Terminal::new(TestBackend::new(80, 20)).unwrap();
+        terminal
+            .draw(|frame| {
+                draw_with_toast(
+                    frame,
+                    &model,
+                    MainPaneFocus::Sources,
+                    None,
+                    None,
+                    Some(&status),
+                    true,
+                )
+            })
+            .unwrap();
+        assert!(buffer_to_string(terminal.backend().buffer()).contains("Startup failed"));
     }
 
     fn find_text(buffer: &ratatui::buffer::Buffer, needle: &str) -> usize {
