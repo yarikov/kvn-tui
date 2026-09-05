@@ -172,7 +172,7 @@ pub(super) fn handle_sources(model: &mut Model, key: KeyEvent) -> Vec<Effect> {
             push_status(
                 &mut effects,
                 model,
-                AppStatus::Info(format!("Geo auto-update [{}]", schedule.label())),
+                AppStatus::Info(format!("Rule sets {}", schedule.label())),
             );
             return effects;
         }
@@ -194,7 +194,7 @@ pub(super) fn handle_sources(model: &mut Model, key: KeyEvent) -> Vec<Effect> {
                     &mut effects,
                     model,
                     crate::app::model::AppStatus::Info(format!(
-                        "Subscription '{}' [{}]",
+                        "Subscription '{}' {}",
                         name, label
                     )),
                 );

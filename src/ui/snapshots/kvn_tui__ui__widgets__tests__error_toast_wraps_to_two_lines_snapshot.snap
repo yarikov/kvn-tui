@@ -1,0 +1,9 @@
+---
+source: src/ui/widgets.rs
+expression: trimmed
+---
+
+ ┌ Error ───────────────────────────────┐
+ │ Connection failed: handshake timed   │
+ │ out while contacting the selected    │
+ └──────────────────────────────────────┘

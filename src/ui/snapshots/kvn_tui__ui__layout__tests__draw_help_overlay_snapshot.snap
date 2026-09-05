@@ -41,4 +41,4 @@ expression: "snapshot_terminal(&model, 80, 40)"
 │           │        j/k scroll · gg/G edges · q/Esc/? back        │           │
 │           └──────────────────────────────────────────────────────┘           │
 └──────────────────────────────────────┘└──────────────────────────────────────┘
-[DISCONNECTED] [DNS: DoH] [Global] [Geo: 2026-05-31 13:41]
+ DISCONNECTED                                                        DoH  Global

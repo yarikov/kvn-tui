@@ -2988,7 +2988,7 @@ mod tests {
             let effects = handle_sources(&mut model, key('I'));
             assert_eq!(model.config.settings.geo_routing.auto_update, expected);
             assert!(effects.contains(&Effect::SaveConfig));
-            assert!(model.status.text().contains(expected.label()));
+            assert!(model.status.text().contains(&expected.label()));
         }
     }
 
@@ -4391,7 +4391,7 @@ mod tests {
             SubscriptionAutoUpdate::Every3d
         );
         assert!(effects.contains(&Effect::SaveConfig));
-        assert!(effects.contains(&app_log_info("Subscription 'Sub' [🗘 3d]")));
+        assert!(effects.contains(&app_log_info("Subscription 'Sub'  (3d)")));
         assert!(model.config.subscriptions[0].retry_state.is_none());
     }
 

@@ -902,24 +902,25 @@ impl SubscriptionAutoUpdate {
         }
     }
 
-    /// Short label for the schedule, e.g. "✕" or "🗘 1h".
+    /// Compact display label shared with rule-set auto-update controls.
     pub fn label(self) -> String {
-        match self {
-            Self::Off => "✕".to_string(),
-            _ => format!("🗘 {}", self.interval_label()),
-        }
+        auto_update_label(self.interval_label())
     }
 
     /// Short interval label without icon.
-    pub fn interval_label(self) -> String {
+    pub fn interval_label(self) -> &'static str {
         match self {
-            Self::Off => "off".to_string(),
-            Self::Every1h | Self::Every12h => "1d".to_string(),
-            Self::Every1d => "1d".to_string(),
-            Self::Every3d => "3d".to_string(),
-            Self::Every7d => "7d".to_string(),
+            Self::Off => "off",
+            Self::Every1h | Self::Every12h => "1d",
+            Self::Every1d => "1d",
+            Self::Every3d => "3d",
+            Self::Every7d => "7d",
         }
     }
+}
+
+fn auto_update_label(interval: &str) -> String {
+    format!(" ({interval})")
 }
 
 /// A subscription URL that can be refreshed to import a set of profiles.
@@ -1060,8 +1061,8 @@ fn subscription_auto_update_cycles_and_labels() {
         SubscriptionAutoUpdate::Off
     );
 
-    assert_eq!(SubscriptionAutoUpdate::Off.label(), "✕");
-    assert_eq!(SubscriptionAutoUpdate::Every1d.label(), "🗘 1d");
+    assert_eq!(SubscriptionAutoUpdate::Off.label(), " (off)");
+    assert_eq!(SubscriptionAutoUpdate::Every1d.label(), " (1d)");
 }
 
 #[test]
@@ -1133,9 +1134,10 @@ fn geo_auto_update_cycles_intervals_and_labels() {
         (GeoAutoUpdate::Every3d, 4_320, "3d"),
         (GeoAutoUpdate::Every7d, 10_080, "7d"),
     ];
-    for (schedule, minutes, label) in schedules {
+    for (schedule, minutes, interval) in schedules {
         assert_eq!(schedule.interval_minutes(), minutes);
-        assert_eq!(schedule.label(), label);
+        assert_eq!(schedule.interval_label(), interval);
+        assert_eq!(schedule.label(), format!(" ({interval})"));
     }
     assert_eq!(GeoAutoUpdate::Off.next(), GeoAutoUpdate::Every1d);
     assert_eq!(GeoAutoUpdate::Every12h.next(), GeoAutoUpdate::Every1d);
@@ -1181,7 +1183,11 @@ impl GeoAutoUpdate {
         }
     }
 
-    pub fn label(self) -> &'static str {
+    pub fn label(self) -> String {
+        auto_update_label(self.interval_label())
+    }
+
+    pub fn interval_label(self) -> &'static str {
         match self {
             Self::Off => "off",
             Self::Every12h => "1d",

@@ -1,5 +1,0 @@
----
-source: src/ui/widgets.rs
-expression: buffer_to_string(&buf)
----
-[DISCONNECTED] [DNS: DoH] [Global] [Geo: updating...]

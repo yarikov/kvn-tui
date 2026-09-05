@@ -1,8 +1,9 @@
 use crate::app::model::{ConnectionState, MainPaneFocus, Overlay, TrafficStats};
 use crate::config::profile::{
-    DnsStrategy, GeoRegion, Profile, RoutingMode, Settings, Subscription,
+    DnsStrategy, GeoRegion, Profile, RoutedService, RoutingMode, Settings, Subscription,
 };
 use crate::ui::styles::Theme;
+use chrono::{DateTime, Local};
 use crossterm::event::{KeyEvent, MouseEvent};
 use uuid::Uuid;
 
@@ -377,6 +378,10 @@ pub struct StateSnapshot {
     pub connection: ConnectionState,
     pub status: String,
     pub status_is_error: bool,
+    /// Monotonic identity of the status event, allowing clients to
+    /// distinguish repeated messages with identical text.
+    #[serde(default)]
+    pub status_revision: u64,
     pub singbox_pid: Option<u32>,
     pub active_profile_id: Option<String>,
     pub selected: usize,
@@ -402,6 +407,12 @@ pub struct StateSnapshot {
     >,
     pub geo_updating: bool,
     pub geo_last_updated: Option<String>,
+    /// Last successful check of the active regional rule sets.
+    #[serde(default)]
+    pub geo_last_checked_at: Option<DateTime<Local>>,
+    /// Last successful check of each service rule set.
+    #[serde(default)]
+    pub service_checked_at: std::collections::HashMap<RoutedService, DateTime<Local>>,
     pub overlay: Overlay,
     #[serde(default)]
     pub main_pane_focus: MainPaneFocus,

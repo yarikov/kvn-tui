@@ -10,7 +10,7 @@ expression: "snapshot_terminal(&model, 80, 20)"
 │├ Alpha             vless  1.1.1.1:443││                                      │
 │└ Beta              vless  2.2.2.2:443││                                      │
 │                                      ││                                      │
-│Subscription: Example (2) [🗘 1d]      ││                                      │
+│Subscription: Example (2)  (1d)      ││                                      │
 │├ Gamma             vless  3.3.3.3:443││                                      │
 │└ Delta             vless  4.4.4.4:443││                                      │
 │                                      ││                                      │
@@ -21,4 +21,4 @@ expression: "snapshot_terminal(&model, 80, 20)"
 │                                      ││                                      │
 │                                      ││                                      │
 └──────────────────────────────────────┘└──────────────────────────────────────┘
-[DISCONNECTED] [DNS: DoH] [Global] [Geo: 2026-05-31 13:41]
+ DISCONNECTED                                                        DoH  Global

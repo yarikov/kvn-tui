@@ -21,4 +21,4 @@ expression: output
 │                                      ││                                      │
 │                                      ││                                      │
 └──────────────────────────────────────┘└──────────────────────────────────────┘
-[DISCONNECTED] [DNS: DoH] [Global] [Geo: 2026-05-31 13:41]
+ DISCONNECTED                                                        DoH  Global

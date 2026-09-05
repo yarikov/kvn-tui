@@ -21,4 +21,4 @@ expression: "snapshot_terminal(&model, 80, 20)"
 │                                      ││                                      │
 │                                      ││                                      │
 └──────────────────────────────────────┘└──────────────────────────────────────┘
-[CONNECTED] [DNS: DoH] [Global] [Geo: 2026-05-31 13:41]
+ CONNECTED  Alpha                                                    DoH  Global

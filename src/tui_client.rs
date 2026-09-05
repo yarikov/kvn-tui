@@ -42,6 +42,73 @@ pub(crate) const OSC_POINTER_INTERACTIVE: &str = "\x1b]22;pointer\x1b\\";
 pub(crate) const OSC_POINTER_TEXT: &str = "\x1b]22;text\x1b\\";
 pub(crate) const OSC_POINTER_DEFAULT: &str = "\x1b]22;\x1b\\";
 const DOUBLE_CLICK_INTERVAL: Duration = Duration::from_millis(300);
+const TOAST_INFO_DURATION: Duration = Duration::from_secs(3);
+const TOAST_ERROR_DURATION: Duration = Duration::from_secs(7);
+
+/// Presentation-only lifetime for daemon status events. Keeping the deadline
+/// here avoids leaking wall-clock concerns into the shared TEA model.
+struct ToastState {
+    last_revision: u64,
+    status: Option<AppStatus>,
+    expires_at: Option<Instant>,
+    show_over_overlay: bool,
+}
+
+impl ToastState {
+    fn new(last_revision: u64) -> Self {
+        Self {
+            last_revision,
+            status: None,
+            expires_at: None,
+            show_over_overlay: false,
+        }
+    }
+
+    fn show_initial_error(&mut self, status: AppStatus, now: Instant) {
+        if matches!(status, AppStatus::Error(_)) {
+            self.status = Some(status);
+            self.expires_at = Some(now + TOAST_ERROR_DURATION);
+            self.show_over_overlay = true;
+        }
+    }
+
+    fn observe(&mut self, revision: u64, status: AppStatus, now: Instant) {
+        if revision == self.last_revision {
+            return;
+        }
+        self.last_revision = revision;
+        if status.text().is_empty() || status.text() == "Press ? for help" {
+            self.status = None;
+            self.expires_at = None;
+            self.show_over_overlay = false;
+            return;
+        }
+        let duration = if matches!(status, AppStatus::Error(_)) {
+            TOAST_ERROR_DURATION
+        } else {
+            TOAST_INFO_DURATION
+        };
+        self.status = Some(status);
+        self.expires_at = Some(now + duration);
+        self.show_over_overlay = false;
+    }
+
+    fn expire(&mut self, now: Instant) {
+        if self.expires_at.is_some_and(|deadline| now >= deadline) {
+            self.status = None;
+            self.expires_at = None;
+            self.show_over_overlay = false;
+        }
+    }
+
+    fn current(&self) -> Option<&AppStatus> {
+        self.status.as_ref()
+    }
+
+    fn show_over_overlay(&self) -> bool {
+        self.show_over_overlay
+    }
+}
 
 #[derive(Default)]
 struct ClickTracker(Option<(uuid::Uuid, Instant)>);
@@ -160,6 +227,7 @@ pub fn run_docs_preview(theme_slug: &str) -> Result<()> {
         Config, GeoRegion, Hysteria2Config, ProtocolConfig, RoutingMode, Subscription,
         SubscriptionAutoUpdate, TrojanConfig, TuicConfig, VlessConfig, VmessConfig,
     };
+    use chrono::TimeZone;
     use crossterm::event::{self, Event, KeyCode, KeyModifiers};
     use uuid::Uuid;
 
@@ -312,7 +380,9 @@ pub fn run_docs_preview(theme_slug: &str) -> Result<()> {
     model.selected = 2;
     model.main_pane_focus = crate::app::model::MainPaneFocus::Sources;
     model.status = AppStatus::Info("Connected to 🇺🇸 United States".into());
-    model.geo_last_updated = Some("14 Aug 10:20".into());
+    model.geo_last_checked_at = chrono::Local
+        .with_ymd_and_hms(2026, 8, 14, 10, 20, 0)
+        .single();
     model.traffic = TrafficStats {
         up_rate_bps: 731 * 1024,
         down_rate_bps: 5_033_165,
@@ -558,8 +628,20 @@ fn run_loop(
     let mut pane_focus = model.main_pane_focus;
     let mut log_navigation = LogNavigation::default();
     let mut go_first_sequence = GoFirstSequence::default();
+    let mut toast = ToastState::new(model.status_revision);
+    toast.show_initial_error(model.status.clone(), Instant::now());
     // Initial draw
-    terminal.draw(|f| crate::ui::draw(f, model))?;
+    terminal.draw(|f| {
+        crate::ui::layout::draw_with_toast(
+            f,
+            model,
+            pane_focus,
+            Some(&log_navigation),
+            None,
+            toast.current(),
+            toast.show_over_overlay(),
+        )
+    })?;
     let mut pointer_shape = PointerShape::Default;
     let mut mouse_position: Option<(u16, u16)> = None;
     let mut click_tracker = ClickTracker::default();
@@ -903,6 +985,12 @@ fn run_loop(
             }
             Msg::StateUpdate(snapshot) => {
                 pane_focus = snapshot.main_pane_focus;
+                let toast_status = if snapshot.status_is_error {
+                    AppStatus::Error(snapshot.status.clone())
+                } else {
+                    AppStatus::Info(snapshot.status.clone())
+                };
+                toast.observe(snapshot.status_revision, toast_status, Instant::now());
                 apply_snapshot(model, *snapshot);
                 if model.overlay != crate::app::model::Overlay::None {
                     log_selection = None;
@@ -913,7 +1001,9 @@ fn run_loop(
             }
             Msg::IpcReadFailed(message) => anyhow::bail!(message),
             Msg::Tick => {
-                log_navigation.expire_if_idle(Instant::now());
+                let now = Instant::now();
+                log_navigation.expire_if_idle(now);
+                toast.expire(now);
                 let new_lines = log_tailer.tail();
                 if !new_lines.is_empty() && !log_dragging {
                     log_selection = None;
@@ -954,12 +1044,14 @@ fn run_loop(
 
         if needs_redraw {
             terminal.draw(|f| {
-                crate::ui::layout::draw_with_interaction(
+                crate::ui::layout::draw_with_toast(
                     f,
                     model,
                     pane_focus,
                     Some(&log_navigation),
                     log_selection.as_ref(),
+                    toast.current(),
+                    toast.show_over_overlay(),
                 )
             })?;
         }
@@ -1009,6 +1101,7 @@ fn apply_snapshot(model: &mut Model, snapshot: crate::app::msg::StateSnapshot) {
     } else {
         crate::app::model::AppStatus::Info(snapshot.status)
     };
+    model.status_revision = snapshot.status_revision;
     model.singbox_pid = snapshot.singbox_pid;
     model.active_profile_id = snapshot
         .active_profile_id
@@ -1026,6 +1119,8 @@ fn apply_snapshot(model: &mut Model, snapshot: crate::app::msg::StateSnapshot) {
     model.service_routing_draft = snapshot.service_routing_draft;
     model.geo_updating = snapshot.geo_updating;
     model.geo_last_updated = snapshot.geo_last_updated;
+    model.geo_last_checked_at = snapshot.geo_last_checked_at;
+    model.service_checked_at = snapshot.service_checked_at;
     model.overlay = snapshot.overlay;
     model.config.profiles = snapshot.profiles;
     model.config.subscriptions = snapshot.subscriptions;
@@ -1183,5 +1278,64 @@ mod tests {
         assert_eq!(OSC_POINTER_INTERACTIVE, "\x1b]22;pointer\x1b\\");
         assert_eq!(OSC_POINTER_TEXT, "\x1b]22;text\x1b\\");
         assert_eq!(OSC_POINTER_DEFAULT, "\x1b]22;\x1b\\");
+    }
+
+    #[test]
+    fn toast_state_treats_repeated_text_as_a_new_revision() {
+        let start = Instant::now();
+        let mut toast = ToastState::new(4);
+        toast.observe(5, AppStatus::Info("Saved".into()), start);
+        let first_deadline = toast.expires_at.unwrap();
+        toast.observe(
+            6,
+            AppStatus::Info("Saved".into()),
+            start + Duration::from_secs(1),
+        );
+        assert_eq!(toast.current().map(AppStatus::text), Some("Saved"));
+        assert!(toast.expires_at.unwrap() > first_deadline);
+    }
+
+    #[test]
+    fn toast_state_ignores_duplicate_snapshots_and_expires() {
+        let start = Instant::now();
+        let mut toast = ToastState::new(2);
+        toast.observe(3, AppStatus::Error("Failed".into()), start);
+        let deadline = toast.expires_at.unwrap();
+        toast.observe(
+            3,
+            AppStatus::Info("stale".into()),
+            start + Duration::from_secs(1),
+        );
+        assert_eq!(toast.current().map(AppStatus::text), Some("Failed"));
+        toast.expire(deadline);
+        assert!(toast.current().is_none());
+    }
+
+    #[test]
+    fn toast_state_suppresses_empty_and_help_messages() {
+        let start = Instant::now();
+        let mut toast = ToastState::new(0);
+        toast.observe(1, AppStatus::Info(String::new()), start);
+        assert!(toast.current().is_none());
+        toast.observe(2, AppStatus::Info("Press ? for help".into()), start);
+        assert!(toast.current().is_none());
+    }
+
+    #[test]
+    fn toast_state_shows_only_initial_errors_over_an_overlay() {
+        let start = Instant::now();
+        let mut toast = ToastState::new(2);
+
+        toast.show_initial_error(AppStatus::Info("Connected".into()), start);
+        assert!(toast.current().is_none());
+        assert!(!toast.show_over_overlay());
+
+        toast.show_initial_error(AppStatus::Error("Startup failed".into()), start);
+        assert_eq!(toast.current().map(AppStatus::text), Some("Startup failed"));
+        assert!(toast.show_over_overlay());
+
+        toast.observe(3, AppStatus::Info("Recovered".into()), start);
+        assert_eq!(toast.current().map(AppStatus::text), Some("Recovered"));
+        assert!(!toast.show_over_overlay());
     }
 }

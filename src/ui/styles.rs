@@ -47,11 +47,6 @@ impl Theme {
         Style::default().fg(self.palette.foreground)
     }
 
-    /// Style for status bar text (yellow / warning).
-    pub fn status(&self) -> Style {
-        Style::default().fg(self.palette.ansi[3])
-    }
-
     /// Style for error messages.
     pub fn error(&self) -> Style {
         Style::default()
@@ -64,6 +59,65 @@ impl Theme {
         Style::default()
             .fg(self.palette.ansi[2])
             .add_modifier(Modifier::BOLD)
+    }
+
+    /// Full-width background for the persistent bottom bar. A small amount
+    /// of foreground mixed into the palette background separates the bar
+    /// without introducing a second unrelated color.
+    pub fn status_bar(&self) -> Style {
+        Style::default().fg(self.palette.foreground).bg(mix(
+            self.palette.foreground,
+            self.palette.background,
+            0.92,
+        ))
+    }
+
+    pub fn connected_badge(&self) -> Style {
+        Style::default()
+            .fg(self.palette.background)
+            .bg(self.palette.ansi[2])
+            .add_modifier(Modifier::BOLD)
+    }
+
+    pub fn connecting_badge(&self) -> Style {
+        Style::default()
+            .fg(self.palette.background)
+            .bg(self.palette.ansi[3])
+            .add_modifier(Modifier::BOLD)
+    }
+
+    pub fn offline_badge(&self) -> Style {
+        Style::default()
+            .fg(self.palette.foreground)
+            .bg(mix(self.palette.foreground, self.palette.background, 0.75))
+            .add_modifier(Modifier::BOLD)
+    }
+
+    pub fn ruleset_fresh_badge(&self) -> Style {
+        self.connected_badge()
+    }
+
+    pub fn ruleset_stale_badge(&self) -> Style {
+        Style::default()
+            .fg(self.palette.background)
+            .bg(self.palette.ansi[1])
+            .add_modifier(Modifier::BOLD)
+    }
+
+    pub fn ruleset_updating_badge(&self) -> Style {
+        self.connecting_badge()
+    }
+
+    pub fn ruleset_manual_badge(&self) -> Style {
+        self.offline_badge()
+    }
+
+    pub fn toast_info(&self) -> Style {
+        Style::default().fg(self.palette.accent)
+    }
+
+    pub fn toast_error(&self) -> Style {
+        self.error()
     }
 
     /// Style for borders (dim).
@@ -133,12 +187,6 @@ mod tests {
     }
 
     #[test]
-    fn legacy_status_is_yellow() {
-        let s = Theme::legacy().status();
-        assert_eq!(s.fg, Some(Color::Yellow));
-    }
-
-    #[test]
     fn legacy_error_is_red_bold() {
         let s = Theme::legacy().error();
         assert_eq!(s.fg, Some(Color::Red));
@@ -150,6 +198,21 @@ mod tests {
         let s = Theme::legacy().success();
         assert_eq!(s.fg, Some(Color::Green));
         assert!(s.add_modifier.contains(Modifier::BOLD));
+    }
+
+    #[test]
+    fn ruleset_badges_use_semantic_backgrounds() {
+        let theme = Theme::legacy();
+        assert_eq!(theme.ruleset_fresh_badge(), theme.connected_badge());
+        assert_eq!(theme.ruleset_updating_badge(), theme.connecting_badge());
+        assert_eq!(theme.ruleset_manual_badge(), theme.offline_badge());
+        assert_eq!(theme.ruleset_stale_badge().bg, Some(Color::Red));
+        assert!(
+            theme
+                .ruleset_stale_badge()
+                .add_modifier
+                .contains(Modifier::BOLD)
+        );
     }
 
     #[test]
